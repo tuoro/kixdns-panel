@@ -1,5 +1,10 @@
 import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, ownMatcher, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { toTree, treeText } from './condTree'
+import {
+  byteLength, cidrOf, isCidr, isCnameTarget, isDomain, isIp, isPrefix, isQclass, isQtype, isRcode, isTtl, kernelRegexOk, QCLASSES, QTYPES, RCODES, TTL_PROBLEM,
+  TXT_REGEX_BYTES, TXT_SEGMENT_BYTES, upstreamFault, upstreamTransport, type UpstreamFault,
+} from './grammar'
+export { isCidr, isDomain, isIp } from './grammar'
 // 配置页的数据模型：上游组配一次，规则引用组名；规则组、域名映射、默认值也在这里。compile() 把它落成内核配置，
 // importer.ts 把内核配置读回来，document.ts 负责和配置文件之间的存取。
 // The config page's model: upstream groups are configured once and rules reference them by name; rule groups, mappings and
@@ -122,6 +127,22 @@ export function kernelAddress(item: UpstreamAddress): string {
   const prefix: Record<Exclude<Protocol, 'auto'>, string> = { udp: 'udp://', tcp: 'tcp://', tcp_udp: 'tcp+udp://', doh: 'https://', dot: 'tls://', doq: 'quic://' }
   return `${prefix[item.protocol]}${host}`
 }
+/**
+ * 没写端口的地址按 DNS 的 53 补上：UDP、TCP+UDP 内核只认「IP:端口」，TCP 要「主机:端口」，大家又习惯只写 223.5.5.5。上游组的抽屉按「完成」时
+ * 写进草稿的就是补好的；DoH、DoT、DoQ 内核自己有缺省，不动
+ * A missing port is taken as DNS's 53: for UDP and TCP+UDP the kernel takes only 「IP:port」 and TCP needs 「host:port」, while people are used
+ * to writing just 223.5.5.5. The upstream group drawer writes the completed address into the draft on 完成; DoH, DoT and DoQ have the
+ * kernel's own defaults and are left alone
+ */
+export function withDefaultPort(item: UpstreamAddress): UpstreamAddress {
+  const protocol = effectiveProtocol(item)
+  if (protocol !== 'udp' && protocol !== 'tcp' && protocol !== 'tcp_udp') return item
+  const address = item.address.trim()
+  const prefix = /^[a-z+]+:\/\//i.exec(address)?.[0] ?? ''
+  const host = address.slice(prefix.length)
+  const bare = isIp(host) || (protocol === 'tcp' && /^[A-Za-z0-9.-]+$/.test(host))
+  return bare ? { ...item, address: `${prefix}${host.includes(':') ? `[${host}]` : host}:53` } : item
+}
 
 // ---------- 文字摘要 / summaries ----------
 
@@ -140,11 +161,17 @@ const DOMAIN_OPS: OpDef[] = [
   { value: 'exact', label: '就是', negate: false, exact: true }, { value: 'nexact', label: '不是', negate: true, exact: true },
   { value: 're', label: '匹配正则', negate: false, regex: true }, { value: 'nre', label: '不匹配正则', negate: true, regex: true },
 ]
-const validRegex = (v: string) => { try { new RegExp(v.replace(/^\(\?i\)/, '')); return true } catch { return false } }
 // 「就是」配 *. 自相矛盾：通配符说的是子域名 / 「就是」 with *. contradicts itself: the wildcard speaks of subdomains
-const domainValid = (v: string, c: { regex?: boolean; exact?: boolean }) => (c.regex ? validRegex(v) : isDomain(v) && !(c.exact && v.startsWith('*.')))
+const domainValid = (v: string, c: { regex?: boolean; exact?: boolean }) => (c.regex ? kernelRegexOk(v) : isDomain(v) && !(c.exact && v.startsWith('*.')))
 // 内核按写的原样查分类，「geosite:cn」找不到 cn 这个分类，永远不命中 / The kernel looks the category up as written, so 「geosite:cn」 never finds cn and never matches
 const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
+// 记录类型、类别、响应码内核只认那几个：标红的同时说出能用哪些（HTTPS 这样的真类型标红了不说，看着像面板错了）
+// Record types, classes and rcodes are a fixed few for the kernel: a value marked red comes with the ones that can be used (HTTPS marked red
+// without a word looks like the panel's mistake)
+const onlyThese = (label: string, ok: (v: string) => boolean, these: string) => (c: { values: string[] }): string | null =>
+  (c.values.every(ok) ? null : `「${label}」里标红的 KixDNS 不认，能用的是 ${these}`)
+const TYPES_TEXT = QTYPES.join('、')
+const CLASSES_TEXT = QCLASSES.join('、')
 export const FIELD: Record<ConditionField, FieldDef> = {
   domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', valid: domainValid, explain: (c) => exactWildcardProblem(c) },
   // 行里叫 GeoSite（正式面板一直这么叫），句子里说「域名属于 GeoSite cn」 / The row says GeoSite (the production panel's name); sentences say 「域名属于 GeoSite cn」
@@ -153,17 +180,19 @@ export const FIELD: Record<ConditionField, FieldDef> = {
   client_country: { label: '客户端地区', ops: IS, values: true, placeholder: 'CN、HK…', upper: true, suggest: 'country', valid: (v) => /^[a-z]{2}$|^[a-z0-9_-]{3,}$/i.test(v), hint: 'GeoIP 国家代码' },
   client_private: { label: '客户端网络', merge: 'client_ip', ops: [{ value: 'is', label: '是内网', phrase: '客户端是内网', negate: false }, { value: 'not', label: '不是内网', phrase: '客户端不是内网', negate: true }], values: false, placeholder: '' },
   // 记录类型是助记词，和响应码一样用正文字体 / Record types are mnemonics, in the body face like response codes
-  qtype: { label: '查询类型', ops: IS, values: true, placeholder: 'A、AAAA、PTR…', upper: true, suggest: 'qtype' },
-  qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN、CH、HS', upper: true, suggest: 'qclass' },
+  qtype: { label: '查询类型', ops: IS, values: true, placeholder: 'A、AAAA、PTR…', upper: true, suggest: 'qtype', valid: isQtype, explain: onlyThese('查询类型', isQtype, TYPES_TEXT) },
+  qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN、CH、HS', upper: true, suggest: 'qclass', valid: isQclass, explain: onlyThese('查询类别', isQclass, CLASSES_TEXT) },
   edns: { label: 'EDNS', ops: [{ value: 'is', label: '带', phrase: '带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '不带 EDNS', negate: true }], values: false, placeholder: '' },
 }
 export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
   // 响应码是助记词，正文字体（同诊断页、概览） / Response codes are mnemonics in the body face (as on diagnostics and the overview)
-  rcode: { label: '响应码', ops: IS, values: true, placeholder: 'SERVFAIL、NXDOMAIN…', upper: true, suggest: 'rcode' },
+  // 认不出的响应码内核不报错，悄悄当成「这六个以外的任何响应码」：这里只收那六个和明写的 OTHER / The kernel takes an unknown rcode without a word
+  // and quietly reads it as 「any code but the six」: only the six and an explicit OTHER are taken here
+  rcode: { label: '响应码', ops: IS, values: true, placeholder: 'SERVFAIL、NXDOMAIN…', upper: true, suggest: 'rcode', valid: isRcode, explain: onlyThese('响应码', isRcode, `${RCODES.join('、')}，其余的响应码写 OTHER`) },
   answer_ip: { label: '回答的 IP', ops: IN, values: true, placeholder: '0.0.0.0/32、240.0.0.0/4…', valid: (v) => isCidr(v) },
   answer_country: { label: '回答 IP 的地区', ops: IS, values: true, placeholder: 'CN、US…', upper: true, suggest: 'country' },
   answer_private: { label: '回答 IP 的网络', merge: 'answer_ip', ops: [{ value: 'is', label: '是内网', phrase: '回答的是内网地址', negate: false }, { value: 'not', label: '不是内网', phrase: '回答的不是内网地址', negate: true }], values: false, placeholder: '' },
-  answer_type: { label: '回答的记录类型', ops: IS, values: true, placeholder: 'A、AAAA、CNAME…', upper: true, suggest: 'qtype' },
+  answer_type: { label: '回答的记录类型', ops: IS, values: true, placeholder: 'A、AAAA、CNAME…', upper: true, suggest: 'qtype', valid: isQtype, explain: onlyThese('回答的记录类型', isQtype, TYPES_TEXT) },
   upstream: { label: '回答来自', ops: IS, values: true, placeholder: '10.0.0.53:53' },
   upstream_ip: { label: '上游 IP', ops: IN, values: true, placeholder: '10.0.0.0/8', valid: (v) => isCidr(v) },
   request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', valid: domainValid, explain: (c) => exactWildcardProblem(c) },
@@ -172,8 +201,8 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
     { value: 'prefix', label: '开头是', negate: false, txtMode: 'prefix' }, { value: 'nprefix', label: '开头不是', negate: true, txtMode: 'prefix' },
     { value: 're', label: '匹配正则', negate: false, txtMode: 'regex' }, { value: 'nre', label: '不匹配正则', negate: true, txtMode: 'regex' },
-  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? validRegex(v) : true) },
-  qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN', upper: true, suggest: 'qclass' },
+  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? kernelRegexOk(v) && byteLength(v) <= TXT_REGEX_BYTES : true) },
+  qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN', upper: true, suggest: 'qclass', valid: isQclass, explain: onlyThese('查询类别', isQclass, CLASSES_TEXT) },
   edns: { label: '回答的 EDNS', ops: [{ value: 'is', label: '带', phrase: '回答带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '回答不带 EDNS', negate: true }], values: false, placeholder: '' },
 }
 export function opOf(def: FieldDef, c: { negate: boolean; regex?: boolean; exact?: boolean; txtMode?: string }): OpDef {
@@ -181,22 +210,26 @@ export function opOf(def: FieldDef, c: { negate: boolean; regex?: boolean; exact
     ?? def.ops.find((o) => o.negate === c.negate) ?? def.ops[0]!
 }
 
-function joinValues(values: string[]): string {
-  if (values.length <= 3) return values.join('、')
+// 值多了列表里只写前两个；full 时全写（「改了哪些」用：改的可能正是后面那几个） / Many values show the first two in lists; full writes them all (for the
+// review: the change may be in the later ones)
+function joinValues(values: string[], full = false): string {
+  if (full || values.length <= 3) return values.join('、')
   return `${values.slice(0, 2).join('、')} 等 ${values.length} 个`
 }
-function phrase(def: FieldDef, c: { negate: boolean; regex?: boolean; exact?: boolean; txtMode?: string; values: string[] }): string {
+function phrase(def: FieldDef, c: { negate: boolean; regex?: boolean; exact?: boolean; txtMode?: string; values: string[] }, full = false): string {
   const op = opOf(def, c)
   if (!def.values) return op.phrase ?? `${def.label}${op.label}`
   const subject = def.subject ?? def.label
-  return `${subject}${/[A-Za-z0-9]$/.test(subject) ? ' ' : ''}${op.phrase ?? op.label} ${joinValues(c.values) || '…'}`
+  return `${subject}${/[A-Za-z0-9]$/.test(subject) ? ' ' : ''}${op.phrase ?? op.label} ${joinValues(c.values, full) || '…'}`
 }
 export const conditionText = (c: Condition) => phrase(FIELD[c.field], c)
 export const responseConditionText = (c: ResponseCondition) => phrase(RESPONSE_FIELD[c.field], c)
+// full：每个值都写出来（「改了哪些」用） / full: every value written out (for the review)
+interface TextOptions { full?: boolean }
 // 列表、对比和右栏都按编辑时的结构说：先读成「全部 / 任一 + 条件组」，组里的条件放进括号，不展开成重复的几段
 // Lists, diffs and the rail all speak in the edited structure: read back as 「all / any plus groups」, a group's conditions in parentheses rather than expanded into repeated clauses
-export function conditionsText(groups: Condition[][]): string {
-  return treeText(toTree(groups, () => 0), conditionText)
+export function conditionsText(groups: Condition[][], o?: TextOptions): string {
+  return treeText(toTree(groups, () => 0), (c) => phrase(FIELD[c.field], c, o?.full))
 }
 
 // 内核原样的条件链读成一句话（高级规则和高级入口用） / A verbatim kernel chain read as a sentence (for advanced rules and entries)
@@ -240,11 +273,14 @@ export function outcomePill(model: Model, o: Outcome): { verb: string; value: st
     case 'continue': return { verb: '继续', value: '往下一条', broken: false }
   }
 }
+// TXT、CNAME 回答写了 TTL 就说出来：它和回答的内容一样写进配置（IP 回答的 TTL 内核固定 300 秒，不写）
+// A TXT or CNAME answer says its TTL when one is set: it is written to the config as the content is (an IP answer's TTL is fixed at 300 and never written)
+const ttlText = (ttl: number | null) => (ttl === null ? '' : `，TTL ${ttl} 秒`)
 export function outcomeSentence(model: Model, o: Outcome): string {
   switch (o.type) {
     case 'upstream': return `交给「${groupName(model, o.group) ?? '已删除的组'}」解析`
     case 'block': return `拦截，回应 ${blockLabel(model, o.response)}`
-    case 'answer': return o.kind === 'txt' ? `直接回答 TXT「${o.value}」` : o.kind === 'ip' ? `直接回答 ${splitList(o.value).join('、')}` : `直接回答 CNAME ${o.value}`
+    case 'answer': return o.kind === 'txt' ? `直接回答 TXT「${o.value}」${ttlText(o.ttl)}` : o.kind === 'ip' ? `直接回答 ${splitList(o.value).join('、')}` : `直接回答 CNAME ${o.value}${ttlText(o.ttl)}`
     case 'group': return `转到规则组「${ruleGroupName(model, o.group) ?? '已删除'}」`
     case 'continue': return '不作决定，继续往下一条'
   }
@@ -268,15 +304,23 @@ export function ecsText(ecs: Ecs): string {
   if (ecs.mode === 'client') return `发送客户端子网（IPv4/${ecs.v4}，IPv6/${ecs.v6}）`
   return `固定发送 ${ecs.subnet || '…'}`
 }
+// 日志级别写页面上的叫法 / Log levels in the page's words
+export const LOG_LEVEL_NAME: Record<LogLevel, string> = { trace: '跟踪', debug: '调试', info: '信息', warn: '警告', error: '错误' }
+/**
+ * 回答后检查读成一句话：满足时怎么做、同时记的日志，否则怎么做、同时记的日志。规则编辑的右栏和「改了哪些」共用；full 时每个值都写出来（「改了哪些」用）
+ * The answer check as one sentence: what happens when it holds and the log written alongside, then otherwise and its log. Shared by the rule
+ * editor's reading and the review; with full every value is written out (for the review)
+ */
+export function checkSentence(model: Model, r: ResponseHandling, o?: TextOptions): string {
+  const logged = (level: LogLevel | null | undefined) => (level ? `，同时记一条${LOG_LEVEL_NAME[level] ?? level}日志` : '')
+  const when = r.conditions.map((c) => phrase(RESPONSE_FIELD[c.field], c, o?.full)).join(r.match === 'all' ? ' 且 ' : '，或 ')
+  const otherwise = r.otherwise.type === 'none' && !r.otherwiseLog ? '' : `，否则${remedySentence(model, r.otherwise)}${logged(r.otherwiseLog)}`
+  return `${withShi(when)}${remedySentence(model, r.then)}${logged(r.thenLog)}${otherwise}`
+}
 
 // ---------- 校验 / validation ----------
 
 export const splitList = (v: string) => v.split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean)
-const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/
-const IPV6 = /^[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,7}$/i
-export const isIp = (v: string) => IPV4.test(v) || IPV6.test(v)
-export const isCidr = (v: string) => { const [ip, len] = v.split('/'); return isIp(ip ?? '') && (len === undefined || /^\d{1,3}$/.test(len)) }
-export const isDomain = (v: string) => /^(\*\.)?[a-z0-9_-]+(\.[a-z0-9_-]+)*\.?$/i.test(v)
 // 「属于」本身就含子域名，*. 写不写一样 / 「属于」 already covers subdomains, so *. changes nothing
 export const withoutWildcard = (v: string) => v.replace(/^\*\./, '')
 
@@ -292,6 +336,68 @@ export function valueProblem(def: FieldDef, c: { values: string[]; regex?: boole
   return null
 }
 export const conditionProblem = (c: Condition) => valueProblem(FIELD[c.field], c)
+
+const txtProblem = (text: string): string | null => {
+  const bytes = byteLength(text)
+  return bytes > TXT_SEGMENT_BYTES ? `TXT 内容最长 ${TXT_SEGMENT_BYTES} 字节，现在 ${bytes} 字节` : null
+}
+/**
+ * 一个结果要填的东西写没写对：规则的结果、回答后检查的「然后」「否则」都用它。OutcomeParams 当场标出来，ruleProblems 保存前拦下；
+ * 选的组没了也算，转到不存在的 Pipeline 内核整份配置都不收
+ * Whether what an outcome needs is filled in right: used for a rule's outcome and the answer check's then and otherwise. OutcomeParams marks it
+ * on the spot and ruleProblems stops the save; a chosen group that is gone counts too, since the kernel refuses a jump to a missing pipeline
+ */
+export function outcomeProblem(model: Model, o: Outcome | Remedy): string | null {
+  if (o.type === 'upstream' && !groupName(model, o.group)) return '选的上游组已经删掉了'
+  if (o.type === 'group' && !ruleGroupName(model, o.group)) return '选的规则组已经删掉了'
+  if (o.type === 'rewrite_txt') return txtProblem(o.value)
+  if (o.type !== 'answer') return null
+  if (!o.value.trim()) return '自定义回答还没填内容'
+  if (o.kind === 'ip' && !splitList(o.value).every(isIp)) return '回答的 IP 写得不对，几个 IP 用逗号隔开'
+  if (o.kind === 'cname' && !isCnameTarget(o.value.trim())) return '回答的域名写得不对'
+  if (o.kind === 'txt' && txtProblem(o.value)) return txtProblem(o.value)
+  // IP 回答不写 TTL（内核固定 300 秒） / An IP answer writes no TTL (the kernel fixes it at 300)
+  if (o.kind !== 'ip' && o.ttl !== null && !isTtl(o.ttl)) return TTL_PROBLEM
+  return null
+}
+/**
+ * 客户端子网写没写对：固定子网写成「IP/前缀」，前缀不超过地址的位数；发送客户端子网的两个前缀也一样（框空着时是空字符串）。
+ * 内核读得进 255 以内的前缀，超过位数的悄悄截掉，所以这里按位数拦
+ * Whether a client subnet is written right: a fixed subnet as 「IP/prefix」 with the prefix within the address's bits; the two prefixes of
+ * 发送客户端子网 likewise (an empty box is an empty string). The kernel reads any prefix up to 255 and quietly cuts one beyond the bits,
+ * so the bits are the limit here
+ */
+export function ecsProblem(ecs: Ecs | 'inherit'): string | null {
+  if (!ecs || ecs === 'inherit' || ecs.mode === 'clear') return null
+  if (ecs.mode === 'static') {
+    const [ip = '', prefix = '', ...rest] = ecs.subnet.trim().split('/')
+    return isIp(ip) && !rest.length && /^\d{1,3}$/.test(prefix) && isPrefix(Number(prefix), ip.includes(':') ? 128 : 32) ? null : '固定子网写成 203.0.113.0/24 这样'
+  }
+  return isPrefix(ecs.v4, 32) && isPrefix(ecs.v6, 128) ? null : '子网前缀：IPv4 填 0 到 32，IPv6 填 0 到 128'
+}
+// 上游地址哪里不对，接在「第 N 个地址」后面说 / What is wrong with an upstream address, said after 「第 N 个地址」
+const ADDRESS_FAULT: Record<UpstreamFault, (protocol: string) => string> = {
+  prefix: () => '的前缀认不出：DoH 写 https://，DoT 写 tls://，DoQ 写 quic://，TCP 写 tcp://',
+  'ip-port': (p) => `：${p} 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ`,
+  port: () => '的端口要在 1 到 65535 之间',
+  'host-port': () => '：TCP 写成 主机:端口，比如 dns.example:53',
+  host: () => '：主机名只能有字母、数字、点和横线',
+  url: (p) => `不是 KixDNS 读得懂的 ${p} 地址`,
+  path: (p) => `：${p} 的地址不能带路径`,
+  'server-name': () => '的服务器名写得不对',
+  sni: () => '：DoQ 用 IP 时要写 ?sni=服务器名，比如 quic://223.5.5.5?sni=dns.alidns.com',
+}
+/** 一个上游（写进内核的样子）内核用不用得了，用得了为 null；说法接在地址后面（「第 2 个地址的端口要在…」「上游 x：UDP 只能…」）。
+ * transport 是没写前缀时的传输（高级规则里转发动作的 transport） / Whether the kernel can use one upstream as written to the kernel, null when it
+ * can; the words follow the address (「第 2 个地址的端口要在…」, 「上游 x：UDP 只能…」). transport is the one used without a prefix (a forward
+ * action's transport in an advanced rule) */
+export function upstreamProblem(upstream: string, transport = 'udp'): string | null {
+  const fault = upstreamFault(upstream, transport)
+  const kind = upstreamTransport(upstream, transport)
+  return fault ? ADDRESS_FAULT[fault](PROTOCOL_LABEL[kind as Protocol] ?? kind) : null
+}
+/** 上游组里一个地址内核用不用得了（没写端口的先按 53 补上） / Whether the kernel can use one address of a group (a missing port taken as 53 first) */
+export const addressProblem = (item: UpstreamAddress): string | null => upstreamProblem(kernelAddress(withDefaultPort(item)))
 // 规则可以不起名字（同 Surge：一条规则就是条件和去向）；没有名字时用条件当标题
 // A rule may go unnamed (as in Surge, a rule is its condition and its target); without a name its condition is the title
 export function ruleTitle(rule: Rule): string {
@@ -321,21 +427,23 @@ export function ruleProblems(model: Model, rule: Rule): string[] {
   const out: string[] = []
   if (rule.raw) return []
   for (const group of rule.conditions) for (const c of group) { const p = conditionProblem(c); if (p) out.push(p) }
-  const o = rule.outcome
-  if (o.type === 'upstream' && !groupName(model, o.group)) out.push('选的上游组已经删掉了')
-  if (o.type === 'group' && !ruleGroupName(model, o.group)) out.push('选的规则组已经删掉了')
-  if (o.type === 'answer') {
-    if (!o.value.trim()) out.push('自定义回答还没填内容')
-    else if (o.kind === 'ip' && !splitList(o.value).every(isIp)) out.push('回答的 IP 写得不对，几个 IP 用逗号隔开')
-    else if (o.kind === 'cname' && !isDomain(o.value.trim())) out.push('回答的域名写得不对')
-  }
+  const outcome = outcomeProblem(model, rule.outcome)
+  if (outcome) out.push(outcome)
+  // 客户端子网和回答后检查只在交给上游组时写进配置 / Client subnet and the answer check are written only when the rule hands off to an upstream group
+  if (rule.outcome.type === 'upstream') { const p = ecsProblem(rule.ecs); if (p) out.push(p) }
   if (rule.outcome.type === 'upstream' && rule.response.mode === 'custom') {
     const r = rule.response
     if (!r.conditions.length) out.push('「回答后检查」还没加条件')
     for (const c of r.conditions) { const p = valueProblem(RESPONSE_FIELD[c.field], c); if (p) out.push(p) }
     if (r.match === 'all' && r.conditions.flatMap(responseTerms).filter((t) => !t.negative && t.any.length > 1).length > 1) out.push('「全部满足」时只能有一个条件填多个值，其余的拆成单独的条件或改成「满足任一」')
     if (r.match === 'any' && r.conditions.flatMap(responseTerms).filter((t) => t.negative).length > r.conditions.filter((c) => c.negate).length) out.push('「满足任一」时，「不是」的条件只能填一个值，几个值拆成几条')
-    if (r.then.type === 'answer' && !r.then.value.trim()) out.push('「回答后检查」的自定义回答还没填内容')
+    // 没有条件时「然后」「否则」都不写进配置 / Without conditions neither then nor otherwise is written
+    if (r.conditions.length) {
+      const then = outcomeProblem(model, r.then)
+      if (then) out.push(`「回答后检查」的「然后」：${then}`)
+      const otherwise = outcomeProblem(model, r.otherwise)
+      if (otherwise) out.push(`「回答后检查」的「否则」：${otherwise}`)
+    }
   }
   if (kernelRuleCount(rule) > 32) out.push('条件组合太多（展开后超过 32 条），把多值条件合并成一个')
   return out
@@ -348,41 +456,44 @@ interface KRule { name: string; matchers: KMatcher[]; matcher_operator: string; 
 interface KPipeline { id: string; ecs?: Record<string, unknown>; rules: KRule[] }
 export interface KernelConfig { [key: string]: unknown; version: string; settings: Record<string, unknown>; pipeline_select: { pipeline: string; matcher_operator: string; matchers: KMatcher[] }[]; pipelines: KPipeline[] }
 
-const cidrOf = (v: string) => (v.includes('/') ? v : `${v}/${v.includes(':') ? 128 : 32}`)
-
 // 一个条件落成的「项」：单个匹配器，或几个只要中一个的匹配器 / A condition becomes a term: one matcher, or several of which any may match
 interface Term { negative: boolean; any: KMatcher[] }
+// 一个值一个匹配器的条件：「是」几个值里中一个就算，落成一项；「不是」每个值一项否定（几个都不是） / A condition with one matcher per value:
+// 是 holds when one of the values does, so it is one term; 不是 is a negated term per value (none of them)
+const eachValue = (c: { negate: boolean; values: string[] }, make: (x: string) => KMatcher): Term[] => {
+  const v = c.values.map((x) => x.trim()).filter(Boolean)
+  return c.negate ? v.map((x) => ({ negative: true, any: [make(x)] })) : [{ negative: false, any: v.map(make) }]
+}
 function requestTerms(c: Condition): Term[] {
   const v = c.values.map((x) => x.trim()).filter(Boolean)
   switch (c.field) {
-    case 'domain': {
-      const make = (x: string): KMatcher => (c.regex ? { type: 'domain_regex', value: x } : c.exact ? { type: 'domain_exact', value: x } : { type: 'domain_suffix', value: withoutWildcard(x) })
-      if (c.negate) return v.map((x) => ({ negative: true, any: [make(x)] }))
-      return [{ negative: false, any: v.map(make) }]
-    }
-    case 'geosite':
-      if (c.negate) return v.map((x) => ({ negative: true, any: [{ type: 'geo_site', value: x }] }))
-      return [{ negative: false, any: v.map((x) => ({ type: 'geo_site', value: x })) }]
-    case 'client_ip': return [{ negative: c.negate, any: [{ type: 'client_ip', cidr: v.map(cidrOf).join(',') }] }]
+    case 'domain': return eachValue(c, (x) => (c.regex ? { type: 'domain_regex', value: x } : c.exact ? { type: 'domain_exact', value: x } : { type: 'domain_suffix', value: withoutWildcard(x) }))
+    case 'geosite': return eachValue(c, (x) => ({ type: 'geo_site', value: x }))
+    // client_ip 只认一个网段（matcher/mod.rs client_net）：和域名一样一个值一个匹配器 / client_ip takes one network (matcher/mod.rs client_net),
+    // so like domains it is one matcher per value
+    case 'client_ip': return eachValue(c, (x) => ({ type: 'client_ip', cidr: cidrOf(x) }))
     case 'client_country': return [{ negative: c.negate, any: [{ type: 'geoip_country', country_codes: v.map((x) => x.toUpperCase()) }] }]
     case 'client_private': return [{ negative: false, any: [{ type: 'geoip_private', expect: !c.negate }] }]
     case 'edns': return [{ negative: false, any: [{ type: 'edns_present', expect: !c.negate }] }]
     case 'qtype':
-    case 'qclass':
-      if (c.negate) return v.map((x) => ({ negative: true, any: [{ type: c.field, value: x.toUpperCase() }] }))
-      return [{ negative: false, any: v.map((x) => ({ type: c.field, value: x.toUpperCase() })) }]
+    case 'qclass': return eachValue(c, (x) => ({ type: c.field, value: x.toUpperCase() }))
   }
 }
 function responseTerms(c: ResponseCondition): Term[] {
   const v = c.values.map((x) => x.trim()).filter(Boolean)
-  const each = (make: (x: string) => KMatcher) => (c.negate ? v.map((x) => ({ negative: true, any: [make(x)] })) : [{ negative: false, any: v.map(make) }])
+  const each = (make: (x: string) => KMatcher) => eachValue(c, make)
   switch (c.field) {
     case 'rcode': return each((x) => ({ type: 'response_rcode', value: x.toUpperCase() }))
     case 'answer_type': return each((x) => ({ type: 'response_type', value: x.toUpperCase() }))
     case 'upstream': return each((x) => ({ type: 'upstream_equals', value: x }))
     case 'qclass': return each((x) => ({ type: 'response_qclass', value: x.toUpperCase() }))
     case 'request_domain': return each((x) => (c.regex ? { type: 'request_domain_regex', value: x } : c.exact ? { type: 'request_domain_exact', value: x } : { type: 'request_domain_suffix', value: withoutWildcard(x) }))
-    case 'request_geosite': return v.map((x) => ({ negative: false, any: [{ type: c.negate ? 'response_request_domain_geosite_not' : 'response_request_domain_geosite', value: x }] }))
+    // 「不属于」也按否定的项写（不用 _not 那个匹配器）：几个值时和别的字段一样由下面的条件链和 ruleProblems 的「满足任一」那条管。回答阶段总拿着
+    // GeoSite 数据（engine/rules.rs acquire_geo_locks），所以否定的 response_request_domain_geosite 和 _not 那个一样
+    // 不属于 is a negated term too (not the _not matcher): with several values it is handled, like any other field, by the chains below and
+    // ruleProblems' 满足任一 check. The answer phase always holds the GeoSite data (engine/rules.rs acquire_geo_locks), so a negated
+    // response_request_domain_geosite equals the _not matcher
+    case 'request_geosite': return each((x) => ({ type: 'response_request_domain_geosite', value: x }))
     case 'txt': return each((x) => ({ type: 'response_txt_content', mode: c.txtMode ?? 'exact', value: x }))
     case 'answer_ip': return [{ negative: c.negate, any: [{ type: 'response_answer_ip', cidr: v.map(cidrOf).join(',') }] }]
     case 'upstream_ip': return [{ negative: c.negate, any: [{ type: 'response_upstream_ip', cidr: v.map(cidrOf).join(',') }] }]
@@ -616,6 +727,10 @@ export function compileNamed(model: Model): { config: KernelConfig; index: Kerne
 export const kernelRuleIndex = (model: Model): KernelRuleIndex => compileNamed(model).index
 
 export const mappingIsIp = (r: Mapping) => splitList(r.target).every(isIp)
+// 映射本来就连同子域名，*. 写不写一样；写进内核的后缀不带它（带着就成了后缀「*.x」，什么都不命中），和条件里的「属于」一样
+// A mapping covers subdomains already, so *. changes nothing; the suffix written to the kernel leaves it out (kept, it became the suffix 「*.x」
+// and matched nothing), as 属于 in a condition does
+export const mappingDomain = (r: Pick<Mapping, 'domain'>): string => withoutWildcard(r.domain.trim())
 function mappingActions(r: Mapping): Record<string, unknown>[] {
   if (mappingIsIp(r)) return [{ type: 'static_ip_response', ip: splitList(r.target).join(',') }]
   return [{ type: 'static_cname_response', target: r.target.trim(), ...(r.ttl === null ? {} : { ttl: r.ttl }) }]
@@ -623,7 +738,7 @@ function mappingActions(r: Mapping): Record<string, unknown>[] {
 /** 写进内核的映射：启用、域名和目标都填了 / A mapping that goes into the kernel: enabled, with domain and target filled in */
 export const mappingLive = (r: Mapping): boolean => r.enabled && Boolean(r.domain.trim()) && Boolean(r.target.trim())
 /** 一条映射在内核里的那条规则 / A mapping's rule in the kernel */
-export const mappingRule = (r: Mapping): KRule => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: r.domain.trim(), operator: 'and' }] })
+export const mappingRule = (r: Mapping): KRule => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: mappingDomain(r), operator: 'and' }] })
 /** 一个上游组在内核里的那个 Pipeline：转发到组的地址，带组的子网和备用 / An upstream group's pipeline in the kernel: a forward to its addresses with its subnet and fallback */
 export const groupPipeline = (model: Model, g: UpstreamGroup): KPipeline => forwardPipeline(model, upstreamPipelineId(model, g.id), g.id, g.ecs, groupFallback(model, g) ?? {})
 export function kernelRuleCount(rule: Rule): number {
@@ -701,7 +816,7 @@ function compileClaiming(model: Model, claim: Claim): KernelConfig {
   const main = [...listRules(model, mainId, model.rules, '其余请求', claim), emptyRule('其余请求', outcomeActions(model, model.rest))]
   claim(mainId, '其余请求', { kind: 'rest' })
   pipelines.push({ ...model.mainExtra, id: mainId, rules: main })
-  const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: r.domain.trim(), operator: i ? 'or' : 'and' })) }] : []
+  const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: mappingDomain(r), operator: i ? 'or' : 'and' })) }] : []
   const blocklistId = blocklistPipelineId(model)
   const blocking = blocklistEntries(model, blocklistId)
   if (blocking.length) {

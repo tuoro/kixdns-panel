@@ -21,7 +21,9 @@ const matcherHints: Record<string, MatcherHint> = {
   response_type: { label: '类型', example: 'A' },
   response_rcode: { label: '响应码', example: 'NXDOMAIN' },
   response_txt_content: { label: '文本', example: 'v=spf1' },
-  client_ip: { label: '网段', example: '192.168.1.0/24, 10.0.0.0/8' },
+  // 规则和入口的 client_ip 只认一个网段（几个网段写几个条件，用「或」连起来）；回答阶段的网段才能逗号隔开写几个
+  // A rule's or entry's client_ip takes one network (several networks are several conditions joined by 或); only answer-phase networks take a comma list
+  client_ip: { label: '网段', example: '192.168.1.0/24' },
   response_upstream_ip: { label: '网段', example: '192.168.1.0/24' },
   response_answer_ip: { label: '网段', example: '0.0.0.0/32, 240.0.0.0/4' },
 }

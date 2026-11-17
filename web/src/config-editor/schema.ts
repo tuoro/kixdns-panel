@@ -1,3 +1,4 @@
+import { QTYPES } from '../config-model/grammar'
 import type { GlobalSettings, MatcherScope } from './types'
 
 export type SettingFieldType = 'text' | 'number' | 'boolean' | 'csv' | 'list'
@@ -265,7 +266,8 @@ export const ACTION_TYPES: ActionDefinition[] = [
   { value: 'continue', label: '继续往下' },
 ]
 
-export const QTYPE_OPTIONS = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT']
+// 高级规则里的查询类型也只给内核认的那几个，和条件表单同一张表 / Advanced rules offer only the record types the kernel takes, the condition form's table
+export const QTYPE_OPTIONS: readonly string[] = QTYPES
 export const TRANSPORT_OPTIONS = ['udp', 'tcp', 'tcp_udp', 'doh', 'dot', 'doq']
 
 const FIELD_DEFAULTS = new Map(SETTING_SECTIONS.flatMap((section) => section.fields).map((field) => [field.key, field.default]))

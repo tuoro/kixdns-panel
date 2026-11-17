@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, reactive, ref, shallowReactive, watch } from
 import type { RuleCount, UpstreamCount } from '../api/types'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-presentation'
+import { movedIds, ruleShape } from '../config-model/diff'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { isDefaultName, normalUrl, uniqueSubscriptionName } from '../config-model/blocklist'
@@ -20,23 +21,8 @@ const applied = ref(JSON.stringify(model))
 export const appliedModel = computed(() => JSON.parse(applied.value) as Model)
 
 // ---------- 改动 / changes ----------
-/**
- * 比较规则时只看看得见、会写进配置的部分：改动时间、条件的内部编号、关着的日志的级别、没打开的回答后检查里留着的内容都不算
- * Rules compare by what is shown and written: the edit time, condition ids, the level of a log that is off and whatever an unused response check still holds do not count
- */
-export function ruleShape(rule: Rule): string {
-  const plain = <C extends { id: number }>(c: C) => ({ ...c, id: 0 })
-  // 客户端子网和回答后检查只在交给上游组时写进配置；别的结果下留着的值不算 / Client subnet and the response check are written only when the rule hands off to an upstream group; values left behind under other outcomes do not count
-  const forwards = rule.outcome.type === 'upstream'
-  return JSON.stringify({
-    ...rule,
-    edited: '',
-    conditions: rule.conditions.map((group) => group.map(plain)),
-    log: rule.log.enabled ? rule.log : { enabled: false },
-    ecs: forwards ? rule.ecs : 'inherit',
-    response: !forwards ? { mode: 'inherit' } : rule.response.mode === 'custom' ? { ...rule.response, conditions: rule.response.conditions.map(plain) } : { mode: rule.response.mode },
-  })
-}
+// 规则的比较和「改了哪些」用同一个 ruleShape（在 diff.ts） / Rules compare with the same ruleShape the review uses (in diff.ts)
+export { ruleShape }
 const plainShape = (x: unknown) => JSON.stringify(x)
 const byId = <T extends { id: string | number }>(xs: T[], shape: (x: T) => string) => new Map(xs.map((x) => [x.id, shape(x)]))
 function changedIn<T extends { id: string | number }>(before: T[], after: T[], shape: (x: T) => string = plainShape): Set<T['id']> {
@@ -82,9 +68,13 @@ function countChanges(before: Model, model: Model): number {
   // 顺序只比两边都有的那些：删一条再加一条不算挪过，和「改了哪些」一致 / Order compares only items on both sides: deleting one and adding another is not a move, matching the review
   const shared = (x: { id: string | number }[], y: { id: string | number }[]) => x.filter((i) => y.some((j) => j.id === i.id)).map((i) => i.id).join()
   const order = (a: { id: string | number }[], b: { id: string | number }[]) => (shared(a, b) !== shared(b, a) ? 1 : 0)
-  const rgRules = model.ruleGroups.reduce((n, g) => { const p = before.ruleGroups.find((x) => x.id === g.id); return n + diff(p?.rules ?? [], g.rules, ruleShape) + order(p?.rules ?? [], g.rules) }, 0)
+  // 一个列表里的规则：改过的、挪过的（和「改了哪些」用同一个 movedIds）各算一处，挪过又改过的一条只算一处，删掉的也算
+  // A list's rules: each one edited or moved (by the same movedIds the review uses) is one place, one both moved and edited is still one, and
+  // deletions count too
+  const rules = (a: Rule[], b: Rule[]) => new Set([...changedIn(a, b, ruleShape), ...movedIds(a, b)]).size + a.filter((x) => !b.some((y) => y.id === x.id)).length
+  const rgRules = model.ruleGroups.reduce((n, g) => n + rules(before.ruleGroups.find((x) => x.id === g.id)?.rules ?? [], g.rules), 0)
   const rgMeta = diff(before.ruleGroups.map((g) => ({ ...g, rules: [] })), model.ruleGroups.map((g) => ({ ...g, rules: [] })))
-  return settingKeysChanged(before, model).size + diff(before.rules, model.rules, ruleShape) + order(before.rules, model.rules) + rgRules + rgMeta
+  return settingKeysChanged(before, model).size + rules(before.rules, model.rules) + rgRules + rgMeta
     + diff(before.groups, model.groups) + diff(before.mappings, model.mappings) + order(before.mappings, model.mappings)
     + blocklistChanges(before.blocklists, model.blocklists)
     + (JSON.stringify(before.rest) !== JSON.stringify(model.rest) ? 1 : 0) + (JSON.stringify(before.defaults) !== JSON.stringify(model.defaults) ? 1 : 0)

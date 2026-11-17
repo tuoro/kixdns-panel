@@ -6,6 +6,7 @@
 // evaluate_rules, engine/rules.rs response actions, matcher/mod.rs eval_match_chain and the load-time operator rewrite,
 // config.rs compute_merged_forward.
 
+import { isNet } from '../grammar'
 import { effectiveOps, foldChain, mergedForward, normalizeAddress, splitAddrs, type KConfigLike, type KMatcher, type KRuleLike } from '../kernel'
 export { effectiveOps, foldChain, mergedForward, normalizeAddress }
 export type { KAction, KConfigLike, KMatcher, KPipelineLike, KRuleLike, KSelectorLike } from '../kernel'
@@ -50,6 +51,14 @@ export const isPrivateIp = (ip: string) => ['10.0.0.0/8', '172.16.0.0/12', '192.
 // 示例 GeoIP：内网是 private，首段为偶数的算 CN，其余算 US / Sample GeoIP: private ranges are 'private', an even first octet is CN, the rest US
 export const countryOf = (ip: string) => (isPrivateIp(ip) ? 'PRIVATE' : (v4(ip) ?? 0) >>> 24 % 2 === 0 ? 'CN' : 'US')
 const codes = (m: KMatcher) => (Array.isArray(m.country_codes) ? m.country_codes : String(m.country_codes ?? '').split(',')).map((c) => String(c).trim().toUpperCase())
+// 内核加载时就不收的写法，这里也不收：抛错，不当成「什么都不命中」，免得一份内核根本不收的配置在行为对照里显得一样
+// What the kernel refuses at load is refused here too: it throws rather than matching nothing, so a config the kernel would never take cannot
+// look the same in a behaviour check
+const refuse = (why: string): never => { throw new Error(`内核不收这份配置：${why}`) }
+// 规则和入口的 client_ip 只认一个网段（client_net）；回答阶段的网段是逗号隔开的列表，每一项都要是网段（cidr_list）
+// A rule's or entry's client_ip takes one network (client_net); the answer phase's are comma-separated lists, each item a network (cidr_list)
+const oneNet = (m: KMatcher): string => { const c = String(m.cidr ?? ''); return isNet(c) ? c : refuse(`client_ip「${c}」不是一个网段`) }
+const netList = (m: KMatcher): string[] => String(m.cidr ?? '').split(',').map((c) => c.trim()).filter(Boolean).map((c) => (isNet(c) ? c : refuse(`${m.type}「${c}」不是网段`)))
 const regexOf = (v: string) => { const ci = v.startsWith('(?i)'); try { return new RegExp(ci ? v.slice(4) : v, ci ? 'i' : '') } catch { return null } }
 
 function requestMatch(m: KMatcher, q: SimQuery): boolean {
@@ -61,7 +70,7 @@ function requestMatch(m: KMatcher, q: SimQuery): boolean {
     case 'domain_suffix': return suffixOf(domain, value)
     case 'domain_exact': return exactOf(domain, value)
     case 'domain_regex': return regexOf(value)?.test(domain) ?? false
-    case 'client_ip': return String(m.cidr ?? '').split(',').some((c) => c.trim() && ipInCidr(q.client, c))
+    case 'client_ip': return ipInCidr(q.client, oneNet(m))
     case 'geoip_country': return codes(m).includes(countryOf(q.client))
     case 'geoip_private': return isPrivateIp(q.client) === Boolean(m.expect)
     case 'qclass': return value.toUpperCase() === (q.qclass ?? 'IN')
@@ -76,14 +85,13 @@ function responseMatch(m: KMatcher, q: SimQuery, r: UpstreamReply): boolean {
   const domain = q.domain.toLowerCase().replace(/\.$/, '')
   const value = String(m.value ?? '')
   const ips = r.answers.filter((a) => /^(A|AAAA) /.test(a)).map((a) => a.split(' ')[1]!)
-  const cidrs = String(m.cidr ?? '').split(',').filter((c) => c.trim())
   switch (m.type) {
     case 'upstream_equals': return r.upstream === value
     case 'request_domain_suffix': return suffixOf(domain, value)
     case 'request_domain_exact': return exactOf(domain, value)
     case 'request_domain_regex': return regexOf(value)?.test(domain) ?? false
-    case 'response_upstream_ip': return cidrs.some((c) => ipInCidr(r.upstream.replace(/^[a-z+_]+:/, '').split(':')[0] ?? '', c))
-    case 'response_answer_ip': return ips.some((ip) => cidrs.some((c) => ipInCidr(ip, c)))
+    case 'response_upstream_ip': return netList(m).some((c) => ipInCidr(r.upstream.replace(/^[a-z+_]+:/, '').split(':')[0] ?? '', c))
+    case 'response_answer_ip': return ips.some((ip) => netList(m).some((c) => ipInCidr(ip, c)))
     case 'response_type': return r.answers.some((a) => a.split(' ')[0] === value.toUpperCase())
     case 'response_rcode': return r.rcode === value.toUpperCase()
     case 'response_qclass': return value.toUpperCase() === (q.qclass ?? 'IN')

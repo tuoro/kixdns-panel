@@ -15,7 +15,7 @@ import { toDnf, toTree, treeText, type CondTree } from '../config-model/condTree
 import { actionFieldErrors, matcherFieldErrors } from '../config-editor/field-validation'
 import type { ActionConfig, PipelineConfig, RuleConfig } from '../config-editor/types'
 import {
-  compile, conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
+  checkSentence, compile, conditionText, ecsProblem, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
   ruleProblems, type Ecs, type Outcome, type Remedy, type ResponseCondition, type Rule,
   ruleTitle,
 } from '../config-model/model'
@@ -259,6 +259,9 @@ const ecsOptions = computed(() => [
   { value: 'static', label: '发送固定的子网' },
 ])
 const ecsRow = computed(() => (draft.ecs === 'inherit' ? ecsOptions.value[0]!.label : ecsText(draft.ecs)))
+// 子网写错了（保存前才说）：框标红，找第一处要改的地方时把收着的「更多」打开 / A subnet written wrong (said once saving is tried): the box is marked, and
+// finding the first thing to fix opens a folded 更多
+const ecsWrong = computed(() => showErrors.value && draft.outcome.type === 'upstream' && Boolean(ecsProblem(draft.ecs)))
 const levelLabel = (level: string | null | undefined): string => levels.find((l) => l.value === level)?.label ?? ''
 function setEcs(choice: string): void {
   const next: Ecs | 'inherit' = choice === 'inherit' ? 'inherit' : choice === 'none' ? null : choice === 'clear' ? { mode: 'clear' } : choice === 'client' ? { mode: 'client', v4: 24, v6: 56 } : { mode: 'static', subnet: '' }
@@ -282,10 +285,9 @@ const reading = computed(() => {
   if (draft.outcome.type === 'upstream') {
     if (draft.ecs !== 'inherit') rows.push({ k: '子网', v: ecsText(draft.ecs) })
     const r = draft.response
-    if (r.mode === 'custom' && r.conditions.length) {
-      const when = r.conditions.map(responseConditionText).join(r.match === 'all' ? ' 且 ' : '，或 ')
-      rows.push({ k: '回答后', v: `${withShi(when)}${remedySentence(model, r.then)}${r.otherwise.type === 'none' ? '' : `，否则${remedySentence(model, r.otherwise)}`}` })
-    } else if (r.mode === 'off') rows.push({ k: '回答后', v: '不检查，原样返回' })
+    // 和「改了哪些」同一句话，连同时记的日志一起说 / The same sentence as the review, the log written alongside included
+    if (r.mode === 'custom' && r.conditions.length) rows.push({ k: '回答后', v: checkSentence(model, r) })
+    else if (r.mode === 'off') rows.push({ k: '回答后', v: '不检查，原样返回' })
     else if (upstreamGroup.value) {
       const f = fallbackSentence(model, upstreamGroup.value)
       if (f) rows.push({ k: '回答后', v: f })
@@ -319,6 +321,7 @@ const kernelJson = computed(() => JSON.stringify(kernelPreview(model, draft, dra
 // ---------- 完成 / done ----------
 // 跳到第一处要改的地方并把光标放进去 / Jump to the first thing to fix and put the caret there
 function revealProblem(): void {
+  if (ecsWrong.value) open.more = true
   void nextTick(() => {
     const el = document.querySelector<HTMLElement>('.editor [aria-invalid="true"], .editor .is-bad, .editor .chips--bad input, .editor .ui-field-error')
     el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -540,10 +543,10 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
               <div class="erow erow--wrap">
                 <UiSelect class="erow__ecs" :model-value="ecsChoice" :options="ecsOptions" label="客户端子网" @update:model-value="setEcs" />
                 <template v-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'client'">
-                  <label class="ui-input erow__num"><i>IPv4 /</i><input v-model.number="draft.ecs.v4" type="number" min="0" max="32" aria-label="IPv4 前缀长度"></label>
-                  <label class="ui-input erow__num"><i>IPv6 /</i><input v-model.number="draft.ecs.v6" type="number" min="0" max="128" aria-label="IPv6 前缀长度"></label>
+                  <label class="ui-input erow__num"><i>IPv4 /</i><input v-model.number="draft.ecs.v4" type="number" min="0" max="32" aria-label="IPv4 前缀长度" :aria-invalid="ecsWrong || undefined"></label>
+                  <label class="ui-input erow__num"><i>IPv6 /</i><input v-model.number="draft.ecs.v6" type="number" min="0" max="128" aria-label="IPv6 前缀长度" :aria-invalid="ecsWrong || undefined"></label>
                 </template>
-                <label v-else-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'static'" class="ui-input erow__subnet"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
+                <label v-else-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'static'" class="ui-input erow__subnet"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24" :aria-invalid="ecsWrong || undefined"></label>
               </div>
             </PhoneSheet>
             <PhoneSheet v-if="sheet === 'note'" title="备注" @close="sheet = null">
@@ -563,10 +566,10 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
               <div class="ui-setrow__control erow erow--wrap">
                 <UiSelect class="erow__ecs" :model-value="ecsChoice" :options="ecsOptions" label="客户端子网" @update:model-value="setEcs" />
                 <template v-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'client'">
-                  <label class="ui-input erow__num"><i>IPv4 /</i><input v-model.number="draft.ecs.v4" type="number" min="0" max="32" aria-label="IPv4 前缀长度"></label>
-                  <label class="ui-input erow__num"><i>IPv6 /</i><input v-model.number="draft.ecs.v6" type="number" min="0" max="128" aria-label="IPv6 前缀长度"></label>
+                  <label class="ui-input erow__num"><i>IPv4 /</i><input v-model.number="draft.ecs.v4" type="number" min="0" max="32" aria-label="IPv4 前缀长度" :aria-invalid="ecsWrong || undefined"></label>
+                  <label class="ui-input erow__num"><i>IPv6 /</i><input v-model.number="draft.ecs.v6" type="number" min="0" max="128" aria-label="IPv6 前缀长度" :aria-invalid="ecsWrong || undefined"></label>
                 </template>
-                <label v-else-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'static'" class="ui-input erow__subnet"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
+                <label v-else-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'static'" class="ui-input erow__subnet"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24" :aria-invalid="ecsWrong || undefined"></label>
               </div>
             </div>
             <div class="ui-setrow">
