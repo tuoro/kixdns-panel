@@ -193,6 +193,19 @@ source "${INSTALLER}"
 # The online updater declares PANEL_ENV readonly; source it in a subshell so tests below can still change it.
 (source "${PACKAGE_ROOT}/scripts/panel-online-update.sh")
 
+# 回归：在线更新的失败也只记一次。-E 让 ERR 陷阱在命令替换的子 shell 里也触发，以前那里先写一遍失败、父 shell 再写一遍。
+# Regression: an online update's failure is recorded once. -E fires the ERR trap in command-substitution subshells too, which wrote
+# the failure there before the parent wrote it again.
+output="$(bash -c "
+  source '${PACKAGE_ROOT}/scripts/panel-online-update.sh'
+  write_status() { printf 'STATUS %s\\n' \"\$1\" >&2; }
+  probe() { local value; value=\"\$(mktemp '${WORK}/missing-dir/x.XXXXXX')\"; printf '%s' \"\${value}\"; }
+  trap \"fail_update \${BASHPID}\" ERR
+  probe
+" 2>&1 || true)"
+writes="$(grep -c '^STATUS failed' <<< "${output}" || true)"
+assert_equals "${writes}" "1" "在线更新失败只记一次"
+
 INSTALL_MODE="auto"
 parse_arguments --replace-existing --reinstall --kixdns-unit kixdns@edge.service
 assert_equals "${INSTALL_MODE}" "managed" "显式迁移参数应启用受管模式"
@@ -716,6 +729,69 @@ assert_contains "${output}" "restart kixdns.service" "迁移失败应恢复运�
   printf '断言失败：迁移失败后不应残留外部备份\n' >&2
   exit 1
 }
+
+# 回归：-E 让 ERR 陷阱也在命令替换的子 shell 里触发。子 shell 里回滚完会删掉备份，父 shell 接着又回滚一次，
+# 这时 restore_path 只剩删除：刚放回的文件被删光。命令替换里的一条命令失败，回滚只能做一次，放回的文件要留着。
+# Regression: -E fires the ERR trap inside command-substitution subshells too. The subshell's rollback deleted the backup,
+# then the parent rolled back again, when restore_path could only delete: the files just put back were removed. A failing
+# command in a substitution must roll back once and keep what it restored.
+# 卸载时留下的面板自带 KixDNS 重装时不备份成「原来的 KixDNS」：卸载时会把它放回去，而它的程序已随状态目录删掉。
+# 真正的外部安装照旧备份。
+# The panel's own KixDNS kept by an uninstall is not backed up as the original on reinstall: uninstall would put it back,
+# with its program deleted along with the state directory. A real external install is still backed up.
+external_backup_of() {
+  local binary=$1
+  local root="${WORK}/external-backup-${RANDOM}"
+  (
+    EXTERNAL_BACKUP="${root}/external-backup"
+    SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    mkdir -p "${SYSTEMD_UNIT_DIRECTORY}"
+    install() { mkdir -p "${@: -1}"; }
+    chmod() { :; }
+    INSTALL_KIND=migrate
+    EXISTING_KIXDNS_BINARY_PATH=${binary}
+    preserve_external_install
+    printf '%s\n' "${CREATED_EXTERNAL_BACKUP}"
+  )
+}
+assert_equals "$(external_backup_of "${MANAGED_KIXDNS_BINARY}")" "false" "面板自带的 KixDNS 不应备份成外部安装"
+assert_equals "$(external_backup_of /usr/local/bin/kixdns)" "true" "外部安装的 KixDNS 应备份"
+
+substitution_rollback() {
+  local root="${WORK}/rollback-substitution"
+  rm -rf -- "${root}"
+  mkdir -p "${root}/etc" "${root}/backup"
+  bash -c "
+    source '${INSTALLER}'
+    PANEL_ENV='${root}/etc/panel.env'
+    BACKUP_ROOT='${root}/backup'
+    printf 'old-env\\n' > \"\${PANEL_ENV}\"
+    backup_path \"\${PANEL_ENV}\" panel-env
+    printf 'new-env\\n' > \"\${PANEL_ENV}\"
+    eval \"real_restore_path() \$(declare -f restore_path | tail -n +2)\"
+    restore_path() { [[ \$1 != '${root}'/* ]] || real_restore_path \"\$@\"; }
+    restore_managed_config() { :; }
+    restore_panel_database() { :; }
+    systemctl() { :; }
+    environment_value() { printf '0.0.0.0:5738\\n'; }
+    wait_for_service_stable() { :; }
+    INSTALL_MODE=managed
+    INSTALL_KIND=upgrade
+    EXISTING_PANEL=true
+    CREATED_EXTERNAL_BACKUP=false
+    KIXDNS_BINARY_CHANGED=false
+    KIXDNS_UNIT_CHANGED=false
+    RESOLVED_CHANGED=false
+    write_something() { local temporary; temporary=\"\$(mktemp '${root}/missing-dir/.panel.env.XXXXXX')\"; printf '%s' \"\${temporary}\"; }
+    arm_rollback
+    write_something
+  " 2>&1 || true
+  printf 'ENV=%s\n' "$(cat "${root}/etc/panel.env" 2>/dev/null || printf 'missing')"
+}
+output="$(substitution_rollback)"
+assert_contains "${output}" "ENV=old-env" "命令替换里失败时，回滚放回的面板环境文件不能被第二次回滚删掉"
+rollbacks="$(grep -c '安装未完成' <<< "${output}" || true)"
+assert_equals "${rollbacks}" "1" "命令替换里失败时只回滚一次"
 
 # 回滚放回面板数据库：新面板启动时可能已把库迁移到更高的 schema，旧面板会拒绝打开它，一直起不来。
 # Rollback puts the panel database back: the new panel may have migrated it to a higher schema on start,

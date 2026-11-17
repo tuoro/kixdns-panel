@@ -96,6 +96,10 @@ write_status() {
 
 fail_update() {
   local status=$?
+  # 只在设下陷阱的那个 shell 里记失败：-E 让 ERR 陷阱也在子 shell 里触发，那里记一次、父 shell 再记一次
+  # Record the failure in the shell that set the trap only: -E fires the ERR trap in subshells too, which recorded it once
+  # before the parent did again
+  [[ -z ${1:-} || ${BASHPID} == "$1" ]] || exit "${status}"
   local reason=${FAILURE_REASON}
   trap - ERR
   if [[ -z ${reason} && -n ${STEP_ERRORS} && -s ${STEP_ERRORS} ]]; then
@@ -141,7 +145,8 @@ main() {
     return 127
   fi
   trap cleanup EXIT
-  trap fail_update ERR
+  # shellcheck disable=SC2064 # BASHPID 要在挂陷阱时展开，记下是哪个 shell 挂的 / BASHPID expands now, recording which shell set the trap
+  trap "fail_update ${BASHPID}" ERR
   STEP_ERRORS="$(mktemp "${STATUS_DIRECTORY}/.errors.XXXXXX")"
   trusted_root_executable "${INSTALLER}" || fail_because "一键安装器 ${INSTALLER} 不是 root 所有或可被他人改写"
   trusted_root_executable "${PANEL_SERVER}" || fail_because "面板程序 ${PANEL_SERVER} 不是 root 所有或可被他人改写"

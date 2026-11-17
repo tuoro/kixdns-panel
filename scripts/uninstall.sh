@@ -212,9 +212,19 @@ load_settings() {
   # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
   [[ ${KIXDNS_SERVICE_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${KIXDNS_SERVICE_UNIT} != *..* ]] ||
     fail "panel.env 里的 KixDNS 服务名称无效"
-  if [[ -f ${EXTERNAL_BACKUP}/install.env ]]; then
+  if external_backup_present; then
     HAS_EXTERNAL_BACKUP=true
   fi
+}
+
+# 迁移前原来的 KixDNS 的备份。以前重装会把卸载时留下的面板自带 KixDNS 也备份成「原来的」：它跑的是面板状态目录里的程序，
+# 放回去就是一个程序已被删掉、却开机启动的服务。这样的备份不算
+# The backup of the KixDNS from before migration. An older reinstall also backed up the panel's own KixDNS kept by an
+# uninstall as the original: it runs the program in the panel's state directory, so putting it back gave a service enabled
+# at boot whose program is gone. Such a backup does not count
+external_backup_present() {
+  [[ -f ${EXTERNAL_BACKUP}/install.env ]] || return 1
+  [[ $(backup_value KIXDNS_BINARY || true) != "${PANEL_STATE_DIRECTORY}/bin/kixdns" ]]
 }
 
 open_terminal() {

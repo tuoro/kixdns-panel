@@ -858,6 +858,12 @@ restore_panel_database() {
 rollback_install() {
   local status=$1
   local reason=${2:-failed}
+  # -E 让 ERR 陷阱也在子 shell（命令替换、管道）里触发。在子 shell 里回滚会删掉备份，父 shell 收到失败又回滚一次，
+  # 这时只剩删除：刚放回的文件被删光。所以只在设下陷阱的那个 shell 里回滚，子 shell 只带着失败退出
+  # -E fires the ERR trap inside subshells too (command substitutions, pipelines). A rollback there deleted the backup, and the
+  # parent, seeing the failure, rolled back again with only deletion left, removing what was just put back. So only the shell
+  # that set the trap rolls back; a subshell just exits with the failure
+  [[ -z ${3:-} || ${BASHPID} == "$3" ]] || exit "${status}"
   local outcome=安装未完成
   local panel_running=true
   local host
@@ -968,6 +974,12 @@ restore_managed_config() {
 
 preserve_external_install() {
   [[ ${INSTALL_KIND} == migrate ]] || return 0
+  # 卸载时选了保留、留下来的面板自带 KixDNS（跑的是面板状态目录里的程序）不是外部安装：重装后接着管它，不备份成
+  # 「原来的 KixDNS」。否则卸载时会把这个 unit 当原来的放回去并启动，而它的程序已随面板状态目录删掉
+  # The panel's own KixDNS kept by an earlier uninstall (it runs the program in the panel's state directory) is not an
+  # external install: the reinstall manages it on, and it is not backed up as the original KixDNS. Otherwise uninstall
+  # would put this unit back and start it, with its program already deleted along with the panel's state directory
+  [[ ${EXISTING_KIXDNS_BINARY_PATH} != "${MANAGED_KIXDNS_BINARY}" ]] || return 0
   [[ ! -e ${EXTERNAL_BACKUP} ]] || return 0
   install -d -o root -g root -m 0700 "${EXTERNAL_BACKUP}"
   CREATED_EXTERNAL_BACKUP=true
@@ -1005,7 +1017,14 @@ prepare_rollback() {
   backup_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
   backup_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   backup_path "${PANEL_ENV}" panel-env
-  trap 'rollback_install $?' ERR
+  arm_rollback
+}
+
+# 出错就回滚，回滚只在这个 shell 里做（rollback_install 里说了为什么）
+# Roll back on error, in this shell only (rollback_install says why)
+arm_rollback() {
+  # shellcheck disable=SC2064 # BASHPID 要在挂陷阱时展开，记下是哪个 shell 挂的 / BASHPID expands now, recording which shell set the trap
+  trap "rollback_install \$? failed ${BASHPID}" ERR
   # 只挂 ERR 时，Ctrl-C、SIGTERM 或 SSH 断线会直接杀掉 bash，已停掉的服务不会恢复。
   # With only ERR trapped, Ctrl-C, SIGTERM or an SSH hangup kill bash and stopped services stay stopped.
   trap 'rollback_install 130 interrupted' INT TERM HUP
