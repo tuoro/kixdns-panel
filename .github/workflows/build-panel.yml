@@ -11,6 +11,8 @@ on:
       - crates/panel-helper/**
       - deploy/**
       - scripts/fetch-kixdns-release.sh
+      - scripts/npm-audit.py
+      - scripts/test-npm-audit.py
       - scripts/fetch-builtin-geosite.sh
       - scripts/verify-geosite.py
       - scripts/install.sh
@@ -35,6 +37,8 @@ on:
       - crates/panel-helper/**
       - deploy/**
       - scripts/fetch-kixdns-release.sh
+      - scripts/npm-audit.py
+      - scripts/test-npm-audit.py
       - scripts/fetch-builtin-geosite.sh
       - scripts/verify-geosite.py
       - scripts/install.sh
@@ -175,7 +179,10 @@ jobs:
         working-directory: web
         run: |
           npm ci
-          npm audit --audit-level=moderate
+          # 例外表里逐条写着理由；用不上的例外也会失败（scripts/npm-audit.py）
+          # Each exception in the allowlist states its reason; an unused one fails too (scripts/npm-audit.py)
+          python3 -I ../scripts/test-npm-audit.py
+          python3 -I ../scripts/npm-audit.py npm-audit-allow.txt
           npm test
           npm run build
 

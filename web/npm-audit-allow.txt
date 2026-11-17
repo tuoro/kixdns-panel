@@ -1,0 +1,4 @@
+# npm audit 的例外：每行一个公告编号，后面写为什么放行。公告不再出现时 scripts/npm-audit.py 会失败，到时把这一行删掉。
+# npm audit exceptions: one advisory id per line, followed by why it is allowed. scripts/npm-audit.py fails once an advisory no
+# longer appears; remove its line then.
+GHSA-fc5q-39xc-vjpf picomatch 的 ReDoS（<= 4.0.7，还没有修复版本，2026-11-17）。只在开发依赖里（vite、vitest、vue-tsc 匹配本仓库自己的 glob），不进面板的产物；每天的审计只查生产依赖，不受影响 / picomatch ReDoS (<= 4.0.7, no fixed version yet, 2026-11-17). Development dependencies only (vite, vitest, vue-tsc matching this repo's own globs), not in the panel's build; the daily audit covers production dependencies and is unaffected
