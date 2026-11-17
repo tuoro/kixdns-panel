@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use prometheus_parse::{Sample, Scrape, Value as MetricValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::prometheus_text::{self, Sample};
 
 #[cfg_attr(not(unix), allow(dead_code))]
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -969,10 +970,8 @@ fn unsupported_protocol(path: &str, version: u8) -> ControlError {
 }
 
 fn parse_metrics(text: &str) -> Result<MetricsSnapshot, ControlError> {
-    let scrape = Scrape::parse(text.lines().map(|line| Ok(line.to_owned())))
-        .map_err(|error| ControlError::Protocol(format!("解析 Prometheus 指标失败：{error}")))?;
     let mut builder = MetricsBuilder::default();
-    for sample in scrape.samples {
+    for sample in prometheus_text::samples(text) {
         builder.record(&sample);
     }
     builder.finish()
@@ -1013,7 +1012,7 @@ impl MetricsBuilder {
     }
 
     fn record(&mut self, sample: &Sample) {
-        if let Some(value) = float_value(&sample.value) {
+        if let Some(value) = float_value(sample.value) {
             match sample.metric.as_str() {
                 "kixdns_request_latency_ms_sum" => {
                     self.request_latency_sum_ms = value;
@@ -1028,7 +1027,7 @@ impl MetricsBuilder {
                 _ => {}
             }
         }
-        let Some(value) = numeric_value(&sample.value) else {
+        let Some(value) = numeric_value(sample.value) else {
             return;
         };
         if self.record_scalar(&sample.metric, value) || self.record_extended(sample, value) {
@@ -1284,24 +1283,11 @@ fn average(sum_ms: f64, count: u64) -> Option<f64> {
     (count > 0).then(|| sum_ms / count as f64)
 }
 
-fn float_value(value: &MetricValue) -> Option<f64> {
-    match value {
-        MetricValue::Counter(value) | MetricValue::Gauge(value) | MetricValue::Untyped(value)
-            if value.is_finite() && *value >= 0.0 =>
-        {
-            Some(*value)
-        }
-        _ => None,
-    }
+fn float_value(value: f64) -> Option<f64> {
+    (value.is_finite() && value >= 0.0).then_some(value)
 }
 
-fn numeric_value(value: &MetricValue) -> Option<u64> {
-    let value = match value {
-        MetricValue::Counter(value) | MetricValue::Gauge(value) | MetricValue::Untyped(value) => {
-            *value
-        }
-        MetricValue::Histogram(_) | MetricValue::Summary(_) => return None,
-    };
+fn numeric_value(value: f64) -> Option<u64> {
     if value.is_finite() && value >= 0.0 && value.fract() == 0.0 {
         format!("{value:.0}").parse().ok()
     } else {
@@ -1694,6 +1680,54 @@ kixdns_upstream_via_total{upstream="1.1.1.1:53",transport="udp",via="tcp"} 2
         assert_eq!(first.rcodes[1].name, "NXDomain");
         assert!(metrics.upstreams[1].avg_latency_ms.is_none());
         assert!(metrics.upstreams[1].rcodes.is_empty());
+    }
+
+    /// 内核按 Prometheus 文本格式转义标签值（`\\`、`\"`、`\n`），名字里的逗号、等号、`}` 原样写出；
+    /// 这些名字的计数要记在原来的名字下
+    /// The kernel escapes label values as the Prometheus text format says (`\\`, `\"`, `\n`) and writes
+    /// commas, equals signs and `}` in names as they are; their counts must land under the original names
+    #[test]
+    fn label_values_with_separators_and_escapes_keep_their_names() {
+        let text = r#"
+kixdns_requests_total 42
+kixdns_requests_inflight 2
+kixdns_cache_lookups_total 20
+kixdns_cache_hits_total{kind="fresh"} 8
+kixdns_cache_hits_total{kind="stale"} 1
+kixdns_cache_entries 7
+kixdns_config_generation 3
+kixdns_config_reload_total{result="success"} 2
+kixdns_config_reload_total{result="failure"} 0
+kixdns_pipeline_hits_total{pipeline="国内,海外"} 21
+kixdns_pipeline_hits_total{pipeline="a=b"} 4
+kixdns_rule_matches_total{pipeline="main",rule="say \"hi\" {x} \\ end",phase="request"} 13
+kixdns_rule_matches_total{pipeline="main",rule="two\nlines",phase="response"} 2
+kixdns_upstream_attempts_total{upstream="https://dns.example/dns-query?a=1&b=2",transport="doh"} 5
+kixdns_upstream_results_total{upstream="https://dns.example/dns-query?a=1&b=2",transport="doh",result="success"} 5
+"#;
+        let metrics = parse_metrics(text).unwrap();
+        let pipelines = metrics
+            .pipelines
+            .iter()
+            .map(|named| (named.name.as_str(), named.count))
+            .collect::<Vec<_>>();
+        assert_eq!(pipelines, [("a=b", 4), ("国内,海外", 21)]);
+        let rules = metrics
+            .rules
+            .iter()
+            .map(|rule| (rule.rule.as_str(), rule.phase.as_str(), rule.count))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rules,
+            [
+                ("say \"hi\" {x} \\ end", "request", 13),
+                ("two\nlines", "response", 2)
+            ]
+        );
+        assert_eq!(metrics.upstreams.len(), 1);
+        let upstream = &metrics.upstreams[0];
+        assert_eq!(upstream.upstream, "https://dns.example/dns-query?a=1&b=2");
+        assert_eq!((upstream.attempts, upstream.success), (5, 5));
     }
 
     #[test]
