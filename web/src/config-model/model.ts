@@ -620,6 +620,12 @@ function mappingActions(r: Mapping): Record<string, unknown>[] {
   if (mappingIsIp(r)) return [{ type: 'static_ip_response', ip: splitList(r.target).join(',') }]
   return [{ type: 'static_cname_response', target: r.target.trim(), ...(r.ttl === null ? {} : { ttl: r.ttl }) }]
 }
+/** 写进内核的映射：启用、域名和目标都填了 / A mapping that goes into the kernel: enabled, with domain and target filled in */
+export const mappingLive = (r: Mapping): boolean => r.enabled && Boolean(r.domain.trim()) && Boolean(r.target.trim())
+/** 一条映射在内核里的那条规则 / A mapping's rule in the kernel */
+export const mappingRule = (r: Mapping): KRule => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: r.domain.trim(), operator: 'and' }] })
+/** 一个上游组在内核里的那个 Pipeline：转发到组的地址，带组的子网和备用 / An upstream group's pipeline in the kernel: a forward to its addresses with its subnet and fallback */
+export const groupPipeline = (model: Model, g: UpstreamGroup): KPipeline => forwardPipeline(model, upstreamPipelineId(model, g.id), g.id, g.ecs, groupFallback(model, g) ?? {})
 export function kernelRuleCount(rule: Rule): number {
   if (rule.raw) return rule.raw.length
   const groups = rule.conditions.filter((g) => g.length)
@@ -679,17 +685,17 @@ function listRules(model: Model, pipeline: string, rules: Rule[], rest: string, 
 function compileClaiming(model: Model, claim: Claim): KernelConfig {
   const pipelines: KernelConfig['pipelines'] = []
   for (const g of model.groups) {
-    const forward = forwardPipeline(model, upstreamPipelineId(model, g.id), g.id, g.ecs, groupFallback(model, g) ?? {})
+    const forward = groupPipeline(model, g)
     for (const r of forward.rules) claim(forward.id, r.name, { kind: 'forward', group: g.id })
     pipelines.push(forward)
   }
   // 域名映射和现在的面板一样做成最前面的入口：所有请求先过它，被高级入口带去别处的也一样
   // Domain mappings are the first entry, as in today's panel: every request meets them first, including those an advanced entry sends elsewhere
-  const live = model.mappings.filter((r) => r.enabled && r.domain.trim() && r.target.trim())
+  const live = model.mappings.filter(mappingLive)
   const mappingId = model.mappingId ?? 'domain_mapping'
   if (live.length) {
     for (const r of live) claim(mappingId, `域名映射 ${r.domain.trim()}`, { kind: 'mapping', domain: r.domain.trim() })
-    pipelines.push({ id: mappingId, rules: live.map((r) => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: r.domain.trim(), operator: 'and' }] })) })
+    pipelines.push({ id: mappingId, rules: live.map(mappingRule) })
   }
   const mainId = mainPipelineId(model)
   const main = [...listRules(model, mainId, model.rules, '其余请求', claim), emptyRule('其余请求', outcomeActions(model, model.rest))]
@@ -720,17 +726,46 @@ function compileClaiming(model: Model, claim: Claim): KernelConfig {
   }
   select.push({ pipeline: mainPipelineId(model), matcher_operator: 'and', matchers: [] })
   select.push(...(model.trailingEntries ?? []).map((e) => JSON.parse(JSON.stringify({ matcher_operator: 'and', ...e })) as KernelConfig['pipeline_select'][number]))
-  // 内核的默认上游只在「放行」和没写上游的转发里用到；写成其余请求那个组的地址，两处说法一致
-  // The kernel's default upstream is only used by allow and by a forward without upstream; it takes the catch-all group's addresses so both agree
-  // 有高级规则或原样保留的 Pipeline 时不改：它们里面的「允许」还按原来的默认上游走 / Left alone when advanced rules or kept pipelines exist: their allow still means the original default
-  const keepDefault = Boolean(model.rawPipelines?.length) || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw)
-  const restGroup = !keepDefault && model.rest.type === 'upstream' ? model.groups.find((g) => g.id === (model.rest as { group: string }).group) : undefined
-  const settings: Record<string, unknown> = { ...model.settings, ...(restGroup?.addresses.length ? { default_upstream: restGroup.addresses.map(kernelAddress).join(', ') } : {}) }
+  const own = defaultUpstreamOf(model)
+  const settings: Record<string, unknown> = { ...model.settings, ...(own === undefined ? {} : { default_upstream: own }) }
   // 拦截列表合成的文件排在 Geo 数据的 GeoSite 后面，和面板服务端同步 Geo 数据时的写法一样 / The blocklists' file follows Geo data's GeoSite files, as the panel server writes them when syncing Geo data
   if (model.blocklists.file) {
     settings.geosite_data_paths = [...(Array.isArray(settings.geosite_data_paths) ? settings.geosite_data_paths : []), model.blocklists.file]
   }
   return { ...model.extra, version: model.format, settings, pipeline_select: select, pipelines }
+}
+
+// 内核的默认上游只在「放行」和没写上游的转发里用到；写成其余请求那个组的地址，两处说法一致
+// The kernel's default upstream is only used by allow and by a forward without upstream; it takes the catch-all group's addresses so both agree
+// 有高级规则或原样保留的 Pipeline 时不改：它们里面的「允许」还按原来的默认上游走 / Left alone when advanced rules or kept pipelines exist: their allow still means the original default
+function defaultUpstreamOf(model: Model): string | undefined {
+  const keepDefault = Boolean(model.rawPipelines?.length) || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw)
+  const restGroup = !keepDefault && model.rest.type === 'upstream' ? model.groups.find((g) => g.id === (model.rest as { group: string }).group) : undefined
+  return restGroup?.addresses.length ? restGroup.addresses.map(kernelAddress).join(', ') : undefined
+}
+
+/**
+ * compile 写 settings 的反面：内核里的 settings 去掉 compile 自己加上的两样，得到模型里的 settings。一是按其余请求写的默认上游（值和这份模型
+ * 编出来的一样时），二是拦截列表合成的文件（model.blocklists.file）。compile 写的时候盖住了模型里这两项原来的样子，所以从 was（上一份模型的
+ * settings）拿回来：上一份没有就没有，不把 compile 的产物收进设置
+ * The reverse of how compile writes settings: the kernel's settings without the two things compile adds, giving the model's settings. One is
+ * the default upstream written from 其余请求 (when it equals what this model compiles to), the other the blocklists' merged file
+ * (model.blocklists.file). Compile covered what the model held for these two, so they come back from was (the previous model's settings):
+ * absent there, absent here, and nothing compile made is taken into the settings
+ */
+export function settingsFromKernel(model: Model, kernel: Record<string, unknown>, was: Record<string, unknown>): Record<string, unknown> {
+  const settings = JSON.parse(JSON.stringify(kernel)) as Record<string, unknown>
+  const restore = (key: string) => { if (was[key] !== undefined) settings[key] = JSON.parse(JSON.stringify(was[key])) as unknown; else delete settings[key] }
+  const own = defaultUpstreamOf(model)
+  if (own !== undefined && settings.default_upstream === own) restore('default_upstream')
+  const file = model.blocklists.file
+  if (file && Array.isArray(settings.geosite_data_paths)) {
+    const paths = (settings.geosite_data_paths as unknown[]).filter((p) => p !== file)
+    // 只剩合成的文件时，这一项是 compile 加的 / With only the merged file there, compile made this key
+    if (paths.length || Array.isArray(was.geosite_data_paths)) settings.geosite_data_paths = paths
+    else restore('geosite_data_paths')
+  }
+  return settings
 }
 
 // 编辑器里「生成的内核规则」：这条规则在内核里长什么样。名字按它所在（或要放进）的列表起，草稿换掉列表里原来那条
@@ -743,5 +778,7 @@ export function kernelPreview(model: Model, rule: Rule, groupId: string | null):
   const draft = { ...rule, enabled: true }
   const withDraft = list.some((r) => r.id === rule.id) ? list.map((r) => (r.id === rule.id ? draft : r)) : [...list, draft]
   const name = listKernelNames(withDraft, group ? `${group.name}·其余` : '其余请求').get(rule.id) ?? `rule-${rule.id}`
-  return { rules: kernelRules(model, rule, name), pipeline: rulePipeline(model, rule) }
+  return ruleKernel(model, rule, name)
 }
+/** 一条规则编出来的内核规则（按 kname 起名，拆开的几段是 kname#N）和它自己的转发 Pipeline / A rule's kernel rules (named kname, split parts kname#N) and its own forward pipeline */
+export const ruleKernel = (model: Model, rule: Rule, kname: string): { rules: unknown[]; pipeline: unknown } => ({ rules: kernelRules(model, rule, kname), pipeline: rulePipeline(model, rule) })

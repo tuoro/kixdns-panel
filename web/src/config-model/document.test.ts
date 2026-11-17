@@ -6,6 +6,14 @@ import { mockRequest } from '../api/mock'
 import type { ConfigDocument } from '../api/types'
 import { LEGACY_TEMPLATES, sampleModel } from './testing/samples'
 
+// 手改内核部分里的结构（路由器组多一个地址）：只改了 settings 的不再重新导入（见 reimport.test.ts），这几条测的是重新导入，所以另外改一处结构
+// A structural hand edit of the kernel part (one more address on the router group): an edit to settings alone no longer re-imports (see
+// reimport.test.ts), and these tests are about re-importing, so they change the structure as well
+const editStructure = (cfg: Record<string, unknown>) => {
+  const router = (cfg.pipelines as { id: string; rules: { actions: { upstream?: string }[] }[] }[]).find((p) => p.id === 'upstream-router')!
+  router.rules[0]!.actions[0]!.upstream += ', 192.168.1.2:53'
+}
+
 describe('配置文件的存取 / storing and loading the config file', () => {
   it('写出去的是内核配置加 panel 键，内核部分和 compile 一样 / what is written is the kernel config plus panel, the kernel part equal to compile', () => {
     const model = sampleModel()
@@ -27,6 +35,7 @@ describe('配置文件的存取 / storing and loading the config file', () => {
     const model = sampleModel()
     const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: Record<string, unknown> }
     cfg.settings.cache_capacity = 50000
+    editStructure(cfg)
     const back = readConfig(cfg)
     expect(back.source).toBe('imported')
     expect(back.report?.stats.raw).toBe(0)
@@ -51,6 +60,7 @@ describe('配置文件的存取 / storing and loading the config file', () => {
     }
     const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: Record<string, unknown> }
     cfg.settings.cache_capacity = 50000
+    editStructure(cfg)
     const back = readConfig(cfg)
     expect(back.source).toBe('imported')
     const unnamed = back.model.rules.filter((r) => !r.name && r.conditions[0]?.some((c) => c.values.some((v) => v.endsWith('.example.com'))))
@@ -94,6 +104,7 @@ describe('配置文件的存取 / storing and loading the config file', () => {
     add('u3.example.com')
     const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: Record<string, unknown> }
     cfg.settings.cache_capacity = 50000
+    editStructure(cfg)
     const back = readConfig(cfg)
     expect(back.source).toBe('imported')
     expect(back.model.rules.map((r) => r.conditions[0]![0]!.values[0])).toEqual(['u1.example.com', 'u2.example.com', 'off.example.com', 'u3.example.com'])
@@ -117,12 +128,14 @@ describe('配置文件的存取 / storing and loading the config file', () => {
     const order = ['off1.example.com', 'off2.example.com', 'u1.example.com', 'offa.example.com', 'offb.example.com', 'u2.example.com']
     const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: Record<string, unknown> }
     cfg.settings.cache_capacity = 50000
+    editStructure(cfg)
     const back = readConfig(cfg)
     expect(back.source).toBe('imported')
     expect(back.model.rules.map((r) => r.conditions[0]![0]!.values[0])).toEqual(order)
     // 再手改一次也不来回换 / A second hand edit does not swap them back and forth either
     const again = JSON.parse(JSON.stringify(exportConfig(back.model))) as Record<string, unknown> & { settings: Record<string, unknown> }
     again.settings.cache_capacity = 60000
+    editStructure(again)
     expect(readConfig(again).model.rules.map((r) => r.conditions[0]![0]!.values[0])).toEqual(order)
   })
 

@@ -112,10 +112,14 @@ describe('拦截列表读回来 / blocklists read back', () => {
     expect(readConfig(cfg as unknown as Record<string, unknown>).model.blocklists.builtFor).toBe(blocklistKey(model.blocklists))
   })
 
-  it('定时更新换了文件：重新导入，订阅和自己写的原文接回来，不留高级入口 / a scheduled update swapped the file: re-imported, subscriptions and the own text carried over, no advanced entries', () => {
+  it('定时更新换了文件、面板外又手改过别处：重新导入，订阅和自己写的原文接回来，不留高级入口 / a scheduled update swapped the file and something else was edited by hand: re-imported, subscriptions and the own text carried over, no advanced entries', () => {
     const model = withLists()
-    const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: { geosite_data_paths: string[] } }
+    const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: { geosite_data_paths: string[] }; pipeline_select: Record<string, unknown>[] }
     cfg.settings.geosite_data_paths = cfg.settings.geosite_data_paths.map((p) => (p === FILE ? NEWER : p))
+    // 只换了文件时模型原样留着、不重新导入（见 reimport.test.ts）；这里另外手改一处编回来不变的（主列表入口去掉默认的 matcher_operator），走重新导入
+    // With only the file swapped the model stays and nothing is re-imported (see reimport.test.ts); here a hand edit that compiles back unchanged
+    // (the main entry loses its default matcher_operator) makes it re-import
+    delete cfg.pipeline_select.at(-1)!.matcher_operator
     const back = readConfig(cfg)
     expect(back.source).toBe('imported')
     expect(back.report?.stats.raw).toBe(0)

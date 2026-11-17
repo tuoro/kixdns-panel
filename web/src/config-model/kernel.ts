@@ -21,6 +21,12 @@ export interface KPipelineLike { id: string; ecs?: unknown; rules?: KRuleLike[] 
 export interface KSelectorLike { pipeline: string; matchers?: KMatcher[]; matcher_operator?: string }
 export interface KConfigLike { version?: string; settings?: Record<string, unknown>; pipeline_select?: KSelectorLike[]; pipelines?: KPipelineLike[]; [key: string]: unknown }
 
+// 两份内核 JSON 是不是同一份：数组的先后算，键的先后不算——内核按键名读，面板服务端改配置时（Geo 数据、拦截列表）也会挪动 settings 里键的位置
+// Whether two kernel JSON values are the same: array order counts, key order does not — the kernel reads by key name, and the panel server
+// moves keys within settings when it edits a config (Geo data, blocklists)
+const sortedKeys = (_key: string, v: unknown): unknown => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v)
+export const sameKernel = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null, sortedKeys) === JSON.stringify(b ?? null, sortedKeys)
+
 // 加载时：每项都是默认 and 而规则级不是 and，就把规则级运算符抄到每一项；求值时第一项按肯定起头，其余从左往右并入
 // At load: when every item is the default and and the rule-level operator is not, that operator is copied onto each item;
 // evaluation seeds with the first item as a plain positive and folds the rest left to right

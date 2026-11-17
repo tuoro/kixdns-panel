@@ -1,15 +1,18 @@
-import { normalUrl } from './blocklist'
+import { mergedFileIn, normalUrl } from './blocklist'
 import { importKernel, type ImportNote } from './importer'
-import type { KConfigLike } from './kernel'
-import { blocklistKey, compile, emptyBlocklists, nextId, ruleGroupPipelineId, withoutWildcard, type Model, type RawEntry, type Rule, type RuleGroup } from './model'
+import { sameKernel, type KConfigLike } from './kernel'
+import { blocklistKey, compile, emptyBlocklists, nextId, ruleGroupPipelineId, settingsFromKernel, withoutWildcard, type Model, type RawEntry, type Rule, type RuleGroup } from './model'
 
 // 配置文件里存的样子：内核配置 + 顶层 panel 键。内核和面板服务都不认 panel 这个键，也不会拒绝它（内核的 PipelineConfig 没开
 // deny_unknown_fields，面板服务只按内核能力校验）。panel 里放整份模型和一个指向内核部分的散列：打开时散列对得上就直接用模型，
-// 对不上（有人手改过 JSON）就按内核部分重新导入，再从上一份模型接回编号、备注、停用的规则。
+// 对不上时：只有 settings 不一样（面板服务端的系统写入只改 settings、不更新散列）就留着模型只换 settings；别处也改过（有人手改过 JSON）
+// 就按内核部分重新导入，再从上一份模型接回编号、备注、停用的规则，编出来和内核里一样的东西留上一份的写法。
 // What the config file holds: the kernel config plus a top-level panel key. Neither the kernel nor the panel server knows the key, and
 // neither rejects it (the kernel's PipelineConfig has no deny_unknown_fields; the panel server checks capabilities only). panel carries the
-// whole model and a hash of the kernel part: when the hash matches the model is used as is; when it does not (the JSON was edited by
-// hand) the kernel part is re-imported and ids, notes and disabled rules come over from the previous model.
+// whole model and a hash of the kernel part: when the hash matches the model is used as is. When it does not: with only settings
+// differing (the panel server's system writes change settings and leave the hash) the model stays and takes the new settings; with
+// other parts changed too (the JSON was edited by hand) the kernel part is re-imported, ids, notes and disabled rules come over from the
+// previous model, and whatever compiles to what the kernel holds keeps the previous model's form.
 
 export const PANEL_FORMAT = 1
 export interface PanelBlock { v: number; hash: string; model: Model }
@@ -89,10 +92,33 @@ const withBlocklists = (model: Model): Model => {
   return { ...model, blocklists: typeof blocklists.builtFor === 'string' ? blocklists : { ...blocklists, builtFor: blocklistKey(blocklists) } }
 }
 
+/**
+ * 内核部分只有 settings 和上一份模型编出来的不一样（面板服务端的系统写入：导入内置 GeoSite、同步 Geo 数据、定时更新拦截列表；JSON 视图里只改了设置）：
+ * 上一份模型原样留着，只换 settings 和拦截列表合成的文件。换完再编一遍，和内核部分逐项一样才算，否则为 null，照常重新导入
+ * The kernel part differs from what the previous model compiles to in settings only (the panel server's system writes: importing the built-in
+ * GeoSite, Geo sync, the scheduled blocklist update; or the JSON view with only settings edited): the previous model stays as it was, with
+ * the settings and the blocklists' merged file swapped in. Compiled again it must equal the kernel part item by item, otherwise null and the
+ * kernel part is re-imported as usual
+ */
+function withKernelSettings(kernel: KConfigLike, was: Model): Model | null {
+  const settings = kernel.settings ?? {}
+  // 服务端定时更新拦截列表时换掉的是文件，订阅没变 / The scheduled blocklist update swaps the file; the subscriptions stay
+  const file = was.blocklists.file ? mergedFileIn(settings) ?? null : null
+  const next: Model = { ...was, blocklists: { ...was.blocklists, file } }
+  next.settings = settingsFromKernel(next, settings, was.settings)
+  return sameKernel(compile(next), kernel) ? next : null
+}
+
 export function readConfig(cfg: Record<string, unknown>, prev?: Model): ReadResult {
   const panel = cfg.panel as Partial<PanelBlock> | undefined
   const kernel = kernelPart(cfg)
-  if (panel && panel.v === PANEL_FORMAT && panel.model && panel.hash === panelHash(kernel)) return { model: withoutWildcards(withBlocklists(withoutListeners(panel.model))), source: 'panel', report: null }
+  const stored = panel && panel.v === PANEL_FORMAT && panel.model ? withoutWildcards(withBlocklists(withoutListeners(panel.model))) : undefined
+  if (stored && panel!.hash === panelHash(kernel)) return { model: stored, source: 'panel', report: null }
+  // 上一份：文件自己带的模型，没有（或认不出格式版本）时是草稿，原样用，只补上拦截列表，和重新导入一样
+  // The previous model: the file's own, or else the draft taken as it is, only given its blocklists, as the re-import does
+  const was = stored ?? (prev && withBlocklists(prev))
+  const same = was && withKernelSettings(kernel, was)
+  if (same) return { model: same, source: 'panel', report: null }
   const base = panel?.model ?? prev
   const result = importKernel(kernel, base && withBlocklists(base))
   return { model: result.model, source: 'imported', report: { notes: result.notes, stats: result.stats } }
