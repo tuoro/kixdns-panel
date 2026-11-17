@@ -138,6 +138,24 @@ assert_equals "${ASSUME_YES}" true "显式确认参数应生效"
 choose_kixdns_action
 choose_config_action
 
+# 外部备份：迁移前原来的 KixDNS 才算；以前重装时备份的面板自带 KixDNS（跑的是面板状态目录里的程序）不算，
+# 否则卸载会把一个程序已被删掉的服务放回去、开机启动。
+# The external backup counts for the KixDNS from before migration only; one an older reinstall made of the panel's own
+# KixDNS (running the program in the panel's state directory) does not, or uninstall would restore a service whose program
+# is gone and enable it at boot.
+(
+  work="$(mktemp -d)"
+  trap 'rm -rf -- "${work}"' EXIT
+  EXTERNAL_BACKUP="${work}/external-backup"
+  mkdir -p "${EXTERNAL_BACKUP}"
+  printf 'KIXDNS_BINARY=%s\n' /usr/local/bin/kixdns > "${EXTERNAL_BACKUP}/install.env"
+  external_backup_present || { printf '断言失败：原来的 KixDNS 的备份应当算数\n' >&2; exit 1; }
+  printf 'KIXDNS_BINARY=%s\n' "${PANEL_STATE_DIRECTORY}/bin/kixdns" > "${EXTERNAL_BACKUP}/install.env"
+  ! external_backup_present || { printf '断言失败：面板自带 KixDNS 的备份不能当成原来的 KixDNS\n' >&2; exit 1; }
+  rm -f -- "${EXTERNAL_BACKUP}/install.env"
+  ! external_backup_present || { printf '断言失败：没有备份时不能当成有\n' >&2; exit 1; }
+)
+
 HAS_EXTERNAL_BACKUP=false
 CONFIG_ACTION=keep
 KIXDNS_MANAGED=false

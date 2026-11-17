@@ -21,12 +21,16 @@ fail() {
 
 report_error() {
   local status=$?
+  # 只在设下陷阱的那个 shell 里报：-E 让 ERR 陷阱也在子 shell 里触发，同一个失败会报两次
+  # Report in the shell that set the trap only: -E fires the ERR trap in subshells too, reporting one failure twice
+  [[ -z ${1:-} || ${BASHPID} == "$1" ]] || exit "${status}"
   trap - ERR
   printf '::error file=scripts/test-package-acceptance.sh::验收命令失败：%s\n' "${BASH_COMMAND}" >&2
   exit "${status}"
 }
 
-trap report_error ERR
+# shellcheck disable=SC2064 # BASHPID 要在挂陷阱时展开，记下是哪个 shell 挂的 / BASHPID expands now, recording which shell set the trap
+trap "report_error ${BASHPID}" ERR
 
 require_clean_host() {
   local path
