@@ -283,20 +283,11 @@ impl Database {
         created_at: i64,
         apply_state: &'static str,
     ) -> anyhow::Result<i64> {
+        // 记一个已生效的版本不顶掉在等的版本（待应用、没有生效的）：那是用户的，面板自己改配置时另行带上它
+        // Recording an applied version leaves the version waiting (pending or refused) alone: it is the user's, and a
+        // change the panel makes on its own carries it along separately
         self.call(move |connection| {
             let transaction = connection.transaction()?;
-            if apply_state == CONFIG_APPLY_APPLIED {
-                transaction.execute(
-                    "UPDATE config_versions
-                     SET apply_state = ?1, apply_error = NULL
-                     WHERE apply_state IN (?2, ?3)",
-                    params![
-                        CONFIG_APPLY_SUPERSEDED,
-                        CONFIG_APPLY_PENDING,
-                        CONFIG_APPLY_FAILED
-                    ],
-                )?;
-            }
             transaction.execute(
                 "INSERT INTO config_versions(
                      sha256, content, message, actor, created_at, apply_state, apply_error
@@ -311,6 +302,10 @@ impl Database {
         .await
     }
 
+    /// 存一个在等的版本，顶掉原来在等的：`refused` 是空的时候待应用，给了原因就是没有生效的（面板自己改配置时带上
+    /// 用户那份没被接受的版本）
+    /// Stores a version waiting, replacing the one waiting before: pending when `refused` is empty, refused with the
+    /// reason when given (a change the panel makes on its own carrying the user's refused version along)
     pub async fn store_pending_config_version(
         &self,
         sha256: String,
@@ -318,7 +313,13 @@ impl Database {
         message: String,
         actor: String,
         created_at: i64,
+        refused: Option<String>,
     ) -> anyhow::Result<i64> {
+        let apply_state = if refused.is_some() {
+            CONFIG_APPLY_FAILED
+        } else {
+            CONFIG_APPLY_PENDING
+        };
         self.call(move |connection| {
             let transaction = connection.transaction()?;
             transaction.execute(
@@ -334,14 +335,15 @@ impl Database {
             transaction.execute(
                 "INSERT INTO config_versions(
                      sha256, content, message, actor, created_at, apply_state, apply_error
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     sha256,
                     content,
                     message,
                     actor,
                     created_at,
-                    CONFIG_APPLY_PENDING
+                    apply_state,
+                    refused
                 ],
             )?;
             let id = transaction.last_insert_rowid();
@@ -694,17 +696,8 @@ impl Database {
     }
 
     pub async fn get_setting(&self, key: &'static str) -> anyhow::Result<Option<String>> {
-        self.call(move |connection| {
-            connection
-                .query_row(
-                    "SELECT value FROM app_settings WHERE key = ?1",
-                    [key],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(Into::into)
-        })
-        .await
+        self.call(move |connection| read_setting(connection, key))
+            .await
     }
 
     pub async fn set_setting(
@@ -713,13 +706,30 @@ impl Database {
         value: String,
         updated_at: i64,
     ) -> anyhow::Result<()> {
+        self.call(move |connection| write_setting(connection, key, &value, updated_at))
+            .await
+    }
+
+    /// 在一个写事务里读、改、写一个设置，读和写之间插不进别的写入：`change` 拿到现在的值，给出要写的新值（`None` 是不写）
+    /// 和要交回的结果
+    /// Reads, changes and writes one setting in one write transaction, so no other write lands between the read and the
+    /// write: `change` gets the current value and gives the value to write (`None` writes nothing) and the result to hand
+    /// back
+    pub async fn update_setting<T: Send + 'static>(
+        &self,
+        key: &'static str,
+        updated_at: i64,
+        change: impl FnOnce(Option<String>) -> (Option<String>, T) + Send + 'static,
+    ) -> anyhow::Result<T> {
         self.call(move |connection| {
-            connection.execute(
-                "INSERT INTO app_settings(key, value, updated_at) VALUES(?1, ?2, ?3) \
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                params![key, value, updated_at],
-            )?;
-            Ok(())
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (next, result) = change(read_setting(&transaction, key)?);
+            if let Some(value) = next {
+                write_setting(&transaction, key, &value, updated_at)?;
+            }
+            transaction.commit()?;
+            Ok(result)
         })
         .await
     }
@@ -731,6 +741,31 @@ impl Database {
         })
         .await
     }
+}
+
+fn read_setting(connection: &Connection, key: &str) -> anyhow::Result<Option<String>> {
+    connection
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn write_setting(
+    connection: &Connection,
+    key: &str,
+    value: &str,
+    updated_at: i64,
+) -> anyhow::Result<()> {
+    connection.execute(
+        "INSERT INTO app_settings(key, value, updated_at) VALUES(?1, ?2, ?3) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value, updated_at],
+    )?;
+    Ok(())
 }
 
 fn initialize_database(
@@ -1234,6 +1269,7 @@ mod tests {
                 message.to_owned(),
                 "admin".to_owned(),
                 1,
+                None,
             )
         };
         assert_eq!(store("first").await.unwrap(), 1);

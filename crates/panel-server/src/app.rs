@@ -345,10 +345,12 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         },
     )
     .map_err(|error| anyhow::anyhow!(error))?;
-    updates
-        .initialize_installed_version()
-        .await
-        .map_err(|error| anyhow::anyhow!(error))?;
+    // 读不出本机内核库存不挡面板启动：系统页再说哪里不对，不在这里退出、被 systemd 一遍遍重启
+    // An unreadable local kernel inventory does not stop the panel: the system page says what is wrong, instead of the
+    // panel exiting here and being restarted by systemd over and over
+    if let Err(error) = updates.initialize_installed_version().await {
+        tracing::warn!(%error, "启动时整理本机内核版本失败");
+    }
     let mut geo_data = GeoDataManager::new(database.clone(), &settings.geo_data_path)
         .map_err(|error| anyhow::anyhow!(error))?;
     if let Some(descriptor) = settings.builtin_geosite {
@@ -1179,85 +1181,151 @@ struct SystemConfigWrite<'a> {
 }
 
 /// 面板自己改一次配置（Geo 数据、拦截列表的更新）：`edit` 改好一份副本并说改没改。KixDNS 在运行时等它热加载，
-/// 不接受就退回上一版；没运行时存成待应用的版本。调用的一方拿着 `config_apply_lock`。
+/// 不接受就退回上一版；没运行时存成待应用的版本。在等的版本（待应用、没有生效的）是用户的，不被顶掉：改动生效以后
+/// 同样改在它里面、另存一版顶替它，备注、是谁存的、没有生效的原因照旧；KixDNS 连不上时底本来就是它，改好的就是它的
+/// 下一版。调用的一方拿着 `config_apply_lock`。
 /// A config change the panel makes on its own (Geo data and blocklist updates): `edit` changes a copy
 /// and says whether anything changed. With `KixDNS` running the change waits for its reload and is
-/// rolled back when refused; otherwise it is saved as a pending version. The caller holds
-/// `config_apply_lock`.
+/// rolled back when refused; otherwise it is saved as a pending version. The version waiting (pending or refused) is
+/// the user's and is not pushed aside: once the change is in effect it is made in that version too, stored as a new one
+/// in its place with its note, author and reason for refusal; with `KixDNS` unreachable it is the base already, and the
+/// edited copy is its next version. The caller holds `config_apply_lock`.
 async fn write_system_config(
     state: &AppState,
     write: &SystemConfigWrite<'_>,
-    edit: impl FnOnce(&mut Value) -> anyhow::Result<bool>,
+    edit: impl Fn(&mut Value) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
     let (runtime, previous) = system_config_base(state).await?;
     let mut candidate = previous.content.clone();
     if !edit(&mut candidate)? {
         return Ok(());
     }
+    let waiting = match state.config.pending().await? {
+        Some(summary) => Some(state.config.version(summary.id).await?),
+        None => None,
+    };
+    let refused = waiting
+        .as_ref()
+        .is_some_and(|waiting| waiting.summary.apply_state == CONFIG_APPLY_FAILED);
 
-    let result = match runtime {
+    let (result, carried) = match runtime {
         Ok(before_reload) => {
-            ensure_running_config_supported(state, &candidate).await?;
-            let validation = state.control.validate(&candidate).await?;
-            if !validation.valid {
-                anyhow::bail!("KixDNS 没有接受{}，仍在用之前的配置", write.subject);
-            }
-            let result = state
-                .config
-                .save(
-                    candidate,
-                    &previous.sha256,
-                    write.message.to_owned(),
-                    "system".to_owned(),
-                )
-                .await?;
-            if let Err(error) = state
-                .control
-                .wait_for_config(
-                    &result.sha256,
-                    before_reload.reload_sequence,
-                    std::time::Duration::from_secs(5),
-                )
-                .await
+            let result =
+                apply_system_config(state, write, previous, candidate, &before_reload).await?;
+            // 改动生效了才带上在等的版本；没生效时它原样留着 / The version waiting is carried along only once the change
+            // took; when it did not, the version stays as it was
+            let mut carried = None;
+            if let Some(mut waiting) = waiting
+                && edit(&mut waiting.content)?
             {
-                rollback_config(state, previous.content, &result.sha256, "system").await?;
-                anyhow::bail!(
-                    "KixDNS 没有接受{}，仍在用之前的配置：{}",
-                    write.subject,
-                    match &error {
-                        ControlError::Rejected(reason) => reason.clone(),
-                        other => reload_failure(other),
-                    }
+                carried = Some(
+                    state
+                        .config
+                        .save_waiting(waiting.content, &waiting.summary)
+                        .await?,
                 );
             }
-            result
+            (Some(result), carried)
         }
-        Err(ControlError::Unavailable(_)) => {
-            state
-                .config
-                .save_pending(
-                    candidate,
-                    &previous.sha256,
-                    format!("{}（待 KixDNS 启动）", write.message),
-                    "system".to_owned(),
-                )
-                .await?
-        }
+        // 连不上时底就是在等的版本（见 `system_config_base`），改好的副本就是它的下一版 / Unreachable, the base is the
+        // version waiting (see `system_config_base`), and the edited copy is its next version
+        Err(ControlError::Unavailable(_)) => match waiting {
+            Some(waiting) => (
+                None,
+                Some(
+                    state
+                        .config
+                        .save_waiting(candidate, &waiting.summary)
+                        .await?,
+                ),
+            ),
+            None => (
+                Some(
+                    state
+                        .config
+                        .save_pending(
+                            candidate,
+                            &previous.sha256,
+                            format!("{}（待 KixDNS 启动）", write.message),
+                            "system".to_owned(),
+                        )
+                        .await?,
+                ),
+                None,
+            ),
+        },
         Err(error) => return Err(anyhow::Error::new(error)),
     };
+    let detail = write
+        .audit_note
+        .iter()
+        .cloned()
+        .chain(result.map(|result| format!("生成配置版本 #{}", result.version_id)))
+        .chain(carried.map(|carried| {
+            format!(
+                "{}的修改另存为版本 #{}",
+                if refused { "没有生效" } else { "待应用" },
+                carried.version_id
+            )
+        }))
+        .collect::<Vec<_>>()
+        .join("，");
     state
         .database
         .audit(
             None,
             write.audit_action.to_owned(),
-            match &write.audit_note {
-                Some(note) => format!("{note}，生成配置版本 #{}", result.version_id),
-                None => format!("生成配置版本 #{}", result.version_id),
-            },
+            detail,
             unix_timestamp(),
         )
         .await?;
     Ok(())
+}
+
+/// `KixDNS` 在运行时让面板自己的改动生效：先校验，写进正式文件、记成已生效，等它热加载；不接受就退回上一版
+/// With `KixDNS` running, put the panel's own change into effect: validate, write the formal file and record it as
+/// applied, then wait for the reload; when refused, roll back to the previous version
+async fn apply_system_config(
+    state: &AppState,
+    write: &SystemConfigWrite<'_>,
+    previous: ConfigDocument,
+    candidate: Value,
+    before_reload: &ActiveConfig,
+) -> anyhow::Result<SaveResult> {
+    ensure_running_config_supported(state, &candidate).await?;
+    let validation = state.control.validate(&candidate).await?;
+    if !validation.valid {
+        anyhow::bail!("KixDNS 没有接受{}，仍在用之前的配置", write.subject);
+    }
+    let result = state
+        .config
+        .save(
+            candidate,
+            &previous.sha256,
+            write.message.to_owned(),
+            "system".to_owned(),
+        )
+        .await?;
+    if let Err(error) = state
+        .control
+        .wait_for_config(
+            &result.sha256,
+            before_reload.reload_sequence,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        rollback_config(state, previous.content, &result.sha256, "system").await?;
+        anyhow::bail!(
+            "KixDNS 没有接受{}，仍在用之前的配置：{}",
+            write.subject,
+            match &error {
+                ControlError::Rejected(reason) => reason.clone(),
+                other => reload_failure(other),
+            }
+        );
+    }
+    Ok(result)
 }
 
 async fn rollback_config(
@@ -1415,6 +1483,8 @@ async fn activate_candidate(
     if let Ok(health) = state.control.health().await {
         restart::note_alive(state, &health, &before_reload).await;
     }
+    // 没被接受时换回的是 KixDNS 正在用的那份 / A refusal puts back the config KixDNS runs
+    let running_sha256 = before_reload.sha256.clone();
     state
         .config
         .write_pending(result.version_id)
@@ -1438,7 +1508,7 @@ async fn activate_candidate(
         Err(error) => {
             state
                 .config
-                .restore_formal(previous.content)
+                .restore_formal(&running_sha256, &previous)
                 .await
                 .map_err(map_config_error)?;
             let message = format!("{}，仍在用之前的配置", reload_failure(&error));

@@ -10,11 +10,9 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
-use crate::blocklist_data::{
-    BuildRequest, BuildResult, SourceStatus, blocklist_path, replace_blocklist_path,
-};
+use crate::blocklist_data::{BuildRequest, BuildResult, SourceStatus, blocklist_path};
 use crate::error::{AppError, AppResult};
-use crate::geo_data::GeoDataSchedule;
+use crate::geo_data::{GeoDataSchedule, replace_path};
 
 use super::geo::{clean_up_after_update, schedule_label};
 use super::{
@@ -185,7 +183,7 @@ pub(super) async fn apply_scheduled_blocklist_update(state: &AppState) -> anyhow
                     audit_action: "config.blocklists.schedule.apply",
                     audit_note: None,
                 },
-                |candidate| Ok(replace_blocklist_path(candidate, old, new)),
+                |candidate| Ok(replace_path(candidate, old, new)),
             )
             .await?;
         }

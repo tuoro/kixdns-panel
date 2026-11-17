@@ -27,6 +27,14 @@ struct AuthenticatedApp {
 
 async fn test_app() -> (TempDir, Router) {
     let directory = tempdir().unwrap();
+    let app = build_app(app_settings(&directory)).await.unwrap();
+    (directory, app)
+}
+
+/// 测试面板的设置：路径都在给定目录下，配置文件、网页和假的 systemctl 已经备好
+/// A test panel's settings: every path under the given directory, with the config file, the web root and a fake
+/// systemctl in place
+fn app_settings(directory: &TempDir) -> AppSettings {
     let config_path = directory.path().join("pipeline.json");
     std::fs::write(&config_path, "{\"pipelines\":[]}").unwrap();
     let web_root = directory.path().join("web");
@@ -45,7 +53,7 @@ async fn test_app() -> (TempDir, Router) {
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
     )
     .unwrap();
-    let app = build_app(AppSettings {
+    AppSettings {
         systemctl: Some(systemctl),
         bind: "127.0.0.1:0".parse().unwrap(),
         database_path: directory.path().join("panel.db"),
@@ -69,10 +77,7 @@ async fn test_app() -> (TempDir, Router) {
         web_root,
         secure_cookie: false,
         trusted_proxies: TrustedProxies::default(),
-    })
-    .await
-    .unwrap();
-    (directory, app)
+    }
 }
 
 async fn authenticated_app() -> AuthenticatedApp {
@@ -1045,7 +1050,19 @@ async fn scheduled_geo_update_removes_unreferenced_files_and_keeps_rollback_targ
         geosite: Vec::new(),
     };
 
-    super::geo::apply_synced_geo_data(&state, &manifest)
+    // 更新前的清单指着配置里正用的那份 / The manifest before the update names the file the config uses
+    let before = crate::geo_data::GeoDataManifest {
+        geoip_mmdb: manifest
+            .geoip_mmdb
+            .clone()
+            .map(|resource| crate::geo_data::GeoDataResource {
+                path: previous.to_string_lossy().into_owned(),
+                sha256: "a".repeat(64),
+                ..resource
+            }),
+        ..manifest.clone()
+    };
+    super::geo::apply_synced_geo_data(&state, &before, &manifest)
         .await
         .unwrap();
 
@@ -1057,11 +1074,710 @@ async fn scheduled_geo_update_removes_unreferenced_files_and_keeps_rollback_targ
     // A run whose sources did not change and left the config alone still cleans up, or files
     // left over from earlier runs would stay forever.
     std::fs::write(&orphan, b"geo").unwrap();
-    super::geo::apply_synced_geo_data(&state, &manifest)
+    super::geo::apply_synced_geo_data(&state, &manifest, &manifest)
         .await
         .unwrap();
     assert!(current.exists() && previous.exists());
     assert!(!orphan.exists(), "配置未变的定时更新也应清理未引用的旧文件");
+}
+
+/// 面板自己下载进测试目录的几份 Geo 文件（按摘要起名，和真的一样认得出是面板的）：更新前、更新后各一套，外加一份更早的和
+/// 一份 `KixDNS` 不接受的
+/// Geo files the panel itself downloaded into the test's directory (named by digest, so they read as the panel's as
+/// real ones do): one set before the update and one after, plus an older one and one `KixDNS` refuses
+struct Downloads {
+    older_mmdb: &'static str,
+    old_mmdb: &'static str,
+    new_mmdb: &'static str,
+    refused_mmdb: &'static str,
+    old_dat: &'static str,
+    new_dat: &'static str,
+    older_site: &'static str,
+    old_site_a: &'static str,
+    new_site_a: &'static str,
+    old_site_b: &'static str,
+    new_site_b: &'static str,
+}
+
+fn downloads(directory: &TempDir) -> Downloads {
+    let root = directory.path().join("geo");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = std::fs::canonicalize(root).unwrap();
+    let file = |prefix: &str, digit: char, extension: &str| -> &'static str {
+        root.join(format!(
+            "{prefix}{}.{extension}",
+            digit.to_string().repeat(64)
+        ))
+        .to_string_lossy()
+        .into_owned()
+        .leak()
+    };
+    Downloads {
+        older_mmdb: file("geoip-mmdb-", '0', "mmdb"),
+        old_mmdb: file("geoip-mmdb-", '1', "mmdb"),
+        new_mmdb: file("geoip-mmdb-", '2', "mmdb"),
+        refused_mmdb: file("geoip-mmdb-", 'e', "mmdb"),
+        old_dat: file("geoip-dat-", '1', "dat"),
+        new_dat: file("geoip-dat-", '2', "dat"),
+        older_site: file("geosite-", '0', "dat"),
+        old_site_a: file("geosite-", '1', "dat"),
+        new_site_a: file("geosite-", '2', "dat"),
+        old_site_b: file("geosite-", 'b', "dat"),
+        new_site_b: file("geosite-", 'c', "dat"),
+    }
+}
+
+const BLOCKLIST_FILE: &str = "/var/lib/kixdns-panel/geo/blocklist-eeee.json";
+const REFUSED: &str = "KixDNS 没有接受这份配置，先改好校验里列出的问题";
+
+/// 一份 Geo 清单，给了的几项各指向一个文件；链接指向本机，测试不联网 / A Geo manifest naming one file for each item
+/// given; the links point at this machine, so tests stay offline
+fn geo_manifest(
+    mmdb: Option<&str>,
+    dat: Option<&str>,
+    geosite: &[&str],
+) -> crate::geo_data::GeoDataManifest {
+    let resource = |path: &str| crate::geo_data::GeoDataResource {
+        url: format!("https://127.0.0.1/{}", path.rsplit('/').next().unwrap()),
+        path: path.to_owned(),
+        sha256: "a".repeat(64),
+        size: 3,
+        downloaded_at: 1,
+    };
+    crate::geo_data::GeoDataManifest {
+        geoip_mmdb: mmdb.map(resource),
+        geoip_dat: dat.map(resource),
+        geosite: geosite.iter().map(|path| resource(path)).collect(),
+    }
+}
+
+/// 配置文件写成 `settings` 这些设置，不是面板的排版（压成一行） / Writes the config file with these `settings`, not in
+/// the panel's layout (on one line)
+fn write_settings(directory: &TempDir, settings: &Value) {
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        serde_json::json!({ "pipelines": [], "settings": settings }).to_string(),
+    )
+    .unwrap();
+}
+
+/// 用户把 Geo 设置换成了自己的文件，自动更新还开着：更新只换它自己下载的文件，配置里用户的路径一个不动
+/// The user switched the Geo settings to files of their own with the schedule still on: an update swaps only the files
+/// it downloaded itself, and no path of the user's in the config changes
+#[tokio::test]
+async fn a_scheduled_geo_update_leaves_the_users_own_files_alone() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    let own = serde_json::json!({
+        "geoip_db_path": "/srv/geo/my.mmdb",
+        "geosite_data_paths": ["/srv/geo/my-geosite.dat", BLOCKLIST_FILE],
+    });
+    write_settings(&directory, &own);
+    let state = test_state(&directory).await;
+    let before = geo_manifest(Some(d.old_mmdb), None, &[d.old_site_a]);
+    let updated = geo_manifest(Some(d.new_mmdb), None, &[d.new_site_a]);
+
+    super::geo::apply_synced_geo_data(&state, &before, &updated)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        state.config.desired().await.unwrap().content["settings"],
+        own
+    );
+    assert!(state.config.pending().await.unwrap().is_none());
+}
+
+/// 配置里还用着面板下载的 MMDB 和第二个 `GeoSite`，DAT 和第一个 `GeoSite` 换成了用户自己的：只把面板的那两份换成新下载的，
+/// 各在原来的位置
+/// The config still uses the panel's MMDB and second `GeoSite`, with the DAT and the first `GeoSite` switched to the
+/// user's own: only the panel's two are swapped for the new downloads, each where it was
+#[tokio::test]
+async fn a_scheduled_geo_update_swaps_each_file_it_downloaded_in_place() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    write_settings(
+        &directory,
+        &serde_json::json!({
+            "geoip_db_path": d.old_mmdb,
+            "geoip_dat_path": "/srv/geo/my.dat",
+            "geosite_data_paths": ["/srv/geo/my-geosite.dat", d.old_site_b, BLOCKLIST_FILE],
+        }),
+    );
+    let state = test_state(&directory).await;
+    let before = geo_manifest(
+        Some(d.old_mmdb),
+        Some(d.old_dat),
+        &[d.old_site_a, d.old_site_b],
+    );
+    let updated = geo_manifest(
+        Some(d.new_mmdb),
+        Some(d.new_dat),
+        &[d.new_site_a, d.new_site_b],
+    );
+
+    super::geo::apply_synced_geo_data(&state, &before, &updated)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        state.config.desired().await.unwrap().content["settings"],
+        serde_json::json!({
+            "geoip_db_path": d.new_mmdb,
+            "geoip_dat_path": "/srv/geo/my.dat",
+            "geosite_data_paths": ["/srv/geo/my-geosite.dat", d.new_site_b, BLOCKLIST_FILE],
+        })
+    );
+}
+
+/// 配置里是面板更早下载的那几份（退回了更早的版本，或者上一次更新没被接受、退回了上一版）：照样换成新下载的，自动更新
+/// 不会从此卡住
+/// The config names older downloads of the panel's (an older version restored, or the last update refused and put
+/// back): they are swapped for the new downloads all the same, so the schedule never gets stuck
+#[tokio::test]
+async fn a_scheduled_geo_update_also_swaps_older_downloads_it_made() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    write_settings(
+        &directory,
+        &serde_json::json!({ "geoip_db_path": d.older_mmdb, "geosite_data_paths": [d.older_site] }),
+    );
+    let state = test_state(&directory).await;
+    let before = geo_manifest(Some(d.old_mmdb), None, &[d.old_site_a]);
+    let updated = geo_manifest(Some(d.new_mmdb), None, &[d.new_site_a]);
+    let base = state.config.current().await.unwrap().content;
+    assert!(state.geo_data.uses_downloads(&base, &before));
+
+    super::geo::apply_synced_geo_data(&state, &before, &updated)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        state.config.desired().await.unwrap().content["settings"],
+        serde_json::json!({ "geoip_db_path": d.new_mmdb, "geosite_data_paths": [d.new_site_a] })
+    );
+}
+
+/// 全新安装的首次启动只添上 `GeoSite`：配置里已经写着的 `GeoIP` 文件留着
+/// A fresh install's first start only adds `GeoSite`: a `GeoIP` file the config already names stays
+#[tokio::test]
+async fn the_builtin_geosite_seed_only_adds_geosite() {
+    let directory = tempdir().unwrap();
+    let state = builtin_geosite_state(
+        &directory,
+        serde_json::json!({ "geoip_db_path": "/srv/geo/my.mmdb" }),
+    )
+    .await;
+    std::fs::write(directory.path().join("geo/.import-builtin-geosite"), b"").unwrap();
+
+    super::geo::seed_builtin_geosite(&state).await.unwrap();
+
+    let manifest = state.geo_data.current().await.unwrap();
+    assert_eq!(
+        state.config.desired().await.unwrap().content["settings"],
+        serde_json::json!({
+            "geoip_db_path": "/srv/geo/my.mmdb",
+            "geosite_data_paths": [manifest.geosite[0].path],
+        })
+    );
+}
+
+/// 配置已经不用面板下载的 Geo 文件：到点不再白白下载，自动更新照实说用不上，配置不动
+/// The config no longer uses the Geo files the panel downloads: when due nothing is downloaded for nothing, the schedule
+/// says it is of no use, and the config is left alone
+#[tokio::test]
+async fn a_scheduled_geo_update_says_when_the_config_uses_none_of_its_files() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    let own = serde_json::json!({ "geoip_db_path": "/srv/geo/my.mmdb" });
+    write_settings(&directory, &own);
+    let state = test_state(&directory).await;
+    state
+        .database
+        .set_setting(
+            "geo_data_manifest",
+            serde_json::to_string(&geo_manifest(Some(d.old_mmdb), None, &[d.old_site_a])).unwrap(),
+            1,
+        )
+        .await
+        .unwrap();
+    state
+        .geo_data
+        .schedule()
+        .set_interval(Some(24))
+        .await
+        .unwrap();
+    // 上次试过是 1970 年：这次一定到点，不看现在几秒 / Last tried in 1970: due now for sure, whatever the second
+    state.geo_data.schedule().mark_attempt(1_000).await.unwrap();
+
+    assert!(super::geo::run_due_geo_schedule(&state).await.is_err());
+
+    let schedule = state.geo_data.schedule().get().await.unwrap();
+    assert_eq!(
+        schedule.last_error.as_deref(),
+        Some("配置里没有用这些链接下载的文件，自动更新用不上")
+    );
+    assert_eq!(
+        state.config.desired().await.unwrap().content["settings"],
+        own
+    );
+}
+
+/// 存一份用户在等的版本（给了原因就再记成没有生效），返回它的编号 / Stores a version the user is waiting on (recorded as
+/// refused when a reason is given) and returns its id
+async fn wait_on(
+    state: &super::AppState,
+    content: Value,
+    message: &str,
+    refused: Option<&str>,
+) -> i64 {
+    let desired = state.config.desired().await.unwrap();
+    let id = state
+        .config
+        .save_pending(
+            content,
+            &desired.sha256,
+            message.to_owned(),
+            "admin".to_owned(),
+        )
+        .await
+        .unwrap()
+        .version_id;
+    if let Some(reason) = refused {
+        state.config.mark_pending_failed(id, reason).await.unwrap();
+    }
+    id
+}
+
+async fn geo_schedule_audit(state: &super::AppState) -> Vec<String> {
+    state
+        .database
+        .list_audit_events(10, None, Some("config.geo_data.schedule.apply".to_owned()))
+        .await
+        .unwrap()
+        .events
+        .into_iter()
+        .map(|event| event.detail)
+        .collect()
+}
+
+/// `KixDNS` 在运行，编辑器里是一份没被接受的草稿：定时更新照常生效；草稿还在，还是没被接受，原因、备注和是谁存的照旧，
+/// 里面的文件也换成了新的；操作记录说它另存成了哪一版
+/// `KixDNS` running, with a refused draft in the editor: the scheduled update takes effect as usual; the draft is still
+/// there, still refused, with its reason, note and author, and its files are the new ones too; the audit names the
+/// version it was stored as
+#[tokio::test]
+async fn a_scheduled_update_keeps_a_refused_draft_waiting() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    write_settings(
+        &directory,
+        &serde_json::json!({ "geoip_db_path": d.old_mmdb }),
+    );
+    let state = test_state(&directory).await;
+    let draft = serde_json::json!({
+        "pipelines": [{ "id": "draft", "rules": [] }],
+        "settings": { "geoip_db_path": d.old_mmdb },
+    });
+    wait_on(&state, draft, "草稿", Some(REFUSED)).await;
+    let _kixdns = start_fake_kixdns(directory.path(), true);
+
+    super::geo::apply_synced_geo_data(
+        &state,
+        &geo_manifest(Some(d.old_mmdb), None, &[]),
+        &geo_manifest(Some(d.new_mmdb), None, &[]),
+    )
+    .await
+    .unwrap();
+
+    let formal = state.config.current().await.unwrap();
+    assert_eq!(formal.content["settings"]["geoip_db_path"], d.new_mmdb);
+    let waiting = state
+        .config
+        .pending()
+        .await
+        .unwrap()
+        .expect("the draft still waits");
+    assert_eq!(
+        (
+            waiting.apply_state.as_str(),
+            waiting.message.as_str(),
+            waiting.actor.as_str(),
+            waiting.apply_error.as_deref()
+        ),
+        ("failed", "草稿", "admin", Some(REFUSED))
+    );
+    let content = state.config.desired().await.unwrap().content;
+    assert_eq!(content["pipelines"][0]["id"], "draft");
+    assert_eq!(content["settings"]["geoip_db_path"], d.new_mmdb);
+    assert_eq!(
+        geo_schedule_audit(&state).await,
+        [format!(
+            "生成配置版本 #{}，没有生效的修改另存为版本 #{}",
+            formal.version_id.unwrap(),
+            waiting.id
+        )]
+    );
+}
+
+/// `KixDNS` 连不上时用户存下的待应用版本：定时更新改在它里面另存一版，备注和是谁存的照旧，不变成系统存的版本；
+/// 配置文件不动
+/// A pending version the user saved while `KixDNS` was unreachable: the scheduled update is made in it and stored as a
+/// new one, keeping its note and author rather than becoming the system's; the config file stays as it was
+#[tokio::test]
+async fn a_scheduled_update_while_kixdns_is_down_keeps_the_users_pending_version() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    write_settings(
+        &directory,
+        &serde_json::json!({ "geoip_db_path": d.old_mmdb }),
+    );
+    let state = test_state(&directory).await;
+    let draft = serde_json::json!({
+        "pipelines": [{ "id": "cdn", "rules": [] }],
+        "settings": { "geoip_db_path": d.old_mmdb },
+    });
+    wait_on(&state, draft, "把视频域名交给 CDN 组", None).await;
+
+    super::geo::apply_synced_geo_data(
+        &state,
+        &geo_manifest(Some(d.old_mmdb), None, &[]),
+        &geo_manifest(Some(d.new_mmdb), None, &[]),
+    )
+    .await
+    .unwrap();
+
+    let waiting = state.config.pending().await.unwrap().unwrap();
+    assert_eq!(
+        (
+            waiting.apply_state.as_str(),
+            waiting.message.as_str(),
+            waiting.actor.as_str()
+        ),
+        ("pending", "把视频域名交给 CDN 组", "admin")
+    );
+    let content = state.config.desired().await.unwrap().content;
+    assert_eq!(content["pipelines"][0]["id"], "cdn");
+    assert_eq!(content["settings"]["geoip_db_path"], d.new_mmdb);
+    assert_eq!(
+        state.config.current().await.unwrap().content["settings"]["geoip_db_path"],
+        d.old_mmdb
+    );
+    assert_eq!(
+        geo_schedule_audit(&state).await,
+        [format!("待应用的修改另存为版本 #{}", waiting.id)]
+    );
+}
+
+/// `KixDNS` 停着、编辑器里是一份没被接受的草稿：定时更新不把它变成要应用的版本，它还是没被接受，原因照旧
+/// `KixDNS` stopped, with a refused draft in the editor: the scheduled update does not turn it into a version to apply;
+/// it stays refused, with its reason
+#[tokio::test]
+async fn a_scheduled_update_while_kixdns_is_down_does_not_queue_a_refused_draft() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    write_settings(
+        &directory,
+        &serde_json::json!({ "geoip_db_path": d.old_mmdb }),
+    );
+    let state = test_state(&directory).await;
+    let draft = serde_json::json!({
+        "pipelines": [{ "id": "draft", "rules": [] }],
+        "settings": { "geoip_db_path": d.old_mmdb },
+    });
+    wait_on(&state, draft, "草稿", Some(REFUSED)).await;
+
+    super::geo::apply_synced_geo_data(
+        &state,
+        &geo_manifest(Some(d.old_mmdb), None, &[]),
+        &geo_manifest(Some(d.new_mmdb), None, &[]),
+    )
+    .await
+    .unwrap();
+
+    let waiting = state.config.pending().await.unwrap().unwrap();
+    assert_eq!(
+        (
+            waiting.apply_state.as_str(),
+            waiting.message.as_str(),
+            waiting.apply_error.as_deref()
+        ),
+        ("failed", "草稿", Some(REFUSED))
+    );
+    assert_eq!(
+        state.config.desired().await.unwrap().content["settings"]["geoip_db_path"],
+        d.new_mmdb
+    );
+}
+
+/// 系统的修改 `KixDNS` 没接受、退回了上一版：在等的版本原样还在，编号也没变
+/// The system's change refused by `KixDNS` and put back: the version waiting is still there as it was, under the same
+/// number
+#[tokio::test]
+async fn a_refused_system_change_leaves_the_waiting_version_as_it_was() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    write_settings(
+        &directory,
+        &serde_json::json!({ "geoip_db_path": d.old_mmdb }),
+    );
+    let state = test_state(&directory).await;
+    let draft = serde_json::json!({
+        "pipelines": [{ "id": "cdn", "rules": [] }],
+        "settings": { "geoip_db_path": d.old_mmdb },
+    });
+    let id = wait_on(&state, draft.clone(), "把视频域名交给 CDN 组", None).await;
+    let _kixdns = start_fake_kixdns_refusing(directory.path(), d.refused_mmdb, None);
+
+    let error = super::geo::apply_synced_geo_data(
+        &state,
+        &geo_manifest(Some(d.old_mmdb), None, &[]),
+        &geo_manifest(Some(d.refused_mmdb), None, &[]),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .starts_with("KixDNS 没有接受新的 Geo 数据，仍在用之前的配置"),
+        "{error:#}"
+    );
+    let waiting = state.config.pending().await.unwrap().expect("still waits");
+    assert_eq!((waiting.id, waiting.apply_state.as_str()), (id, "pending"));
+    assert_eq!(state.config.desired().await.unwrap().content, draft);
+}
+
+/// 假的 `KixDNS`：像真的一样盯着配置文件，文件换了（新的 inode）就重载一次；内容里有 `marker` 的不接受，接着用原来那份。
+/// `running` 是它开始时在用的那份的散列，不给就是磁盘上那份
+/// A fake `KixDNS` that, like the real one, watches the config file and reloads once whenever the file is replaced (a
+/// new inode); content holding `marker` is refused and it goes on with what it had. `running` is the hash of the config
+/// it starts with, the one on disk when not given
+fn start_fake_kixdns_refusing(
+    directory: &std::path::Path,
+    marker: &'static str,
+    running: Option<String>,
+) -> tokio::task::JoinHandle<()> {
+    use axum::routing::{get, post};
+    use std::os::unix::fs::MetadataExt;
+    let socket = directory.join("admin.sock");
+    let config = directory.join("pipeline.json");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let inode = |path: &std::path::Path| std::fs::metadata(path).unwrap().ino();
+    // inode、重载次数、在用的散列、上次重载的错误 / The inode, the reload count, the hash in use and the last reload's error
+    let watched = std::sync::Arc::new(std::sync::Mutex::new((
+        inode(&config),
+        0_u64,
+        running.unwrap_or_else(|| crate::digest::sha256_hex(&std::fs::read(&config).unwrap())),
+        None::<String>,
+    )));
+    let active = move || {
+        let mut watched = watched.lock().unwrap();
+        let now = inode(&config);
+        if now != watched.0 {
+            let bytes = std::fs::read(&config).unwrap();
+            watched.0 = now;
+            watched.1 += 1;
+            if String::from_utf8_lossy(&bytes).contains(marker) {
+                watched.3 = Some("监听地址被占用".to_owned());
+            } else {
+                watched.2 = crate::digest::sha256_hex(&bytes);
+                watched.3 = None;
+            }
+        }
+        serde_json::json!({
+            "protocol_version": 1, "generation": watched.1, "sha256": watched.2, "loaded_at_unix": 0,
+            "reload_sequence": watched.1, "last_reload": { "success": watched.3.is_none(), "error": watched.3 },
+        })
+    };
+    let router = Router::new()
+        .route(
+            "/v1/health",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "protocol_version": 1, "status": "ok", "pid": 1, "version": "test", "upstream_commit": "test",
+                    "patchset": "p0", "started_at_unix": 0, "uptime_seconds": 1, "config_generation": 1, "capabilities": [],
+                }))
+            }),
+        )
+        .route(
+            "/v1/config/active",
+            get(move || {
+                let active = active.clone();
+                async move { axum::Json(active()) }
+            }),
+        )
+        .route(
+            "/v1/config/validate",
+            post(|| async {
+                axum::Json(serde_json::json!({ "protocol_version": 1, "valid": true, "pipeline_count": 1, "rule_count": 0 }))
+            }),
+        );
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
+}
+
+/// `KixDNS` 不接受这次重载：配置文件换回它正在用的那份，一个字节都不差（不是面板排的版也照旧），还认得出是哪个版本
+/// `KixDNS` refuses the reload: the config file goes back to the one it runs, byte for byte (also when the panel did not
+/// lay it out), still recognised as a version
+#[tokio::test]
+async fn a_refused_reload_puts_back_the_exact_bytes_kixdns_runs() {
+    let directory = tempdir().unwrap();
+    let original = r#"{"pipelines":[]}"#;
+    std::fs::write(directory.path().join("pipeline.json"), original).unwrap();
+    let state = test_state(&directory).await;
+    let _kixdns = start_fake_kixdns_refusing(directory.path(), "refused-by-kixdns", None);
+    wait_on(
+        &state,
+        serde_json::json!({ "pipelines": [{ "id": "refused-by-kixdns", "rules": [] }] }),
+        "会被拒",
+        None,
+    )
+    .await;
+
+    super::reconcile_pending(&state).await.unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("pipeline.json")).unwrap(),
+        original
+    );
+    assert!(state.config.current().await.unwrap().version_id.is_some());
+    assert_eq!(
+        state.config.pending().await.unwrap().unwrap().apply_state,
+        "failed"
+    );
+}
+
+/// 面板运行时有人直接改了配置文件、`KixDNS` 也重载了它，历史里还没有这一版：没被接受时换回的就是文件里原来那几个字节
+/// The config file was edited by hand while the panel ran and `KixDNS` reloaded it, so history has no such version yet:
+/// a refusal puts back exactly the bytes the file held
+#[tokio::test]
+async fn a_refused_reload_puts_back_a_config_edited_by_hand_as_it_was() {
+    let directory = tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        r#"{"pipelines":[]}"#,
+    )
+    .unwrap();
+    let state = test_state(&directory).await;
+    let by_hand = "{ \"pipelines\": [ { \"id\": \"by-hand\", \"rules\": [] } ] }\n";
+    std::fs::write(directory.path().join("pipeline.json"), by_hand).unwrap();
+    assert!(state.config.current().await.unwrap().version_id.is_none());
+    let _kixdns = start_fake_kixdns_refusing(directory.path(), "refused-by-kixdns", None);
+    wait_on(
+        &state,
+        serde_json::json!({ "pipelines": [{ "id": "refused-by-kixdns", "rules": [] }] }),
+        "会被拒",
+        None,
+    )
+    .await;
+
+    super::reconcile_pending(&state).await.unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("pipeline.json")).unwrap(),
+        by_hand
+    );
+}
+
+/// 面板在把新配置写进文件以后、换回以前停了：下一次照样换回 `KixDNS` 正在用的那份，不把没被接受的那份留在文件里，
+/// 免得 `KixDNS` 下次启动时读到它
+/// The panel stopped after writing the new config into the file and before putting it back: the next pass still puts
+/// back the one `KixDNS` runs instead of leaving the refused one in the file for `KixDNS` to read at its next start
+#[tokio::test]
+async fn a_reload_cut_short_still_puts_back_what_kixdns_runs() {
+    let directory = tempdir().unwrap();
+    let original = r#"{"pipelines":[]}"#;
+    std::fs::write(directory.path().join("pipeline.json"), original).unwrap();
+    let state = test_state(&directory).await;
+    let id = wait_on(
+        &state,
+        serde_json::json!({ "pipelines": [{ "id": "refused-by-kixdns", "rules": [] }] }),
+        "会被拒",
+        None,
+    )
+    .await;
+    // 上一次写进了文件，还没等到 KixDNS 的回音就停了 / The last pass wrote the file and stopped before KixDNS answered
+    state.config.write_pending(id).await.unwrap();
+    let _kixdns = start_fake_kixdns_refusing(
+        directory.path(),
+        "refused-by-kixdns",
+        Some(crate::digest::sha256_hex(original.as_bytes())),
+    );
+
+    super::reconcile_pending(&state).await.unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("pipeline.json")).unwrap(),
+        original
+    );
+    assert_eq!(
+        state.config.pending().await.unwrap().unwrap().apply_state,
+        "failed"
+    );
+}
+
+/// 本机的内核库存读不出来（这里内核的路径是个目录）：面板照样启动，不在启动时退出、被 systemd 一遍遍重启
+/// The local kernel inventory cannot be read (here the kernel's path is a directory): the panel still starts rather than
+/// exiting at start-up and being restarted by systemd over and over
+#[tokio::test]
+async fn the_panel_starts_when_the_kernel_inventory_cannot_be_read() {
+    let directory = tempdir().unwrap();
+    let settings = app_settings(&directory);
+    std::fs::create_dir(&settings.kixdns_binary).unwrap();
+
+    let _app = build_app(settings).await.unwrap();
+}
+
+/// 写到一半断掉（断电、进程被杀）留下的临时文件：启动时在面板写文件的每个目录里删掉；名字只是像的不碰
+/// Temporary files left by writes cut short (a power loss, a killed process): removed at start-up from every directory
+/// the panel writes to, while names that only look alike stay
+#[tokio::test]
+async fn start_up_removes_what_interrupted_writes_left_behind() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let mut settings = app_settings(&directory);
+    // 各在各的目录里，一处的清理碰巧清了另一处也看得出 / Each in a directory of its own, so a sweep clearing another's
+    // files by accident shows
+    for name in ["etc", "bin", "state", "geo", "versions/fork-77-0123"] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+    }
+    std::fs::rename(&settings.config_path, root.join("etc/pipeline.json")).unwrap();
+    settings.config_path = root.join("etc/pipeline.json");
+    settings.kixdns_binary = root.join("bin/kixdns");
+    settings.github_token_path = root.join("state/github-token");
+    let left = [
+        "etc/.kixdns-panel-a1B2c3",
+        "geo/.geo-download-Zz9Yy8",
+        "geo/.geo-write-000000",
+        "versions/.version-Qw3Er5/kixdns",
+        "versions/fork-77-0123/.manifest-AbC123",
+        "bin/.kixdns-candidate-AbCdEf",
+        "bin/.kixdns-rollback-123abc",
+        "state/.github-token-xYz789",
+    ];
+    let kept = [
+        "etc/.kixdns-panel-backup.json",
+        "geo/.geo-write-abc",
+        "geo/notes.txt",
+        "versions/fork-77-0123/manifest.json",
+        "bin/.kixdns-candidate-AbCdEf.old",
+        "state/.github-token-xYz78!",
+    ];
+    for name in left.iter().chain(&kept) {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"x").unwrap();
+    }
+
+    let _app = build_app(settings).await.unwrap();
+
+    for name in left {
+        assert!(!root.join(name).exists(), "{name} is left over");
+    }
+    assert!(!root.join("versions/.version-Qw3Er5").exists());
+    for name in kept {
+        assert!(root.join(name).exists(), "{name} is not ours");
+    }
 }
 
 #[tokio::test]
