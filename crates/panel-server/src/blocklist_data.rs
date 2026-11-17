@@ -669,23 +669,6 @@ pub fn blocklist_path(config: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// 把配置里拦截列表的文件从 `old` 换成 `new`；换了返回 true / Replaces the blocklists' file in a config from `old` to
-/// `new`; true when it changed
-pub fn replace_blocklist_path(config: &mut Value, old: &str, new: &str) -> bool {
-    let Some(paths) = config
-        .pointer_mut("/settings/geosite_data_paths")
-        .and_then(Value::as_array_mut)
-    else {
-        return false;
-    };
-    let mut changed = false;
-    for path in paths.iter_mut().filter(|path| path.as_str() == Some(old)) {
-        *path = Value::String(new.to_owned());
-        changed = true;
-    }
-    changed
-}
-
 /// 读合并文件里记的来源；文件不在时为 None。文件有十几 MB，在阻塞线程里读
 /// Reads the sources a merged file records; None when the file is gone. The file runs to a dozen MB or more, so it
 /// is read on a blocking thread
@@ -1136,12 +1119,12 @@ mod tests {
         let geosite = format!("/var/lib/kixdns-panel/geo/geosite-{}.dat", "c".repeat(64));
         let mut config = json!({ "settings": { "geosite_data_paths": [geosite, old] } });
         assert_eq!(blocklist_path(&config), Some(old.clone()));
-        assert!(replace_blocklist_path(&mut config, &old, &new));
+        assert!(crate::geo_data::replace_path(&mut config, &old, &new));
         assert_eq!(
             config["settings"]["geosite_data_paths"],
             json!([geosite, new])
         );
-        assert!(!replace_blocklist_path(&mut config, &old, &new));
+        assert!(!crate::geo_data::replace_path(&mut config, &old, &new));
         assert_eq!(
             blocklist_path(&json!({ "settings": { "geosite_data_paths": [geosite] } })),
             None

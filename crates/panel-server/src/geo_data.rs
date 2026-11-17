@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 use crate::auth::unix_timestamp;
 use crate::db::Database;
 use crate::digest::encode_hex;
+use crate::temporaries::sweep;
 
 const MANIFEST_KEY: &str = "geo_data_manifest";
 const SCHEDULE_KEY: &str = "geo_data_schedule";
@@ -30,6 +31,9 @@ const MAX_REDIRECTS: usize = 4;
 /// The marker the installer leaves in the Geo directory on a fresh install: the first start
 /// imports the built-in `GeoSite` once and removes it.
 const BUILTIN_SEED_MARKER: &str = ".import-builtin-geosite";
+/// 下载、写文件时临时文件的前缀 / The prefixes of the temporary files a download and a write go through
+const DOWNLOAD_PREFIX: &str = ".geo-download-";
+const WRITE_PREFIX: &str = ".geo-write-";
 
 #[derive(Clone)]
 pub struct GeoDataManager {
@@ -151,11 +155,22 @@ enum ResourceKind {
 }
 
 impl ResourceKind {
+    const ALL: [Self; 3] = [Self::Mmdb, Self::IpDat, Self::Site];
+
+    /// 存进面板目录时文件名的开头，后面接内容摘要 / How the file name starts in the panel's directory, the digest after it
     fn prefix(self) -> &'static str {
         match self {
-            Self::Mmdb => "geoip-mmdb",
-            Self::IpDat => "geoip-dat",
-            Self::Site => "geosite",
+            Self::Mmdb => "geoip-mmdb-",
+            Self::IpDat => "geoip-dat-",
+            Self::Site => "geosite-",
+        }
+    }
+
+    /// 存进面板目录时文件名可能的后缀 / The extensions a file name may have in the panel's directory
+    fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::Mmdb => &["mmdb"],
+            Self::IpDat | Self::Site => &["dat", "json"],
         }
     }
 
@@ -169,6 +184,18 @@ impl ResourceKind {
             "dat"
         }
     }
+
+    /// `path` 是不是面板自己下载进 `root` 的这一类文件（按内容摘要起名，和清理认的一样）；不是的就是用户自己的
+    /// Whether `path` is a file of this kind the panel itself downloaded into `root` (named by its digest, as the
+    /// cleanup recognises them); any other path is the user's own
+    fn owns(self, root: &Path, path: &str) -> bool {
+        let path = Path::new(path);
+        path.parent() == Some(root)
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| is_digest_name(name, self.prefix(), self.extensions()))
+    }
 }
 
 impl GeoDataManager {
@@ -176,6 +203,9 @@ impl GeoDataManager {
         prepare_root(root)?;
         let root =
             fs::canonicalize(root).map_err(|error| internal_io("规范化 Geo 数据目录", error))?;
+        // 启动时、下载以前清掉上次下到一半、写到一半留下的（一个最大 128 MiB） / At start-up, before any download, clear
+        // what a download or write cut short left last time (up to 128 MiB each)
+        sweep(&root, &[DOWNLOAD_PREFIX, WRITE_PREFIX]);
         Ok(Self {
             schedule: ScheduleStore::new(database.clone(), SCHEDULE_KEY, "Geo 数据"),
             database,
@@ -256,7 +286,7 @@ impl GeoDataManager {
         }
         let file = self
             .write_file(&bytes, |sha256| {
-                format!("{}-{sha256}.dat", ResourceKind::Site.prefix())
+                format!("{}{sha256}.dat", ResourceKind::Site.prefix())
             })
             .await?;
         Ok(GeoDataResource {
@@ -360,7 +390,7 @@ impl GeoDataManager {
                 "Geo 数据",
                 MAX_DOWNLOAD_BYTES,
                 |sha256, final_url| {
-                    format!("{}-{sha256}.{}", kind.prefix(), kind.extension(final_url))
+                    format!("{}{sha256}.{}", kind.prefix(), kind.extension(final_url))
                 },
             )
             .await?;
@@ -390,7 +420,7 @@ impl GeoDataManager {
         validate_response(&response, what, max_bytes)?;
 
         let temporary = Builder::new()
-            .prefix(".geo-download-")
+            .prefix(DOWNLOAD_PREFIX)
             .tempfile_in(self.root.as_ref())
             .map_err(|error| internal_io("创建 Geo 数据临时文件", error))?;
         #[cfg(unix)]
@@ -447,7 +477,7 @@ impl GeoDataManager {
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let sha256 = encode_hex(Sha256::digest(bytes));
         let mut temporary = Builder::new()
-            .prefix(".geo-write-")
+            .prefix(WRITE_PREFIX)
             .tempfile_in(self.root.as_ref())
             .map_err(|error| internal_io("创建 Geo 数据临时文件", error))?;
         #[cfg(unix)]
@@ -505,16 +535,8 @@ impl ScheduleStore {
     }
 
     pub(crate) async fn get(&self) -> Result<GeoDataSchedule, GeoDataError> {
-        let Some(value) = self.database.get_setting(self.key).await? else {
-            return Ok(GeoDataSchedule::default());
-        };
-        let mut schedule: GeoDataSchedule = serde_json::from_str(&value).map_err(|error| {
-            GeoDataError::Internal(
-                anyhow::Error::new(error).context(format!("{}的自动更新设置已损坏", self.what)),
-            )
-        })?;
-        schedule.refresh_next_run();
-        Ok(schedule)
+        let stored = self.database.get_setting(self.key).await?;
+        parse_schedule(stored.as_deref(), self.what)
     }
 
     pub(crate) async fn set_interval(
@@ -527,23 +549,27 @@ impl ScheduleStore {
                 self.what
             )));
         }
-        let mut schedule = self.get().await?;
-        if schedule.interval_hours == interval_hours {
-            return Ok(schedule);
-        }
-        schedule.interval_hours = interval_hours;
-        schedule.last_attempt_at = None;
-        schedule.last_error = None;
-        schedule.refresh_next_run();
-        self.store(&schedule).await?;
-        Ok(schedule)
+        self.modify(move |schedule| {
+            if schedule.interval_hours == interval_hours {
+                return Ok(false);
+            }
+            schedule.interval_hours = interval_hours;
+            schedule.last_attempt_at = None;
+            schedule.last_error = None;
+            schedule.refresh_next_run();
+            Ok(true)
+        })
+        .await
     }
 
     pub(crate) async fn mark_attempt(&self, now: i64) -> Result<(), GeoDataError> {
-        let mut schedule = self.get().await?;
-        schedule.last_attempt_at = Some(now);
-        schedule.refresh_next_run();
-        self.store(&schedule).await
+        self.modify(move |schedule| {
+            schedule.last_attempt_at = Some(now);
+            schedule.refresh_next_run();
+            Ok(true)
+        })
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn mark_result(
@@ -551,23 +577,61 @@ impl ScheduleStore {
         now: i64,
         error: Option<String>,
     ) -> Result<(), GeoDataError> {
-        let mut schedule = self.get().await?;
-        if error.is_none() {
-            schedule.last_success_at = Some(now);
-        }
-        schedule.last_error = error.map(|message| message.chars().take(500).collect());
-        schedule.refresh_next_run();
-        self.store(&schedule).await
+        self.modify(move |schedule| {
+            if error.is_none() {
+                schedule.last_success_at = Some(now);
+            }
+            schedule.last_error = error.map(|message| message.chars().take(500).collect());
+            schedule.refresh_next_run();
+            Ok(true)
+        })
+        .await
+        .map(|_| ())
     }
 
-    async fn store(&self, schedule: &GeoDataSchedule) -> Result<(), GeoDataError> {
-        let serialized = serde_json::to_string(schedule)
-            .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;
+    /// 读出设置、改一下、改了就写回；三处改动都走这里。读和写在一个写事务里：后台记结果的那一下，用户的「关闭」插不到
+    /// 中间、被它盖回去，只能等它写完再写
+    /// Reads the setting, changes it and writes it back when changed; all three changes go through here. The read and
+    /// the write share one write transaction: the user's 关闭 cannot land between those of a background record and be
+    /// overwritten by it, and waits for that write to finish instead
+    async fn modify(
+        &self,
+        change: impl FnOnce(&mut GeoDataSchedule) -> Result<bool, GeoDataError> + Send + 'static,
+    ) -> Result<GeoDataSchedule, GeoDataError> {
+        let what = self.what;
         self.database
-            .set_setting(self.key, serialized, unix_timestamp())
-            .await?;
-        Ok(())
+            .update_setting(self.key, unix_timestamp(), move |stored| {
+                let changed = parse_schedule(stored.as_deref(), what).and_then(|mut schedule| {
+                    let changed = change(&mut schedule)?;
+                    Ok((changed, schedule))
+                });
+                match changed {
+                    Ok((true, schedule)) => match serde_json::to_string(&schedule) {
+                        Ok(serialized) => (Some(serialized), Ok(schedule)),
+                        Err(error) => {
+                            (None, Err(GeoDataError::Internal(anyhow::Error::new(error))))
+                        }
+                    },
+                    Ok((false, schedule)) => (None, Ok(schedule)),
+                    Err(error) => (None, Err(error)),
+                }
+            })
+            .await?
     }
+}
+
+/// 读存着的自动更新设置；没存过就是关着的 / Reads a stored automatic-update setting; none stored means it is off
+fn parse_schedule(stored: Option<&str>, what: &str) -> Result<GeoDataSchedule, GeoDataError> {
+    let Some(value) = stored else {
+        return Ok(GeoDataSchedule::default());
+    };
+    let mut schedule: GeoDataSchedule = serde_json::from_str(value).map_err(|error| {
+        GeoDataError::Internal(
+            anyhow::Error::new(error).context(format!("{what}的自动更新设置已损坏")),
+        )
+    })?;
+    schedule.refresh_next_run();
+    Ok(schedule)
 }
 
 impl GeoDataSyncRequest {
@@ -666,10 +730,181 @@ fn load_builtin_geosite(
     )))
 }
 
-pub fn apply_manifest_paths(
+/// 配置里写一串 `GeoSite` 文件的设置（拦截列表合并的文件也在里面） / The setting that lists `GeoSite` files (the
+/// blocklists' merged file among them)
+const PATH_LIST_KEY: &str = "geosite_data_paths";
+
+/// 配置里写文件路径的设置放的是哪一类文件；`GeoSite` 那一项写一串，另外两项各写一个
+/// The kind of file a setting that names files holds; the `GeoSite` one lists several, the other two name one each
+fn path_kind(key: &str) -> Option<ResourceKind> {
+    match key {
+        "geoip_db_path" => Some(ResourceKind::Mmdb),
+        "geoip_dat_path" => Some(ResourceKind::IpDat),
+        PATH_LIST_KEY => Some(ResourceKind::Site),
+        _ => None,
+    }
+}
+
+impl GeoDataManifest {
+    /// 清单里的每个文件 / Every file in the manifest
+    fn resources(&self) -> impl Iterator<Item = &GeoDataResource> {
+        self.geoip_mmdb
+            .iter()
+            .chain(self.geoip_dat.iter())
+            .chain(self.geosite.iter())
+    }
+}
+
+/// 配置里写着的文件路径，连同那一处放的是哪一类文件 / The file paths a config names, each with the kind of file its
+/// setting holds
+fn configured_paths(content: &Value) -> impl Iterator<Item = (ResourceKind, &str)> {
+    content
+        .get("settings")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| Some((path_kind(key)?, value)))
+        .flat_map(|(kind, value)| {
+            let paths: &[Value] = match (kind, value) {
+                (ResourceKind::Site, Value::Array(paths)) => paths,
+                (ResourceKind::Site, _) => &[],
+                (_, value) => std::slice::from_ref(value),
+            };
+            paths
+                .iter()
+                .filter_map(Value::as_str)
+                .map(move |path| (kind, path))
+        })
+}
+
+/// 配置里写着文件路径的每一处（可以改），连同那一处放的是哪一类文件 / Every place a config names a file path, open to
+/// change, with the kind of file its setting holds
+fn configured_paths_mut(content: &mut Value) -> impl Iterator<Item = (ResourceKind, &mut Value)> {
+    content
+        .get_mut("settings")
+        .and_then(Value::as_object_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| Some((path_kind(key)?, value)))
+        .flat_map(|(kind, value)| {
+            let paths: &mut [Value] = match (kind, value) {
+                (ResourceKind::Site, Value::Array(paths)) => paths,
+                (ResourceKind::Site, _) => &mut [],
+                (_, value) => std::slice::from_mut(value),
+            };
+            paths
+                .iter_mut()
+                .filter(|path| path.is_string())
+                .map(move |path| (kind, path))
+        })
+}
+
+/// 把配置里写着 `old` 的文件路径换成 `new`，别的一个不动，也不添、不删设置；换了返回 true。拦截列表的定时更新换它
+/// 合并的文件就走这里
+/// Replaces the file path `old` with `new` wherever a config names it, touching nothing else and adding or removing no
+/// setting; true when it changed. The scheduled blocklist update swaps its merged file through here
+pub fn replace_path(content: &mut Value, old: &str, new: &str) -> bool {
+    let mut changed = false;
+    for (_, path) in configured_paths_mut(content) {
+        if old != new && path.as_str() == Some(old) {
+            *path = Value::String(new.to_owned());
+            changed = true;
+        }
+    }
+    changed
+}
+
+impl GeoDataManager {
+    /// 定时更新以后，把配置里面板自己下载的每个文件换成新下载的同类那份：MMDB 换 MMDB、DAT 换 DAT；`GeoSite` 一个对一个，
+    /// 正是更新前清单里的第几个就换成新的第几个，对不上的（退回了更早的版本、上次更新没被接受）只在清单只有一个 `GeoSite`
+    /// 时换成它。用户自己的路径（不是面板目录里按摘要起名的文件）一个不动，不添也不删设置；换了返回 true
+    /// After a scheduled update, swaps each file the panel itself downloaded that the config names for the new download
+    /// of its kind: MMDB for MMDB, DAT for DAT; `GeoSite` one for one, the manifest's n-th file before the update for the
+    /// n-th new one, and one that matches none (an older version restored, an earlier update refused) only when the
+    /// manifest has a single `GeoSite`. The user's own paths (anything but a digest-named file in the panel's directory)
+    /// stay, and no setting is added or removed; true when it changed
+    #[must_use]
+    pub fn replace_downloads(
+        &self,
+        content: &mut Value,
+        before: &GeoDataManifest,
+        after: &GeoDataManifest,
+    ) -> bool {
+        let mut changed = false;
+        for (kind, slot) in configured_paths_mut(content) {
+            let next = slot
+                .as_str()
+                .and_then(|path| {
+                    self.successor(kind, path, before, after)
+                        .filter(|next| *next != path)
+                })
+                .map(str::to_owned);
+            if let Some(next) = next {
+                *slot = Value::String(next);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// 配置里有没有定时更新要换的文件：没有的话（比如都换成了自己的文件）更新用不上 / Whether the config names a file
+    /// the scheduled update would swap: with none (all switched to files of one's own, say) the update is of no use
+    #[must_use]
+    pub fn uses_downloads(&self, content: &Value, manifest: &GeoDataManifest) -> bool {
+        configured_paths(content)
+            .any(|(kind, path)| self.successor(kind, path, manifest, manifest).is_some())
+    }
+
+    /// 配置里这一处的文件该换成新下载的哪一个；不归定时更新管的是 `None` / Which new download the file named here should
+    /// become; `None` when it is not the scheduled update's to swap
+    fn successor<'a>(
+        &self,
+        kind: ResourceKind,
+        path: &str,
+        before: &GeoDataManifest,
+        after: &'a GeoDataManifest,
+    ) -> Option<&'a str> {
+        if !kind.owns(&self.root, path) {
+            return None;
+        }
+        let next = match kind {
+            ResourceKind::Mmdb => after.geoip_mmdb.as_ref(),
+            ResourceKind::IpDat => after.geoip_dat.as_ref(),
+            ResourceKind::Site => before
+                .geosite
+                .iter()
+                .position(|resource| resource.path == path)
+                .and_then(|index| after.geosite.get(index))
+                .or(match after.geosite.as_slice() {
+                    [only] => Some(only),
+                    _ => None,
+                }),
+        };
+        next.map(|resource| resource.path.as_str())
+    }
+}
+
+/// 配置里有没有写 `GeoSite` 文件（拦截列表合并的那个也算） / Whether a config names any `GeoSite` file (the
+/// blocklists' merged one counts)
+#[must_use]
+pub fn has_geosite_paths(content: &Value) -> bool {
+    content
+        .get("settings")
+        .and_then(|settings| settings.get(PATH_LIST_KEY))
+        .and_then(Value::as_array)
+        .is_some_and(|paths| !paths.is_empty())
+}
+
+/// 配置里还没有 `GeoSite` 文件时写上清单里的那几个；已经有了就不动，别的设置一个不碰。写了返回 true
+/// Writes the manifest's `GeoSite` files into a config that names none yet; one that has some is left alone, and no
+/// other setting is touched. True when it wrote
+pub fn add_geosite_paths(
     content: &mut Value,
     manifest: &GeoDataManifest,
 ) -> Result<bool, GeoDataError> {
+    if manifest.geosite.is_empty() || has_geosite_paths(content) {
+        return Ok(false);
+    }
     let root = content
         .as_object_mut()
         .ok_or_else(|| GeoDataError::Invalid("配置根节点必须是 JSON 对象".to_owned()))?;
@@ -678,43 +913,15 @@ pub fn apply_manifest_paths(
         .or_insert_with(|| Value::Object(serde_json::Map::new()))
         .as_object_mut()
         .ok_or_else(|| GeoDataError::Invalid("settings 必须是 JSON 对象".to_owned()))?;
-    let before = settings.clone();
-    set_optional_path(settings, "geoip_db_path", manifest.geoip_mmdb.as_ref());
-    set_optional_path(settings, "geoip_dat_path", manifest.geoip_dat.as_ref());
-    // 拦截列表合并出的文件也在这一项里，但不归 Geo 数据管：原样留在后面
-    // The blocklists' merged file sits in this list too but is not Geo data's to manage: it stays, after them
-    let blocklists: Vec<Value> = settings
-        .get("geosite_data_paths")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|path| path.as_str().is_some_and(is_blocklist_path))
-        .cloned()
-        .collect();
     settings.insert(
-        "geosite_data_paths".to_owned(),
-        Value::Array(
-            manifest
-                .geosite
-                .iter()
-                .map(|resource| Value::String(resource.path.clone()))
-                .chain(blocklists)
-                .collect(),
-        ),
+        PATH_LIST_KEY.to_owned(),
+        manifest
+            .geosite
+            .iter()
+            .map(|resource| Value::String(resource.path.clone()))
+            .collect(),
     );
-    Ok(before != *settings)
-}
-
-fn set_optional_path(
-    settings: &mut serde_json::Map<String, Value>,
-    key: &str,
-    resource: Option<&GeoDataResource>,
-) {
-    if let Some(resource) = resource {
-        settings.insert(key.to_owned(), Value::String(resource.path.clone()));
-    } else {
-        settings.remove(key);
-    }
+    Ok(true)
 }
 
 fn protected_geo_paths(
@@ -723,27 +930,12 @@ fn protected_geo_paths(
     manifest: &GeoDataManifest,
 ) -> HashSet<PathBuf> {
     let mut protected = HashSet::new();
-    for resource in manifest
-        .geoip_mmdb
-        .iter()
-        .chain(manifest.geoip_dat.iter())
-        .chain(manifest.geosite.iter())
-    {
+    for resource in manifest.resources() {
         protect_managed_path(root, &resource.path, &mut protected);
     }
     for content in retained_configs {
-        let Some(settings) = content.get("settings").and_then(Value::as_object) else {
-            continue;
-        };
-        for key in ["geoip_db_path", "geoip_dat_path"] {
-            if let Some(path) = settings.get(key).and_then(Value::as_str) {
-                protect_managed_path(root, path, &mut protected);
-            }
-        }
-        if let Some(paths) = settings.get("geosite_data_paths").and_then(Value::as_array) {
-            for path in paths.iter().filter_map(Value::as_str) {
-                protect_managed_path(root, path, &mut protected);
-            }
+        for (_, path) in configured_paths(content) {
+            protect_managed_path(root, path, &mut protected);
         }
     }
     protected
@@ -810,16 +1002,16 @@ pub(crate) fn is_blocklist_path(path: &str) -> bool {
 }
 
 fn is_managed_geo_filename(name: &str) -> bool {
-    [
-        ("geoip-mmdb-", &["mmdb"][..]),
-        ("geoip-dat-", &["dat", "json"][..]),
-        ("geosite-", &["dat", "json"][..]),
-        // 拦截列表：合并给内核的文件，和下载下来的原始列表 / Blocklists: the merged file for the kernel, and the raw lists as downloaded
-        ("blocklist-", &["json"][..]),
-        ("blocklist-src-", &["txt"][..]),
-    ]
-    .iter()
-    .any(|(prefix, extensions)| is_digest_name(name, prefix, extensions))
+    ResourceKind::ALL
+        .iter()
+        .any(|kind| is_digest_name(name, kind.prefix(), kind.extensions()))
+        || [
+            // 拦截列表：合并给内核的文件，和下载下来的原始列表 / Blocklists: the merged file for the kernel, and the raw lists as downloaded
+            ("blocklist-", &["json"][..]),
+            ("blocklist-src-", &["txt"][..]),
+        ]
+        .iter()
+        .any(|(prefix, extensions)| is_digest_name(name, prefix, extensions))
 }
 
 /// 文件名是不是 `<prefix><64 位十六进制摘要>.<extensions 之一>` / Whether a file name reads
@@ -1187,8 +1379,8 @@ mod tests {
 
     use super::{
         GeoDataError, GeoDataManager, GeoDataManifest, GeoDataResource, GeoDataSyncRequest,
-        MANIFEST_KEY, ResourceKind, apply_manifest_paths, cleanup_managed_files,
-        is_allowed_download_ip, is_mihomo_fake_ip, is_public_ip, normalize_geosite_urls, parse_url,
+        MANIFEST_KEY, ResourceKind, SCHEDULE_KEY, cleanup_managed_files, is_allowed_download_ip,
+        is_mihomo_fake_ip, is_public_ip, normalize_geosite_urls, parse_url,
         persist_content_addressed, protected_geo_paths,
     };
     use crate::db::Database;
@@ -1346,60 +1538,131 @@ mod tests {
         assert!(unknown.exists());
     }
 
-    /// Geo 同步改写 `GeoSite` 文件时，拦截列表合并的文件原样留在后面；名字像、但不是面板生成的不算
-    /// A Geo sync rewriting the `GeoSite` files leaves the blocklists' merged file in place after them; a look-alike
-    /// name the panel did not produce does not count
-    #[test]
-    fn a_geo_sync_keeps_the_blocklist_file() {
-        let blocklist = format!(
-            "/var/lib/kixdns-panel/geo/blocklist-{}.json",
-            "e".repeat(64)
-        );
-        let manifest = GeoDataManifest {
-            geosite: vec![GeoDataResource {
-                url: "https://example.com/geosite.dat".to_owned(),
-                path: "/var/lib/kixdns-panel/geo/geosite-new.dat".to_owned(),
-                sha256: "a".repeat(64),
-                size: 42,
-                downloaded_at: 1,
-            }],
-            ..GeoDataManifest::default()
-        };
-        let mut content = serde_json::json!({
-            "settings": { "geosite_data_paths": [blocklist, "/etc/old.dat", "/etc/blocklist-mine.json"] }
-        });
-        assert!(apply_manifest_paths(&mut content, &manifest).unwrap());
-        assert_eq!(
-            content["settings"]["geosite_data_paths"],
-            serde_json::json!(["/var/lib/kixdns-panel/geo/geosite-new.dat", blocklist])
-        );
-    }
-
-    #[test]
-    fn applies_manifest_paths_and_reuses_remote_sources() {
-        let resource = GeoDataResource {
+    fn site(path: &str) -> GeoDataResource {
+        GeoDataResource {
             url: "https://example.com/geosite.dat".to_owned(),
-            path: "/var/lib/kixdns/geo/geosite.dat".to_owned(),
+            path: path.to_owned(),
             sha256: "a".repeat(64),
             size: 42,
             downloaded_at: 1,
+        }
+    }
+
+    async fn geo_manager(directory: &std::path::Path) -> GeoDataManager {
+        let database = Database::open(directory.join("panel.db")).await.unwrap();
+        GeoDataManager::new(database, &directory.join("geo")).unwrap()
+    }
+
+    /// 面板自己下载进它目录的一个文件（按摘要起名），`digit` 区分不同的几份 / A file the panel itself downloaded into
+    /// its directory (named by digest); `digit` tells copies apart
+    fn downloaded(manager: &GeoDataManager, prefix: &str, digit: char, extension: &str) -> String {
+        manager
+            .root()
+            .join(format!(
+                "{prefix}{}.{extension}",
+                digit.to_string().repeat(64)
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Geo 更新换 `GeoSite` 文件时，拦截列表合并的文件、用户自己的文件（名字像拦截列表的也算）都原样留在原处
+    /// A Geo update swapping the `GeoSite` files leaves the blocklists' merged file and the user's own files (a name
+    /// that looks like a blocklist among them) where they are
+    #[tokio::test]
+    async fn a_geo_sync_keeps_the_blocklist_file() {
+        let directory = tempdir().unwrap();
+        let manager = geo_manager(directory.path()).await;
+        let (old, new) = (
+            downloaded(&manager, "geosite-", '1', "dat"),
+            downloaded(&manager, "geosite-", '2', "dat"),
+        );
+        let blocklist = downloaded(&manager, "blocklist-", 'e', "json");
+        let before = GeoDataManifest {
+            geosite: vec![site(&old)],
+            ..GeoDataManifest::default()
         };
-        let manifest = GeoDataManifest {
-            geosite: vec![resource],
+        let after = GeoDataManifest {
+            geosite: vec![site(&new)],
             ..GeoDataManifest::default()
         };
         let mut content = serde_json::json!({
-            "settings": {"geoip_db_path": "/tmp/old.mmdb"},
+            "settings": { "geosite_data_paths": [old, blocklist, "/etc/old.dat", "/etc/blocklist-mine.json"] }
+        });
+        assert!(manager.replace_downloads(&mut content, &before, &after));
+        assert_eq!(
+            content["settings"]["geosite_data_paths"],
+            serde_json::json!([new, blocklist, "/etc/old.dat", "/etc/blocklist-mine.json"])
+        );
+    }
+
+    /// 只换面板自己下载的文件，不添设置也不删设置，再换一次没有变化；配置里是更早下载的那份时，MMDB 照换，`GeoSite`
+    /// 只在清单只有一个时换
+    /// Only the panel's own downloads are swapped, no setting is added or removed, and swapping again changes nothing;
+    /// for an older download in the config the MMDB is swapped all the same, and a `GeoSite` only when the manifest has
+    /// a single one
+    #[tokio::test]
+    async fn replaces_manifest_paths_and_reuses_remote_sources() {
+        let directory = tempdir().unwrap();
+        let manager = geo_manager(directory.path()).await;
+        let file = |prefix, digit, extension| downloaded(&manager, prefix, digit, extension);
+        let before = GeoDataManifest {
+            geosite: vec![site(&file("geosite-", '1', "dat"))],
+            ..GeoDataManifest::default()
+        };
+        let manifest = GeoDataManifest {
+            geoip_mmdb: Some(site(&file("geoip-mmdb-", '2', "mmdb"))),
+            geosite: vec![site(&file("geosite-", '2', "dat"))],
+            ..GeoDataManifest::default()
+        };
+        let mut content = serde_json::json!({
+            "settings": {
+                "geoip_db_path": "/tmp/old.mmdb",
+                "geosite_data_paths": [file("geosite-", '1', "dat")]
+            },
             "pipelines": []
         });
 
-        assert!(apply_manifest_paths(&mut content, &manifest).unwrap());
-        assert!(content["settings"].get("geoip_db_path").is_none());
+        assert!(manager.uses_downloads(&content, &before));
+        assert!(manager.replace_downloads(&mut content, &before, &manifest));
+        assert_eq!(content["settings"]["geoip_db_path"], "/tmp/old.mmdb");
         assert_eq!(
             content["settings"]["geosite_data_paths"],
-            serde_json::json!(["/var/lib/kixdns/geo/geosite.dat"])
+            serde_json::json!([file("geosite-", '2', "dat")])
         );
-        assert!(!apply_manifest_paths(&mut content, &manifest).unwrap());
+        assert!(!manager.replace_downloads(&mut content, &before, &manifest));
+        let mut unused = serde_json::json!({ "pipelines": [], "settings": { "geoip_db_path": "/tmp/old.mmdb" } });
+        assert!(!manager.uses_downloads(&unused, &before));
+        assert!(!manager.replace_downloads(&mut unused, &before, &manifest));
+        assert_eq!(
+            unused,
+            serde_json::json!({ "pipelines": [], "settings": { "geoip_db_path": "/tmp/old.mmdb" } })
+        );
+
+        let mut older = serde_json::json!({ "settings": {
+            "geoip_db_path": file("geoip-mmdb-", '0', "mmdb"),
+            "geosite_data_paths": [file("geosite-", '0', "dat")]
+        } });
+        assert!(manager.uses_downloads(&older, &before));
+        assert!(manager.replace_downloads(&mut older, &before, &manifest));
+        assert_eq!(
+            older["settings"],
+            serde_json::json!({
+                "geoip_db_path": file("geoip-mmdb-", '2', "mmdb"),
+                "geosite_data_paths": [file("geosite-", '2', "dat")]
+            })
+        );
+        // 清单有两个 `GeoSite` 时，对不上的那份不知道该换成哪个，留着 / With two `GeoSite` files in the manifest, one that
+        // matches neither cannot be told which to become, so it stays
+        let two = GeoDataManifest {
+            geosite: vec![
+                site(&file("geosite-", 'a', "dat")),
+                site(&file("geosite-", 'b', "dat")),
+            ],
+            ..GeoDataManifest::default()
+        };
+        let mut ambiguous = serde_json::json!({ "settings": { "geosite_data_paths": [file("geosite-", '0', "dat")] } });
+        assert!(!manager.replace_downloads(&mut ambiguous, &two, &two));
 
         let request = GeoDataSyncRequest::from_manifest(&manifest);
         assert_eq!(
@@ -1437,6 +1700,49 @@ mod tests {
         assert_eq!(disabled.interval_hours, None);
         assert_eq!(disabled.next_run_at, None);
         assert!(!disabled.is_due(i64::MAX));
+    }
+
+    /// 自动更新记结果的那一下，用户正好点了「关闭」：读和写之间插不进别的写入，关闭不会被盖回去
+    /// The user presses 关闭 just as the schedule records a result: no other write lands between the read and the
+    /// write, so the 关闭 is not overwritten
+    #[tokio::test]
+    async fn a_schedule_write_landing_meanwhile_is_not_reverted() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let directory = tempdir().unwrap();
+        let database_path = directory.path().join("panel.db");
+        let database = Database::open(database_path.clone()).await.unwrap();
+        let manager = GeoDataManager::new(database, &directory.path().join("geo")).unwrap();
+        manager.schedule().set_interval(Some(24)).await.unwrap();
+        // 用户的「关闭」：等 `busy` 这么久还写不进就算没写进 / The user's 关闭: given up when it cannot get in within `busy`
+        let close = move |busy: Duration| {
+            let connection = rusqlite::Connection::open(&database_path).unwrap();
+            connection.busy_timeout(busy).unwrap();
+            connection
+                .execute(
+                    "UPDATE app_settings SET value = ?1 WHERE key = ?2",
+                    rusqlite::params![r#"{"interval_hours":null}"#, SCHEDULE_KEY],
+                )
+                .is_ok()
+        };
+        let landed = std::sync::Arc::new(AtomicBool::new(false));
+        let during = {
+            let (close, landed) = (close.clone(), std::sync::Arc::clone(&landed));
+            move |schedule: &mut super::GeoDataSchedule| {
+                landed.store(close(Duration::ZERO), Ordering::SeqCst);
+                schedule.last_error = Some("连不上 example.com".to_owned());
+                Ok(true)
+            }
+        };
+
+        manager.schedule().modify(during).await.unwrap();
+        // 写不进来的「关闭」等这一笔写完再写 / A 关闭 that could not get in lands once this write is done
+        if !landed.load(Ordering::SeqCst) {
+            assert!(close(Duration::from_secs(5)));
+        }
+
+        assert_eq!(manager.schedule().get().await.unwrap().interval_hours, None);
     }
 
     const BUILTIN_URL: &str =

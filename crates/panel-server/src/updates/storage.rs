@@ -7,6 +7,7 @@ use tempfile::Builder;
 
 use crate::auth::unix_timestamp;
 use crate::config_capabilities::validate_declared_capabilities;
+use crate::temporaries::sweep;
 
 use super::catalog::{release_page_url, upstream_commit_url};
 use super::install::{parse_capabilities, verify_kernel_source};
@@ -22,6 +23,26 @@ use super::{
     PANEL_REPOSITORY, SOURCE_MANIFEST_SCHEMA_VERSION, UPSTREAM_REPOSITORY, UpdateError, VersionKey,
     VersionManifest, VersionSource,
 };
+
+/// 存一个版本时先写进的暂存目录、清单临时文件的前缀 / The prefixes of the staging directory a stored version is written
+/// into first and of a manifest's temporary file
+const STAGE_PREFIX: &str = ".version-";
+const MANIFEST_PREFIX: &str = ".manifest-";
+
+/// 启动时、存版本以前清掉写到一半留下的：没改名成版本目录的暂存目录（里面是整个程序），版本目录里没换上的清单
+/// At start-up, before any version is stored, clears what writes cut short left: staging directories never renamed into
+/// a version (each holding a whole binary), and manifests never swapped in inside a version directory
+pub(super) fn sweep_versions(versions_path: &Path) {
+    sweep(versions_path, &[STAGE_PREFIX]);
+    let Ok(entries) = fs::read_dir(versions_path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            sweep(&entry.path(), &[MANIFEST_PREFIX]);
+        }
+    }
+}
 
 pub(super) fn store_version(
     versions_path: &Path,
@@ -60,7 +81,7 @@ pub(super) fn store_version(
         return Ok(());
     }
     let stage = Builder::new()
-        .prefix(".version-")
+        .prefix(STAGE_PREFIX)
         .tempdir_in(versions_path)
         .map_err(|error| UpdateError::Install(error.to_string()))?;
     let binary_file = write_executable(stage.path(), ".kixdns-", binary)?;
@@ -68,7 +89,7 @@ pub(super) fn store_version(
     let mut manifest_bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|error| UpdateError::Install(error.to_string()))?;
     manifest_bytes.push(b'\n');
-    let manifest_file = write_private_file(stage.path(), ".manifest-", &manifest_bytes)?;
+    let manifest_file = write_private_file(stage.path(), MANIFEST_PREFIX, &manifest_bytes)?;
     persist(manifest_file, &stage.path().join("manifest.json"))?;
     sync_directory(stage.path())?;
     fs::rename(stage.path(), &target).map_err(|error| UpdateError::Install(error.to_string()))?;
@@ -392,7 +413,7 @@ pub(super) fn update_stored_capabilities(
     let mut bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| UpdateError::Install(error.to_string()))?;
     bytes.push(b'\n');
-    let temporary = write_private_file(&directory, ".manifest-", &bytes)?;
+    let temporary = write_private_file(&directory, MANIFEST_PREFIX, &bytes)?;
     persist(temporary, &directory.join("manifest.json"))?;
     sync_directory(&directory)
 }

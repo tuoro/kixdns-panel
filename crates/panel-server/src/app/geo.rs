@@ -12,13 +12,14 @@ use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{
     BuiltinGeosite, GeoDataCleanupResult, GeoDataError, GeoDataManifest, GeoDataSchedule,
-    GeoDataSyncRequest, apply_manifest_paths, is_blocklist_path,
+    GeoDataSyncRequest, add_geosite_paths, has_geosite_paths, is_blocklist_path,
 };
 use crate::geosite_catalog::{CatalogCache, GeositeCategory};
 use crate::ip_region::{GeoIpFiles, IpRegion, MAX_ADDRESSES, regions};
 
 use super::{
-    AppState, SystemConfigWrite, map_config_error, map_geo_data_error, write_system_config,
+    AppState, SystemConfigWrite, map_config_error, map_geo_data_error, system_config_base,
+    write_system_config,
 };
 
 #[derive(Debug, Deserialize)]
@@ -317,11 +318,7 @@ pub(super) async fn seed_builtin_geosite(state: &AppState) -> anyhow::Result<()>
         return Ok(());
     };
     let desired = state.config.desired().await?;
-    let configured = desired
-        .content
-        .pointer("/settings/geosite_data_paths")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|paths| !paths.is_empty());
+    let configured = has_geosite_paths(&desired.content);
     let manifest = state.geo_data.current().await?;
     // 上一次导入了文件、还没写进配置就中断时，清单里已经是这份内置的，接着写配置就行
     // When a previous attempt imported the file but stopped before writing the config, the
@@ -344,7 +341,9 @@ pub(super) async fn seed_builtin_geosite(state: &AppState) -> anyhow::Result<()>
                 audit_action: "config.geo_data.import_builtin",
                 audit_note: Some(builtin_label(&builtin)),
             },
-            |candidate| Ok(apply_manifest_paths(candidate, &manifest)?),
+            // 只添上 GeoSite：配置里别的文件（比如已经写着的 GeoIP）不动 / Only GeoSite is added: other files the config
+            // names (a GeoIP file already there, say) stay
+            |candidate| Ok(add_geosite_paths(candidate, &manifest)?),
         )
         .await?;
     }
@@ -471,8 +470,15 @@ async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
     if request.is_empty() {
         anyhow::bail!("没有填下载链接，自动更新用不上");
     }
+    // 更新只换配置里用着的、面板自己下载的文件：一个都没用（比如换成了自己的文件）就不白白下载，照实说
+    // An update only swaps the panel's own downloads the config uses: with none in use (switched to files of one's own,
+    // say) nothing is downloaded for nothing, and the schedule says so
+    let (_, base) = system_config_base(state).await?;
+    if !state.geo_data.uses_downloads(&base.content, &manifest) {
+        anyhow::bail!("配置里没有用这些链接下载的文件，自动更新用不上");
+    }
     let updated = state.geo_data.sync(request).await?;
-    apply_synced_geo_data(state, &updated).await
+    apply_synced_geo_data(state, &manifest, &updated).await
 }
 
 /// 删除当前清单、拦截列表和所有保留配置版本都不引用的 Geo 目录文件；回滚到任一保留版本时，它引用的文件都还在。
@@ -515,10 +521,14 @@ pub(super) async fn clean_up_after_update(
     }
 }
 
-/// 把刚同步好的 Geo 清单写进配置，再清掉不再被引用的旧文件。
-/// Write a freshly synced Geo manifest into the config, then remove old files nothing references.
+/// 把配置里面板自己下载的文件换成刚同步好的那几份（`updated`，`before` 是更新前的清单，用来一个对一个地换 `GeoSite`），
+/// 再清掉不再被引用的旧文件。配置没用的不添，用户自己的路径不动。
+/// Swap the files the panel itself downloaded that the config names for the freshly synced ones (`updated`; `before`,
+/// the manifest before the update, pairs the `GeoSite` files one for one), then remove old files nothing references.
+/// Files the config does not use are not added, and the user's own paths stay.
 pub(super) async fn apply_synced_geo_data(
     state: &AppState,
+    before: &GeoDataManifest,
     updated: &GeoDataManifest,
 ) -> anyhow::Result<()> {
     // 保留的版本和写配置在同一把锁里读，免得漏掉刚保存的版本
@@ -534,7 +544,7 @@ pub(super) async fn apply_synced_geo_data(
                 audit_action: "config.geo_data.schedule.apply",
                 audit_note: None,
             },
-            |candidate| Ok(apply_manifest_paths(candidate, updated)?),
+            |candidate| Ok(state.geo_data.replace_downloads(candidate, before, updated)),
         )
         .await?;
         state.config.retained_contents().await?
