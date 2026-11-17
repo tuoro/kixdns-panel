@@ -16,7 +16,6 @@ export class ApiError extends Error {
   }
 }
 
-let csrfToken = ''
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 export const SESSION_EXPIRED_EVENT = 'kixdns:session-expired'
 // 面板没答话（断网、面板在重启、反向代理后面没人）时广播，外壳据此挂出重连横幅 / Broadcast when the panel did not answer (network down, panel restarting, nothing behind the reverse proxy); the shell shows the reconnect banner
@@ -36,17 +35,30 @@ export function isPanelDown(error: unknown): boolean {
   return error instanceof ApiError && (error.code === 'network_unreachable' || error.code === 'panel_unavailable')
 }
 
-export function setCsrfToken(token: string): void {
-  csrfToken = token
+/**
+ * 发请求这一刻浏览器里的 CSRF 令牌，没有就是空串。服务端特意不给这个 Cookie 加 HttpOnly（双重提交）：
+ * 不在内存里另记一份，另一个标签页登录换了 Cookie 以后，这里的写请求照样带对令牌。同名的有几个时和服务端一样取最后一个。
+ *
+ * The CSRF token the browser holds at the moment of sending, or an empty string. The server leaves this cookie without
+ * HttpOnly on purpose (double submit): no copy is kept in memory, so after another tab signs in and replaces the cookie,
+ * writes from here still carry the right token. With several of that name, the last one is taken, as the server does.
+ */
+function csrfToken(): string {
+  if (typeof document === 'undefined') return ''
+  let token = ''
+  for (const pair of document.cookie.split(';')) {
+    const separator = pair.indexOf('=')
+    if (separator > 0 && pair.slice(0, separator).trim() === 'kixdns_csrf') token = pair.slice(separator + 1).trim()
+  }
+  return token
 }
 
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = init.method ?? 'GET'
   const headers = new Headers(init.headers)
   if (init.body != null) headers.set('content-type', 'application/json')
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase()) && csrfToken) {
-    headers.set('x-csrf-token', csrfToken)
-  }
+  const token = ['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase()) ? '' : csrfToken()
+  if (token) headers.set('x-csrf-token', token)
   const requestInit = { ...init, method, headers }
   // 演示数据只在演示包里加载：生产包不带它，也不会执行它的顶层代码 / The demo backend loads only in the demo build: production neither ships nor runs its top-level code
   if (demoMode) {
