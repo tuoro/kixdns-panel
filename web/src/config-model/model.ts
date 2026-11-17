@@ -497,17 +497,123 @@ function rulePipeline(model: Model, rule: Rule): KPipeline | null {
   } else if (rule.response.mode === 'inherit' && g) response = groupFallback(model, g) ?? {}
   return forwardPipeline(model, `rule-${rule.id}`, o.group, rule.ecs === 'inherit' ? (g?.ecs ?? null) : rule.ecs, response)
 }
-function kernelRules(model: Model, rule: Rule): KRule[] {
+function kernelRules(model: Model, rule: Rule, kname: string): KRule[] {
   if (rule.raw) return JSON.parse(JSON.stringify(rule.raw)) as KRule[]
   const pre = rule.log.enabled ? [{ type: 'log', level: rule.log.level }] : []
   const actions = [...pre, ...(ownsForward(rule) ? [{ type: 'jump_to_pipeline', pipeline: `rule-${rule.id}` }] : outcomeActions(model, rule.outcome))]
   const groups = rule.conditions.filter((g) => g.length)
   const chains = (groups.length ? groups : [[]]).flatMap((g) => andChains(g.flatMap(requestTerms), { type: 'any' }))
-  // 没起名字的规则在内核里用编号当名字；面板自己的名字和备注另外保存，读回来时还是不带名字
-  // An unnamed rule takes its id as the kernel name; the panel keeps its own names and notes separately, so it reads back unnamed
-  const kname = rule.name.trim() || `rule-${rule.id}`
   return chains.map((chain, i) => ({ ...emptyRule(chains.length > 1 ? `${kname}#${i + 1}` : kname, actions), matchers: chain.matchers, matcher_operator: chain.operator }))
 }
+
+// ---------- 内核规则名 / kernel rule names ----------
+// 内核按规则名记命中、写执行路径和查询日志；面板读回来时要认出每个名字是哪条规则。名字由这里起，同一个列表里每个名字只指向一样东西，
+// 读的一方都查编译时一起做出来的对照表（kernelRuleIndex），不再按名字的样子猜
+// The kernel counts hits and writes traces and the query log by rule name; reading them back the panel must tell which rule each
+// name is. Names are given here, so within a list every name stands for one thing, and every reader looks up the index made with
+// the config (kernelRuleIndex) instead of guessing from a name's shape
+const SPLIT = /#\d+$/
+const baseName = (name: string) => name.replace(SPLIT, '')
+
+/**
+ * 一个列表里每条启用的规则在内核里叫什么。名字只能认回它自己时用名字；以下几种用 rule-编号，和没起名字的规则一样：
+ * 同一列表里重名、和本列表的其余请求同名、形如「…#数字」（拆开的几段就这么叫）或「rule-数字」、是高级规则原样写回的名字的基名。
+ * 重名的几条一起改用编号，调整顺序时内核名不跟着变
+ * What each enabled rule of a list is called in the kernel. Its name when the name can only lead back to it; rule-<id>, as an unnamed
+ * rule is, when the name repeats in the list, equals the list's catch-all, is shaped like 「…#digits」 (how split parts are named) or
+ * 「rule-digits」, or is the base of a name an advanced rule writes back verbatim. Repeated names all switch together, so reordering
+ * changes no kernel name
+ */
+function listKernelNames(rules: Rule[], rest: string): Map<number, string> {
+  const live = rules.filter((r) => r.enabled)
+  const verbatim = new Set(live.flatMap((r) => (r.raw ?? []).flatMap((k) => (typeof k.name === 'string' ? [baseName(k.name)] : []))))
+  const uses = new Map<string, number>()
+  for (const r of live) if (!r.raw && r.name.trim()) uses.set(r.name.trim(), (uses.get(r.name.trim()) ?? 0) + 1)
+  const own = (name: string) => name !== '' && uses.get(name) === 1 && name !== rest && !SPLIT.test(name) && !/^rule-\d+$/.test(name) && !verbatim.has(name)
+  return new Map(live.filter((r) => !r.raw).map((r) => [r.id, own(r.name.trim()) ? r.name.trim() : `rule-${r.id}`]))
+}
+
+/** 内核规则名指向面板里的哪一样 / What a kernel rule name stands for in the panel */
+export type KernelRuleRef =
+  | { kind: 'rule'; id: number }
+  | { kind: 'rest' }
+  | { kind: 'groupRest'; group: string }
+  | { kind: 'blocklist' }
+  | { kind: 'mapping'; domain: string }
+  | { kind: 'forward'; group: string }
+  | { kind: 'ownForward'; id: number }
+
+export interface KernelRuleIndex {
+  /**
+   * 列表里一个内核规则名指向什么。确切的名字先认；拆开的几段（名字#N）的基名在没有这个确切名字时也认得。不知道列表时传 null：
+   * 只在一个列表里出现的名字照样认得。认不出、或者一个名字被两样东西认领时为 null：宁可认不出，不认错
+   * What a kernel rule name in a list stands for. Exact names come first; the base of split parts (name#N) is known where no exact
+   * name is that. With no list (null) a name found in one list only is still known. Null when unknown, or when two things claim the
+   * name: better unknown than wrong
+   */
+  lookup: (pipeline: string | null, name: string) => KernelRuleRef | null
+  /**
+   * 规则在内核里所在的列表和名字（拆开的几段取基名，和查询日志按规则筛选的认法一样）。没写进内核、高级规则的几条没有共同的基名、
+   * 或者这个基名在列表里还有别的在用（按它筛会混进别的）时为 null
+   * The list and name a rule has in the kernel (the base for split parts, as the query log's rule filter matches). Null when it is not
+   * in the kernel, an advanced rule's kernel rules share no base, or something else in the list uses that base too (filtering by it
+   * would mix the other in)
+   */
+  nameOf: (ruleId: number) => { pipeline: string; name: string } | null
+}
+
+/** 写出的内核配置和它的规则名对照表，同一次编译做出来 / The kernel config and its rule-name index, made by one compile */
+export function compileNamed(model: Model): { config: KernelConfig; index: KernelRuleIndex } {
+  type Names = Map<string, Map<string, KernelRuleRef | null>>
+  // 内核报上来的是确切的名字：确切的名字先认，拆开的几段的基名只在没有这个确切名字时才算 / The kernel reports exact names: an exact name comes
+  // first, and the base of split parts counts only where no exact name is that
+  const exact: Names = new Map()
+  const bases: Names = new Map()
+  // 每个列表里每个基名被谁用着：查询日志按基名筛，基名只归一条规则时才能拿来代表它 / Who uses each base in each list: the query log filters by
+  // base, so a base stands for a rule only when it is that rule's alone
+  const owners = new Map<string, Map<string, Set<string>>>()
+  const ruleBases = new Map<number, { pipeline: string; names: Set<string> }>()
+  const key = (ref: KernelRuleRef) => JSON.stringify(ref)
+  const put = (names: Names, pipeline: string, name: string, ref: KernelRuleRef) => {
+    const here = names.get(pipeline) ?? new Map<string, KernelRuleRef | null>()
+    names.set(pipeline, here)
+    const was = here.get(name)
+    here.set(name, was === undefined ? ref : was && key(was) === key(ref) ? was : null)
+  }
+  const claim = (pipeline: string, name: string, ref: KernelRuleRef) => {
+    put(exact, pipeline, name, ref)
+    if (SPLIT.test(name)) put(bases, pipeline, baseName(name), ref)
+    const here = owners.get(pipeline) ?? new Map<string, Set<string>>()
+    owners.set(pipeline, here)
+    here.set(baseName(name), (here.get(baseName(name)) ?? new Set<string>()).add(key(ref)))
+    if (ref.kind !== 'rule') return
+    const at = ruleBases.get(ref.id) ?? { pipeline, names: new Set<string>() }
+    at.names.add(baseName(name))
+    ruleBases.set(ref.id, at)
+  }
+  const config = compileClaiming(model, claim)
+  // 一个列表里这个名字：undefined 是没有，null 是被两样东西认领 / This name in one list: undefined when absent, null when two things claim it
+  const inList = (pipeline: string, name: string): KernelRuleRef | null | undefined => {
+    const here = exact.get(pipeline)
+    return here?.has(name) ? here.get(name)! : bases.get(pipeline)?.get(name)
+  }
+  const index: KernelRuleIndex = {
+    lookup: (pipeline, name) => {
+      if (pipeline !== null) return inList(pipeline, name) ?? null
+      const found = [...exact.keys()].map((p) => inList(p, name)).filter((ref) => ref !== undefined)
+      return found.length && found.every((ref) => ref && key(ref) === key(found[0]!)) ? found[0]! : null
+    },
+    nameOf: (ruleId) => {
+      const at = ruleBases.get(ruleId)
+      if (!at || at.names.size !== 1) return null
+      const name = [...at.names][0]!
+      return owners.get(at.pipeline)?.get(name)?.size === 1 ? { pipeline: at.pipeline, name } : null
+    },
+  }
+  return { config, index }
+}
+
+export const kernelRuleIndex = (model: Model): KernelRuleIndex => compileNamed(model).index
 
 export const mappingIsIp = (r: Mapping) => splitList(r.target).every(isIp)
 function mappingActions(r: Mapping): Record<string, unknown>[] {
@@ -560,32 +666,57 @@ export function blocklistPipelineId(model: Model): string {
 }
 
 export function compile(model: Model): KernelConfig {
+  return compileNamed(model).config
+}
+
+type Claim = (pipeline: string, name: string, ref: KernelRuleRef) => void
+// 一个列表里的规则：按 listKernelNames 起名，每条内核规则登记它是哪条面板规则 / A list's rules: named by listKernelNames, each kernel rule claimed for its panel rule
+function listRules(model: Model, pipeline: string, rules: Rule[], rest: string, claim: Claim): KRule[] {
+  const names = listKernelNames(rules, rest)
+  return rules.filter((r) => r.enabled).flatMap((r) => kernelRules(model, r, names.get(r.id) ?? '').map((kr) => { claim(pipeline, kr.name, { kind: 'rule', id: r.id }); return kr }))
+}
+
+function compileClaiming(model: Model, claim: Claim): KernelConfig {
   const pipelines: KernelConfig['pipelines'] = []
-  for (const g of model.groups) pipelines.push(forwardPipeline(model, upstreamPipelineId(model, g.id), g.id, g.ecs, groupFallback(model, g) ?? {}))
+  for (const g of model.groups) {
+    const forward = forwardPipeline(model, upstreamPipelineId(model, g.id), g.id, g.ecs, groupFallback(model, g) ?? {})
+    for (const r of forward.rules) claim(forward.id, r.name, { kind: 'forward', group: g.id })
+    pipelines.push(forward)
+  }
   // 域名映射和现在的面板一样做成最前面的入口：所有请求先过它，被高级入口带去别处的也一样
   // Domain mappings are the first entry, as in today's panel: every request meets them first, including those an advanced entry sends elsewhere
   const live = model.mappings.filter((r) => r.enabled && r.domain.trim() && r.target.trim())
   const mappingId = model.mappingId ?? 'domain_mapping'
-  if (live.length) pipelines.push({ id: mappingId, rules: live.map((r) => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: r.domain.trim(), operator: 'and' }] })) })
-  const main = [...model.rules.filter((r) => r.enabled).flatMap((r) => kernelRules(model, r)), emptyRule('其余请求', outcomeActions(model, model.rest))]
-  pipelines.push({ ...model.mainExtra, id: mainPipelineId(model), rules: main })
+  if (live.length) {
+    for (const r of live) claim(mappingId, `域名映射 ${r.domain.trim()}`, { kind: 'mapping', domain: r.domain.trim() })
+    pipelines.push({ id: mappingId, rules: live.map((r) => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: r.domain.trim(), operator: 'and' }] })) })
+  }
+  const mainId = mainPipelineId(model)
+  const main = [...listRules(model, mainId, model.rules, '其余请求', claim), emptyRule('其余请求', outcomeActions(model, model.rest))]
+  claim(mainId, '其余请求', { kind: 'rest' })
+  pipelines.push({ ...model.mainExtra, id: mainId, rules: main })
   const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: r.domain.trim(), operator: i ? 'or' : 'and' })) }] : []
   const blocklistId = blocklistPipelineId(model)
   const blocking = blocklistEntries(model, blocklistId)
   if (blocking.length) {
+    claim(blocklistId, BLOCKLIST_RULE, { kind: 'blocklist' })
     pipelines.push({ id: blocklistId, rules: [emptyRule(BLOCKLIST_RULE, outcomeActions(model, { type: 'block', response: 'default' }))] })
     select.push(...blocking)
   }
   // 入口顺序：域名映射、拦截列表、高级入口、主列表 / Entry order: domain mappings, blocklists, advanced entries, the main list
   for (const rg of model.ruleGroups) {
     const id = ruleGroupPipelineId(model, rg.id)
-    pipelines.push({ ...rg.extra, id, rules: [...rg.rules.filter((r) => r.enabled).flatMap((r) => kernelRules(model, r)), emptyRule(`${rg.name}·其余`, outcomeActions(model, rg.rest))] })
+    const rest = `${rg.name}·其余`
+    pipelines.push({ ...rg.extra, id, rules: [...listRules(model, id, rg.rules, rest, claim), emptyRule(rest, outcomeActions(model, rg.rest))] })
+    claim(id, rest, { kind: 'groupRest', group: rg.id })
   }
   select.push(...(model.entries ?? []).map((e) => JSON.parse(JSON.stringify({ matcher_operator: 'and', ...e })) as KernelConfig['pipeline_select'][number]))
   for (const p of model.rawPipelines ?? []) pipelines.push(JSON.parse(JSON.stringify(p)) as KPipeline)
   for (const r of [...model.rules, ...model.ruleGroups.flatMap((rg) => rg.rules)]) {
     const own = r.enabled ? rulePipeline(model, r) : null
-    if (own) pipelines.push(own)
+    if (!own) continue
+    for (const k of own.rules) claim(own.id, k.name, { kind: 'ownForward', id: r.id })
+    pipelines.push(own)
   }
   select.push({ pipeline: mainPipelineId(model), matcher_operator: 'and', matchers: [] })
   select.push(...(model.trailingEntries ?? []).map((e) => JSON.parse(JSON.stringify({ matcher_operator: 'and', ...e })) as KernelConfig['pipeline_select'][number]))
@@ -602,7 +733,15 @@ export function compile(model: Model): KernelConfig {
   return { ...model.extra, version: model.format, settings, pipeline_select: select, pipelines }
 }
 
-// 编辑器里「生成的内核规则」：这条规则在内核里长什么样 / The editor's 生成的内核规则: what this rule becomes in the kernel
-export function kernelPreview(model: Model, rule: Rule): { rules: unknown[]; pipeline: unknown } {
-  return { rules: kernelRules(model, rule), pipeline: rulePipeline(model, rule) }
+// 编辑器里「生成的内核规则」：这条规则在内核里长什么样。名字按它所在（或要放进）的列表起，草稿换掉列表里原来那条
+// The editor's 生成的内核规则: what this rule becomes in the kernel. Its name follows the list it sits in (or goes into), with the draft
+// in place of the list's copy
+export function kernelPreview(model: Model, rule: Rule, groupId: string | null): { rules: unknown[]; pipeline: unknown } {
+  const group = groupId === null ? undefined : model.ruleGroups.find((g) => g.id === groupId)
+  const list = group ? group.rules : model.rules
+  // 草稿停用着也按启用起名：预览说的是它写进内核时的样子 / A draft switched off is named as if enabled: the preview shows it as written to the kernel
+  const draft = { ...rule, enabled: true }
+  const withDraft = list.some((r) => r.id === rule.id) ? list.map((r) => (r.id === rule.id ? draft : r)) : [...list, draft]
+  const name = listKernelNames(withDraft, group ? `${group.name}·其余` : '其余请求').get(rule.id) ?? `rule-${rule.id}`
+  return { rules: kernelRules(model, rule, name), pipeline: rulePipeline(model, rule) }
 }

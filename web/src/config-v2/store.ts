@@ -4,9 +4,9 @@ import { dismissUndoable, useToast } from '../composables/useToast'
 import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-presentation'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
-import { findKernelRule } from '../config-model/trace-names'
 import { isDefaultName, normalUrl, uniqueSubscriptionName } from '../config-model/blocklist'
-import { emptyBlocklists, kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
+import { emptyBlocklists, kernelAddress, kernelRuleIndex, nextId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
+import { findKernelRule } from '../config-model/trace-names'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
@@ -221,27 +221,31 @@ export function newId(): number {
 }
 
 // ---------- 命中数 / hit counts ----------
-// 概览统计按内核里的 pipeline 和规则名计数；规则在内核里叫 name 或 rule-编号，拆开的几条叫 name#N，这里合回一条
-// The overview counts by kernel pipeline and rule name; a rule's kernel name is its name or rule-<id>, split parts are name#N, folded back here
+// 概览统计按内核里的 pipeline 和规则名计数。内核跑的是保存的那份配置，所以按它编译时的对照表认回规则，按规则编号记：草稿里改了名字、
+// 换了位置，命中数照旧跟着这条规则
+// The overview counts by kernel pipeline and rule name. The kernel runs the saved config, so its compile's index leads back to the rule,
+// and counts are kept by rule id: renaming or moving a rule in the draft keeps its count with it
+const appliedIndex = computed(() => kernelRuleIndex(appliedModel.value))
 export const hits = ref<Map<number, number>>(new Map())
 export function applyHits(counts: RuleCount[]): void {
+  const index = appliedIndex.value
   const map = new Map<number, number>()
-  const lists: [string, Rule[]][] = [[mainPipelineId(model), model.rules], ...model.ruleGroups.map((g): [string, Rule[]] => [ruleGroupPipelineId(model, g.id), g.rules])]
-  for (const [pipeline, rules] of lists) {
-    for (const r of rules) {
-      const kname = kernelRuleName(r)
-      const n = counts.filter((c) => c.phase === 'request' && c.pipeline === pipeline && c.rule.replace(/#\d+$/, '') === kname).reduce((s, c) => s + c.count, 0)
-      if (n) map.set(r.id, n)
-    }
+  for (const c of counts) {
+    if (c.phase !== 'request') continue
+    const at = index.lookup(c.pipeline, c.rule)
+    if (at?.kind === 'rule') map.set(at.id, (map.get(at.id) ?? 0) + c.count)
   }
   hits.value = map
 }
 export const hitsOf = (rule: Rule): number => hits.value.get(rule.id) ?? 0
-const kernelRuleName = (rule: Rule) => rule.name.trim() || `rule-${rule.id}`
-/** 查询日志里这条规则的查询：按内核里的名字和所在列表筛，和命中数同一口径 / This rule's queries in the query log: by its kernel name and list, as the hit count is */
-export function ruleLogQuery(rule: Rule): { rule: string; in: string } {
-  const group = model.ruleGroups.find((g) => g.rules.some((r) => r.id === rule.id))
-  return { rule: kernelRuleName(rule), in: group ? ruleGroupPipelineId(model, group.id) : mainPipelineId(model) }
+/**
+ * 查询日志里这条规则的查询：按它在内核里的名字和所在列表筛，和命中数同一口径；保存的配置里没有它、或者认不出一个名字时为 null
+ * This rule's queries in the query log: by its kernel name and list, as the hit count is; null when the saved config lacks it or has
+ * no single name for it
+ */
+export function ruleLogQuery(rule: Rule): { rule: string; in: string } | null {
+  const at = appliedIndex.value.nameOf(rule.id)
+  return at ? { rule: at.name, in: at.pipeline } : null
 }
 
 // ---------- 上游组的健康 / group health ----------
@@ -283,9 +287,12 @@ export function listOf(ruleId: number): RuleList {
   const group = model.ruleGroups.find((g) => g.rules.some((r) => r.id === ruleId))
   return group ? { rules: group.rules, rest: group.rest, group } : { rules: model.rules, rest: model.rest, group: null }
 }
-// 内核规则名找回草稿里的规则：名字、没起名字时的 rule-编号、高级规则里的名字 / The draft rule behind a kernel rule name: its name, the rule-id of an unnamed rule, or a name inside an advanced rule
-export function findRuleByName(name: string): Rule | undefined {
-  return findKernelRule(model, name)
+// 草稿编译时的对照表：保存失败时内核报的规则名、规则说明里的名字，都按它认回草稿里的规则 / The draft's compile index: rule names in a failed
+// save's kernel error and in reasons lead back to the draft's rules through it
+const draftIndex = computed(() => kernelRuleIndex(model))
+/** 内核规则名找回草稿里的规则；不知道在哪个列表时，只认只出现在一个列表里的名字 / The draft rule behind a kernel rule name; without the list, only a name found in one list */
+export function findRuleByName(name: string, pipeline: string | null = null): Rule | undefined {
+  return findKernelRule(model, name, pipeline, draftIndex.value)
 }
 // 一个上游组被谁用着：规则、其余请求、别的组的备用、高级规则和入口 / Who uses an upstream group: rules, catch-alls, other groups' fallbacks, advanced rules and entries
 export function groupUsers(groupId: string): string[] {

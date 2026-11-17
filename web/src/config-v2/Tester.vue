@@ -8,11 +8,11 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { coversOnly, ownBlocksFor, parseOwnRules } from '../config-model/blocklist'
 import { blocklistPipelineId, compile, isIp, type Model } from '../config-model/model'
-import { traceNames } from '../config-model/trace-names'
-import { asksUpstream, describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { findKernelRule, traceNames } from '../config-model/trace-names'
+import { asksUpstream, describeStep, detailValue, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 import { useConnection } from '../composables/useConnection'
-import { appliedModel, dirty, findRuleByName, model } from './store'
+import { appliedModel, dirty, model } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
 
 // 测试域名：走一遍 KixDNS 的配置（诊断接口）。内核 p28 起可以测还没保存的草稿（子进程试跑，不碰正在用的配置），也可以假装来自
@@ -71,9 +71,10 @@ async function run(): Promise<void> {
     }) })
     const trace = result.value.trace_supported ? result.value.trace : []
     const hit = trace.find((s) => s.stage === 'rule' && s.status === 'matched')
-    const rule = hit ? findRuleByName(hit.label) : undefined
     const selected = (id: string) => trace.some((s) => s.stage === 'pipeline' && s.status === 'selected' && s.label === id)
     const tried = testsDraft.value ? model : appliedModel.value
+    // 按试的那份配置认规则名（草稿或保存的），带上这一步所在的列表 / The rule name is traced in the config that was tried (draft or saved), with the step's list
+    const rule = hit ? findKernelRule(tried, hit.label, detailValue(hit.detail, '管线')) : undefined
     testedModel.value = testsDraft.value ? null : tried
     byBlocklist.value = selected(blocklistPipelineId(tried))
     tested.value = name.toLowerCase().replace(/\.$/, '')
@@ -123,7 +124,7 @@ const rows = computed(() => {
       target = forwardTarget(row.sent ?? row.step) ?? target
       return view
     }
-    const missed: TextPart[] = row.steps.flatMap((step, index) => [...(index ? [{ text: '、' }] : []), ...ruleName(step.label, names.value)])
+    const missed: TextPart[] = row.steps.flatMap((step, index) => [...(index ? [{ text: '、' }] : []), ...ruleName(step.label, names.value, detailValue(step.detail, '管线'))])
     return { lead: [{ text: missedRulesText(row.steps.length) }], note: missed, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
   })
 })

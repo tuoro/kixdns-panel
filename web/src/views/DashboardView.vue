@@ -678,7 +678,7 @@ async function loadNames(): Promise<void> {
     routingFailed.value = false
   } catch { routing.value = null; routingFailed.value = true }
 }
-const hitName = (label: string) => names.value?.rule(label) ?? null
+const hitName = (label: string, pipeline: string) => names.value?.rule(label, pipeline) ?? null
 const pipelineName = (id: string) => names.value?.pipeline(id) ?? null
 // 上游组和规则自带的转发 Pipeline 里那条规则（和 Pipeline 同名）不单列：它数的就是转进来的请求，和跳过去的那条规则重复
 // The rule inside an upstream group's or a rule's own forward pipeline (named after the pipeline) is not listed: it counts the requests sent there, repeating the rule that jumped
@@ -994,9 +994,9 @@ onBeforeUnmount(() => {
         <div class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>规则组</span><span>命中次数</span></div>
           <div v-for="rule in hitRows" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule" :class="{ 'ov-jumps': logLinks }">
-            <RouterLink v-if="logLinks" class="ov-jump" :to="ruleLog(rule)" :aria-label="`在查询日志里看命中「${hitName(rule.rule) ?? rule.rule}」的查询`" />
+            <RouterLink v-if="logLinks" class="ov-jump" :to="ruleLog(rule)" :aria-label="`在查询日志里看命中「${hitName(rule.rule, rule.pipeline) ?? rule.rule}」的查询`" />
             <span class="overview-rule-phase"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span></span>
-            <strong class="overview-rule-name ov-jump-name">{{ hitName(rule.rule) ?? rule.rule }}</strong>
+            <strong class="overview-rule-name ov-jump-name">{{ hitName(rule.rule, rule.pipeline) ?? rule.rule }}</strong>
             <span class="overview-rule-pipeline">{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span>
             <span class="overview-rule-count">{{ formatNumber(rule.count) }}</span>
             <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span><span>{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span></p>

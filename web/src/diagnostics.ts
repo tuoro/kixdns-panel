@@ -148,7 +148,7 @@ export function noteRuns(note: TextPart[]): { part: TextPart; dot: boolean; spac
   return runs
 }
 
-function detailValue(detail: string | null | undefined, key: string): string | null {
+export function detailValue(detail: string | null | undefined, key: string): string | null {
   const match = new RegExp(`${key}：([^；;]+)`).exec(humanizeTraceDetail(detail ?? ''))
   return match ? match[1]!.trim() : null
 }
@@ -175,8 +175,8 @@ export function forwardTarget(step: DnsTraceStep): string | null {
  */
 // 规则和规则组：认得出就写配置页上的名字（「」括起来），认不出才写内核的名字（字面值）
 // Rules and rule groups: the config page's name when recognised (in 「」), the kernel's name as a literal otherwise
-export function ruleName(label: string, names?: TraceNames | null): TextPart[] {
-  const title = names?.rule(label)
+export function ruleName(label: string, names?: TraceNames | null, pipeline: string | null = null): TextPart[] {
+  const title = names?.rule(label, pipeline)
   return title ? [t(`「${title}」`)] : [m(label)]
 }
 function pipelineName(id: string, names?: TraceNames | null): TextPart[] {
@@ -269,10 +269,11 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
   // 匹配器数、答案记录数是内核的计数，读路径的人用不上 / Matcher and answer-record counts are kernel bookkeeping a reader of the path has no use for
   if (stage === 'rule' && status === 'matched') {
     // 面板自己生成的规则（其余请求、域名映射）写成整句，不写它们在内核里的名字 / Rules the panel generates (catch-alls, mappings) read as whole sentences, not by their kernel names
-    const said = names?.matched(label)
-    return { lead: said ? [t(said)] : sentence(t('命中规则'), ruleName(label, names)), note: detailParts(detail, ['管线', '匹配器数']) }
+    const at = detailValue(detail, '管线')
+    const said = names?.matched(label, at)
+    return { lead: said ? [t(said)] : sentence(t('命中规则'), ruleName(label, names, at)), note: detailParts(detail, ['管线', '匹配器数']) }
   }
-  if (stage === 'rule' && ['missed', 'miss'].includes(status)) return { lead: sentence(t('规则'), ruleName(label, names), t('没命中')), note: detailParts(detail, ['管线', '匹配器数']) }
+  if (stage === 'rule' && ['missed', 'miss'].includes(status)) return { lead: sentence(t('规则'), ruleName(label, names, detailValue(detail, '管线')), t('没命中')), note: detailParts(detail, ['管线', '匹配器数']) }
   // 回答后检查：内核写「响应匹配器 命中 / 未命中」和匹配器数，读的人只要知道结果 / An answer check: the kernel writes 「响应匹配器 命中 /
   // 未命中」 and the matcher count; the reader needs only the outcome
   if (stage === 'response_rule' && status === 'matched') return { lead: [t('回答后检查命中')], note: detailParts(detail, ['匹配器数']) }

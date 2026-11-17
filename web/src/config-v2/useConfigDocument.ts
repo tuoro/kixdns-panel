@@ -5,7 +5,7 @@ import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { normalUrl } from '../config-model/blocklist'
 import { exportConfig, readConfig } from '../config-model/document'
-import { blocklistKey, type Model, type Rule } from '../config-model/model'
+import { blocklistKey, compileNamed, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { ROLLBACK_LABELS, configPageOpen, nameWith, noteRead, restartingKixdns, startingKixdns, versionName, type RollbackOrigin } from '../composables/useServiceStart'
@@ -15,7 +15,7 @@ import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { runningVersionId } from '../running-version'
 import { dismissBuildToast, dismissDraftedFailure, needsBuild, sayDrafted, settleBlocklists, type BuildProblem } from './useBlocklists'
-import { appliedModel, appliedSnapshot, changesBesidesFile, replaceOnLeave, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
+import { appliedModel, appliedSnapshot, changesBesidesFile, replaceOnLeave, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -137,29 +137,32 @@ export const cnameInUse = computed(() => cnameAnswers.value > 0)
 // draft's rules. A rule's own forward pipeline (rule-<id>) is traced by its id whether or not the rule is named; a rule split into several (name#N) counts once;
 // mappings are counted apart (they have 去域名映射); anything that does not trace back (other raw rules, the background-refresh rule) still counts as one place.
 // So the notice's 「有 N 处」 matches what it names below
-export const cnameUse = computed((): { rules: Rule[]; untraced: number } => {
-  if (!cnameInUse.value) return { rules: [], untraced: 0 }
-  const content = exportConfig(model) as Record<string, unknown>
-  const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
-  const mappingPipeline = model.mappingId ?? 'domain_mapping'
-  const everyRule = [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)]
+export const cnameUse = computed((): { rules: Rule[]; untraced: number } => (cnameInUse.value ? rulesAnswering(model, 'static_cname_response') : { rules: [], untraced: 0 }))
+/**
+ * 写出的配置里用到某个动作的内核规则，按编译时的对照表认回规则；认不回来的（高级规则里别的、后台刷新规则）各算一处，域名映射不算
+ * The kernel rules in the export that use an action, traced back to rules through the compile's index; what does not trace back (other raw
+ * rules, the background-refresh rule) counts once each; mappings are left out
+ */
+export function rulesAnswering(draft: Model, type: string): { rules: Rule[]; untraced: number } {
+  const { config, index } = compileNamed(draft)
+  const content = config as unknown as Record<string, unknown>
+  const everyRule = [...draft.rules, ...draft.ruleGroups.flatMap((g) => g.rules)]
+  const mappingPipeline = draft.mappingId ?? 'domain_mapping'
   const found = new Map<number, Rule>()
-  let untraced = ruleUsesAction(content.background_refresh_rule, 'static_cname_response') ? 1 : 0
-  for (const pipeline of pipelines) {
-    if (!isRecord(pipeline) || pipeline.id === mappingPipeline) continue
-    const own = typeof pipeline.id === 'string' ? /^rule-(\d+)$/.exec(pipeline.id)?.[1] : undefined
-    const owner = own === undefined ? undefined : everyRule.find((r) => r.id === Number(own))
-    const rules = Array.isArray(pipeline.rules) ? pipeline.rules : []
-    for (const kernelRule of rules) {
-      if (!ruleUsesAction(kernelRule, 'static_cname_response') || !isRecord(kernelRule)) continue
-      // 拆开的几条叫 name#N，合回一条 / Split parts are named name#N and fold back into one
-      const rule = owner ?? (typeof kernelRule.name === 'string' ? findRuleByName(kernelRule.name.replace(/#\d+$/, '')) : undefined)
+  let untraced = ruleUsesAction(content.background_refresh_rule, type) ? 1 : 0
+  for (const pipeline of config.pipelines) {
+    if (pipeline.id === mappingPipeline) continue
+    for (const kernelRule of pipeline.rules) {
+      if (!ruleUsesAction(kernelRule, type)) continue
+      const ref = index.lookup(pipeline.id, kernelRule.name)
+      const id = ref?.kind === 'rule' || ref?.kind === 'ownForward' ? ref.id : null
+      const rule = id === null ? undefined : everyRule.find((r) => r.id === id)
       if (rule) found.set(rule.id, rule)
       else untraced += 1
     }
   }
   return { rules: [...found.values()], untraced }
-})
+}
 // 内核报了自己支持什么、草稿里却有它不支持的 CNAME 回答：服务端不收这份配置，所以先不让保存
 // The kernel reported what it supports and the draft has CNAME answers it lacks: the server refuses the config, so saving waits
 export const cnameBlocked = computed(() => !runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value && !canCname.value && cnameInUse.value)

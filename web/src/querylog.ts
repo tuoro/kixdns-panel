@@ -285,21 +285,24 @@ export function statusOf(entry: QueryLogEntry): QueryStatus {
  * The deciding rule: the record holds the last decision's, which through an upstream group is the group's generated forward rule; then
  * the user's own rule is found further back
  */
-function decidingRule(entry: QueryLogEntry, ctx: QueryLogContext | null): string | null {
-  if (!entry.rule || !ctx) return entry.rule
-  const generated = (rule: string, pipeline: string) => ctx.names.plumbing(rule.replace(/#\d+$/, ''), pipeline)
-  if (!generated(entry.rule, entry.pipeline)) return entry.rule
-  return [...entry.steps].reverse().find((step) => step.kind === 'rule' && step.rule && !generated(step.rule, step.pipeline))?.rule ?? null
+function decidingRule(entry: QueryLogEntry, ctx: QueryLogContext | null): { rule: string; pipeline: string } | null {
+  if (!entry.rule) return null
+  if (!ctx || !ctx.names.plumbing(entry.rule, entry.pipeline)) return { rule: entry.rule, pipeline: entry.pipeline }
+  const own = [...entry.steps].reverse().find((step) => step.kind === 'rule' && step.rule && !ctx.names.plumbing(step.rule, step.pipeline))
+  return own?.rule ? { rule: own.rule, pipeline: own.pipeline } : null
 }
 
 /** 定下去向的那条规则叫什么：其余请求就叫其余请求，域名映射不单说 / The deciding rule's name: the catch-all reads 其余请求, a mapping is not named */
 function ruleLabel(entry: QueryLogEntry, ctx: QueryLogContext | null): string | null {
   const deciding = decidingRule(entry, ctx)
   if (!deciding) return null
-  const base = deciding.replace(/#\d+$/, '')
-  if (/^域名映射 /.test(base)) return null
-  if (base === '其余请求' || (ctx && ctx.model.ruleGroups.some((g) => base === `${g.name}·其余`))) return '其余请求'
-  return ctx?.names.rule(deciding) ?? base
+  const base = deciding.rule.replace(/#\d+$/, '')
+  // 没有配置可对时只能看名字的样子 / With no config to look up, only the name's shape is left
+  if (!ctx) return /^域名映射 /.test(base) ? null : base
+  const ref = ctx.names.ref(deciding.rule, deciding.pipeline)
+  if (ref?.kind === 'mapping') return null
+  if (ref?.kind === 'rest' || ref?.kind === 'groupRest') return '其余请求'
+  return ctx.names.rule(deciding.rule, deciding.pipeline) ?? base
 }
 
 /** 回了过期结果的原因 / Why an expired answer went back */
@@ -424,7 +427,7 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null, r
   // 去向：上游组写全称；下面说哪条规则定的，经过规则组的话说在哪个组里 / Where: the full group name; below, which rule decided, and the rule group it sat in
   const whereLead = entry.outcome === 'blocked' || entry.outcome === 'answered' ? route.where : place(entry.pipeline)
   const deciding = decidingRule(entry, ctx)
-  const said = deciding ? ctx?.names.matched(deciding.replace(/#\d+$/, '')) : null
+  const said = deciding ? ctx?.names.matched(deciding.rule, deciding.pipeline) : null
   const viaGroup = ctx ? entry.steps.find((st) => st.kind === 'pipeline' && ctx.model.ruleGroups.some((g) => ruleGroupPipelineId(ctx.model, g.id) === st.pipeline)) : undefined
   const whereSub = said ?? (route.rule ? `命中规则「${route.rule}」${viaGroup ? `（在${place(viaGroup.pipeline)}里）` : ''}` : '')
   // 谁回答的 / who answered
@@ -648,8 +651,8 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
       row(step, [t(`进入${place(step.pipeline)}`)])
     } else if (step.kind === 'rule') {
       if (generated(step.pipeline)) continue
-      const said = step.rule ? ctx?.names.matched(step.rule) : null
-      const title = step.rule ? (ctx?.names.rule(step.rule) ?? step.rule) : ''
+      const said = step.rule ? ctx?.names.matched(step.rule, step.pipeline) : null
+      const title = step.rule ? (ctx?.names.rule(step.rule, step.pipeline) ?? step.rule) : ''
       const head = said ?? (step.rule ? `命中规则「${title}」` : '没有规则命中')
       row(step, [t(head), ...then(step)], [], step.target === 'block' ? 'err' : '')
     } else if (step.kind === 'cache') {
@@ -693,7 +696,7 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
       row(step, [m(step.upstream ?? ''), t(' 正在限速，这次没问它')], [t(step.transport ?? '')].filter((p) => p.text), '', { idle: true })
     } else if (step.kind === 'check') {
       const action = then(step)
-      const named = step.rule && !generated(step.pipeline) ? `「${ctx?.names.rule(step.rule) ?? step.rule}」` : ''
+      const named = step.rule && !generated(step.pipeline) ? `「${ctx?.names.rule(step.rule, step.pipeline) ?? step.rule}」` : ''
       // 上游组自己的检查是它的备用组（配置页这么叫），命中没命中都这么叫 / A check in an upstream group's own list is its 备用组 (as the
       // config page calls it), matched or not
       const fallback = isFallback(ctx, step.pipeline)

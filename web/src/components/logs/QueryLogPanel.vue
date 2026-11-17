@@ -139,7 +139,7 @@ watch(() => route.query.q, (value) => {
   window.clearTimeout(typing)
   q.value = said
 })
-const ruleTitle = computed(() => (rule.value ? (ctx.value?.names.rule(rule.value) ?? rule.value) : ''))
+const ruleTitle = computed(() => (rule.value ? (ctx.value?.names.rule(rule.value, ruleIn.value || null) ?? rule.value) : ''))
 const filtered = computed(() => Boolean(q.value.trim() || dest.value || client.value || rule.value || upstream.value))
 const searchInput = ref<HTMLInputElement | null>(null)
 function clearFilters(): void {

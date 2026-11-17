@@ -15,7 +15,7 @@ import { serviceTone } from '../service-state'
 import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
-import { answeredByUpstream, asksUpstream, describeStep, noteRuns, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { answeredByUpstream, asksUpstream, describeStep, detailValue, noteRuns, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { clientRegionText, knownRegions, lookupRegions, regionText } from '../ip-region'
 import { vLineDots } from '../line-dots'
 import { errorMessage, formatKixdnsVersion } from '../utils'
@@ -207,7 +207,7 @@ const rows = computed(() => {
     target = forwardTarget(row.sent ?? row.step) ?? target
     return view
   }
-  const missed: TextPart[] = row.steps.flatMap((step, index) => [...(index ? [{ text: '、' }] : []), ...ruleName(step.label, names.value)])
+  const missed: TextPart[] = row.steps.flatMap((step, index) => [...(index ? [{ text: '、' }] : []), ...ruleName(step.label, names.value, detailValue(step.detail, '管线'))])
   return { lead: [{ text: missedRulesText(row.steps.length) }], note: missed, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
   })
 })

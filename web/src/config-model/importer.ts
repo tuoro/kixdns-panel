@@ -165,6 +165,8 @@ function mergeGroups(groups: Condition[][]): Condition[][] {
 export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const notes: ImportNote[] = []
   const note = (text: string, level: ImportNote['level'] = 'info') => notes.push({ level, text })
+  // 读回来的规则在内核里是 rule-编号时记下编号 / The id of each rule read back from a kernel name rule-<id>
+  const kernelIds = new Map<Rule, number>()
   // 新规则的编号从上一份用过的编号之后开始：页面重开以后计数从头来，会和接回来的旧编号撞上（点一条开的是另一条）
   // New rules number from above every id the previous model used: after a page reload the counter starts over and would collide with carried-over ids
   // (clicking one rule opened another)
@@ -543,7 +545,13 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       const last = rules.at(-1)
       // 新格式把一条规则拆成「名字#1、#2」写进内核，读回来合成一条 / The new format splits one rule into name#1, #2; read back as one
       if (last && !last.raw && !r.raw && /#\d+$/.test(kr.name) && lastKernel === base(kr.name) && sameBehaviour(last, r)) last.conditions = mergeGroups([...last.conditions, ...r.conditions])
-      else rules.push(r)
+      else {
+        rules.push(r)
+        // 内核里叫 rule-编号的（没起名字，或者名字认不回它而改用编号）记下编号，接回上一份时按编号认 / A kernel name rule-<id> (unnamed, or named
+        // but given its id because the name could not lead back to it) records the id, and the previous model is matched by it
+        const id = /^rule-(\d+)$/.exec(base(kr.name))?.[1]
+        if (id !== undefined) kernelIds.set(r, Number(id))
+      }
       lastKernel = base(kr.name)
     }
     const last = rules.at(-1)
@@ -646,13 +654,13 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     ...(rawPipelines.length ? { rawPipelines } : {}),
     ...(Object.keys(extra).length ? { extra } : {}),
   }
-  if (prev) model = carryOver(model, prev)
+  if (prev) model = carryOver(model, prev, kernelIds)
   return { model, notes, stats: { rules: allRules.length, raw: rawCount, groups: finalGroups.length, mappings: mappings.length } }
 }
 
 // 内核里没有的东西从上一份接回来：规则的编号、备注、停用的规则和映射 / What the kernel does not hold comes from the previous model:
 // rule ids, notes, disabled rules and mappings
-function carryOver(model: Model, prev: Model): Model {
+function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>): Model {
   // 「拦截 · 沿用默认」写进内核就是具体的响应码，读回来按上一份认回「沿用默认」 / 拦截 · 沿用默认 reaches the kernel as a concrete code; the previous model restores it
   const resolved = (o: Outcome) => (o.type === 'block' && o.response === 'default' ? prev.defaults.block : o.type === 'block' ? o.response : null)
   const sameBlock = (p: Outcome, r: Outcome) => p.type === 'block' && p.response === 'default' && r.type === 'block' && resolved(p) === resolved(r)
@@ -669,10 +677,16 @@ function carryOver(model: Model, prev: Model): Model {
     // finding the anchor by name put it in the wrong place)
     const paired = new Map<Rule, Rule>()
     for (const r of now) {
-      const p = before.find((x) => x.enabled && !paired.has(x) && x.name === r.name && (r.name !== '' || sameShape(x, r)))
+      // 内核里是 rule-编号的按编号认（名字在内核里没有，从上一份接回来）；其余的按名字，名字在一个列表里只指向一条
+      // A kernel name rule-<id> is matched by the id (its name is not in the kernel and comes from the previous model); the rest by name,
+      // which leads to one rule in a list
+      const id = kernelIds.get(r)
+      const p = id !== undefined
+        ? before.find((x) => x.enabled && !paired.has(x) && x.id === id)
+        : before.find((x) => x.enabled && !paired.has(x) && x.name === r.name && (r.name !== '' || sameShape(x, r)))
       if (!p) continue
       paired.set(p, r)
-      Object.assign(r, { id: p.id, note: p.note, edited: p.edited, outcome: sameBlock(p.outcome, r.outcome) ? p.outcome : r.outcome })
+      Object.assign(r, { id: p.id, name: id !== undefined ? p.name : r.name, note: p.note, edited: p.edited, outcome: sameBlock(p.outcome, r.outcome) ? p.outcome : r.outcome })
       // 条件一样只是顺序不同（内核要求多值的条件排最前）：用上一份的顺序 / Same conditions in another order (the kernel wants a multi-valued one first): keep the previous order
       if (!r.raw && !p.raw && condsKey(r.conditions) === condsKey(p.conditions)) r.conditions = p.conditions
       if (!r.raw && !p.raw && r.response.mode === 'custom' && p.response.mode === 'custom' && JSON.stringify({ ...r.response, conditions: r.response.conditions.map(fullKey).sort() }) === JSON.stringify({ ...p.response, conditions: p.response.conditions.map(fullKey).sort() })) r.response = p.response
