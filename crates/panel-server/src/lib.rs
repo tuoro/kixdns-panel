@@ -13,6 +13,7 @@ mod geosite_catalog;
 mod ip_region;
 mod operations;
 mod panel_update;
+mod prometheus_text;
 mod protobuf;
 mod querylog;
 mod querylog_records;
