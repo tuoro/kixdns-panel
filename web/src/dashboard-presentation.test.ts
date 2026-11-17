@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { RequestLatency } from './api/types'
 import { MIN_HEALTH_SAMPLES, cacheComposition, latencyBands, latencyBasis, latencyHealth, rcodeDistribution, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from './dashboard-presentation'
 import { emptyOverview } from './dashboard-state'
+import { formatPercent, upstreamSuccessRate } from './utils'
 
 describe('上游健康与分布', () => {
   const base = { upstream: '1.1.1.1:53', transport: 'udp', errors: 0, rejected: 0, throttled: 0, rcodes: [], tcp_fallbacks: 0, recent: null }
@@ -60,6 +61,31 @@ describe('上游健康与分布', () => {
     // KixDNS 20 分钟前重启
     expect(recentWindowLabel(1_200)).toBe('最近 20 分钟')
     expect(recentWindowLabel(20)).toBe('最近 1 分钟')
+  })
+
+  it('快照的时段从快照那一刻往前说，不说「最近」', () => {
+    expect(recentWindowLabel(3_600, true)).toBe('快照前一小时')
+    expect(recentWindowLabel(3_541, true)).toBe('快照前一小时')
+    expect(recentWindowLabel(1_200, true)).toBe('快照前 20 分钟')
+    expect(recentWindowLabel(null, true)).toBe('启动以来')
+  })
+
+  it('成功率按页面上写出来的那一位小数判断：写着 99.0% 就够健康，写着 95.0% 就不算异常', () => {
+    // 9,899 ÷ 10,000 = 98.99%，页面写 99.0% / 9,899 ÷ 10,000 = 98.99%, shown as 99.0%
+    const shown99 = { ...base, attempts: 10_000, success: 9_899, errors: 101, aborted: 0, avg_latency_ms: 20 }
+    expect(formatPercent(upstreamSuccessRate(shown99))).toBe('99.0%')
+    expect(upstreamHealth(shown99)).toBe('healthy')
+    // 94.96% 写 95.0%：降级，不是异常 / 94.96% shows as 95.0%: degraded, not unhealthy
+    const shown95 = { ...base, attempts: 10_000, success: 9_496, errors: 504, aborted: 0, avg_latency_ms: 20 }
+    expect(formatPercent(upstreamSuccessRate(shown95))).toBe('95.0%')
+    expect(upstreamHealth(shown95)).toBe('degraded')
+    // 写出来不到的照样不到 / What shows below the line is below it
+    const shown989 = { ...base, attempts: 10_000, success: 9_894, errors: 106, aborted: 0, avg_latency_ms: 20 }
+    expect(formatPercent(upstreamSuccessRate(shown989))).toBe('98.9%')
+    expect(upstreamHealth(shown989)).toBe('degraded')
+    const shown949 = { ...base, attempts: 10_000, success: 9_494, errors: 506, aborted: 0, avg_latency_ms: 20 }
+    expect(formatPercent(upstreamSuccessRate(shown949))).toBe('94.9%')
+    expect(upstreamHealth(shown949)).toBe('unhealthy')
   })
 
   it('响应码分布合并所有上游并把少见响应码归为其他', () => {

@@ -7,6 +7,16 @@ export function formatPercent(value: number): string {
 }
 
 /**
+ * 占比在页面上写出来的那个百分数（一位小数，和 formatPercent 同一个舍入）。又写出来又拿去判断的，按这个数判断：
+ * 旁边写着 99.0% 的，判断时就是 99。
+ * A share as the percentage the page writes (one decimal, rounded as formatPercent rounds). Whatever is both shown and judged is judged
+ * on this number: one shown as 99.0% is 99 when judged.
+ */
+export function shownPercent(value: number): number {
+  return Number((value * 100).toFixed(1))
+}
+
+/**
  * 小到一位小数显示不出来、但确实发生过的占比，写成「低于 0.1%」。
  *
  * 1,204 次除以 1,284 万是 0.0094%，`formatPercent` 会写成 0.0%——那和「一次也没

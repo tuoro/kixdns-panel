@@ -385,6 +385,132 @@ test('切换级别后不会拿旧级别的游标翻页', async ({ page }) => {
   await expect(lines).toHaveCount(8)
 })
 
+// 只在测试里替换 API 模块边界 / Swap the API module boundary in the test only
+async function wrapClient(page: Page, tag: string, body: string): Promise<void> {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes(tag)) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?${tag}';
+      import { apiRequest as original } from '/src/api/client.ts?${tag}';
+      ${body}
+    ` })
+  })
+}
+type Held = { hold: boolean; held: (() => void)[] }
+const release = (page: Page) => page.evaluate(() => { const state = (globalThis as unknown as { __held: Held }).__held; state.hold = false; state.held.forEach((go) => go()); state.held = [] })
+
+test('起不来时点停止：停止之前发出的那次服务状态晚回来，页头也不退回「启动失败」', async ({ page }) => {
+  // 服务状态是发出那一刻的；__held.hold 打开时停在路上 / The service state is the one of the moment it is sent; with __held.hold on it
+  // waits on its way
+  await wrapClient(page, 'stop-original', `
+    const state = globalThis.__held = { hold: false, held: [] };
+    let now = { active_state: 'activating', sub_state: 'auto-restart', main_pid: 0, did_not_come_up: true };
+    export async function apiRequest(path, init) {
+      if (path === '/api/v1/service/stop') { now = { active_state: 'inactive', sub_state: 'dead', main_pid: 0, did_not_come_up: false }; return { unit: 'kixdns.service', ...now }; }
+      if (path !== '/api/v1/service') return original(path, init);
+      const said = { unit: 'kixdns.service', ...now };
+      if (state.hold) await new Promise((resolve) => state.held.push(resolve));
+      return said;
+    }
+  `)
+  await page.clock.install()
+  await open(page, '/system')
+  const facts = page.locator('.system-facts')
+  await expect(facts).toContainText('启动失败')
+  // 页面时钟停住：只有 runFor 才往前走 / The page clock stands still: only runFor moves it
+  await page.clock.pauseAt(Date.now() + 1_000)
+  // 起不来时每 5 秒看一次服务：这一次停在路上 / While it does not come up the service is looked at every 5 seconds: this one is held
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = true })
+  await page.clock.runFor(5_000)
+  await expect.poll(() => page.evaluate(() => (globalThis as unknown as { __held: Held }).__held.held.length)).toBe(1)
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = false })
+  await page.locator('.service-line').getByRole('button', { name: '停止' }).click()
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: 'KixDNS 服务已停止' })).toBeVisible()
+  await release(page)
+  await expect(page.locator('.service-line').getByRole('button', { name: '启动' })).toBeEnabled()
+  await expect(facts).toContainText('已停止')
+  await expect(facts).not.toContainText('启动失败')
+})
+
+test('更新内核时检查更新还在路上：更新以后的检查结果是更新以后的，不再说有新版本', async ({ page }) => {
+  // 检查结果是发出那一刻的 / A check's result is the one of the moment it is sent
+  await wrapClient(page, 'kernel-check-original', `
+    const state = globalThis.__held = { hold: false, held: [] };
+    export async function apiRequest(path, init) {
+      if (path !== '/api/v1/updates/status') return original(path, init);
+      const said = await original(path, init);
+      if (state.hold) await new Promise((resolve) => state.held.push(resolve));
+      return said;
+    }
+  `)
+  await open(page, '/system')
+  const kernelRow = page.locator('.update-row').first()
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('2026.10.13 → 2026.10.13.2')
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = true })
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (globalThis as unknown as { __held: Held }).__held.held.length)).toBe(1)
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = false })
+  await kernelRow.getByRole('button', { name: '更新', exact: true }).click()
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: '内核已更新，正在运行' })).toBeVisible()
+  await release(page)
+  await expect(page.getByRole('button', { name: '检查更新', exact: true })).toBeEnabled()
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('已是最新')
+
+  // 回退也一样：回退以后又有新版本可装 / A rollback likewise: after it the new version can be installed again
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = true })
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (globalThis as unknown as { __held: Held }).__held.held.length)).toBe(1)
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = false })
+  await page.locator('.runtime-panel').getByRole('button', { name: '回退', exact: true }).click()
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: '已回退到上一个内核' })).toBeVisible()
+  await release(page)
+  await expect(page.getByRole('button', { name: '检查更新', exact: true })).toBeEnabled()
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('2026.10.13 → 2026.10.13.2')
+})
+
+test('保存 GitHub Token 时检查更新还在路上：保存以后的检查结果是带上 Token 的，不再说检查失败', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-kernel-check-failed', 'true'))
+  await wrapClient(page, 'token-check-original', `
+    const state = globalThis.__held = { hold: false, held: [] };
+    export async function apiRequest(path, init) {
+      if (path !== '/api/v1/updates/status') return original(path, init);
+      const said = await original(path, init);
+      if (state.hold) await new Promise((resolve) => state.held.push(resolve));
+      return said;
+    }
+  `)
+  await open(page, '/system')
+  const kernelRow = page.locator('.update-row').first()
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('检查失败')
+  // 匿名访问用完时发出的那次检查停在路上 / The check sent while anonymous access was used up waits on its way
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = true })
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (globalThis as unknown as { __held: Held }).__held.held.length)).toBe(1)
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = false; localStorage.removeItem('kixdns:demo-kernel-check-failed') })
+  await page.locator('input[aria-label="GitHub Token"]').fill('github_pat_e2e_placeholder')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.locator('.toast--success').filter({ hasText: 'GitHub Token 已验证并保存' })).toBeVisible()
+  await release(page)
+  await expect(page.getByRole('button', { name: '检查更新', exact: true })).toBeEnabled()
+  await expect(kernelRow.getByText('有新版本')).toBeVisible()
+
+  // 删掉 Token 也一样：删之前发出的检查不算数，删了以后匿名访问又用完了 / Deleting the token likewise: a check sent before the delete
+  // does not count, and anonymous access is used up again afterwards
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = true })
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (globalThis as unknown as { __held: Held }).__held.held.length)).toBe(1)
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = false; localStorage.setItem('kixdns:demo-kernel-check-failed', 'true') })
+  await page.getByRole('button', { name: '删除 Token', exact: true }).click()
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: 'GitHub Token 已删除' })).toBeVisible()
+  await release(page)
+  await expect(page.getByRole('button', { name: '检查更新', exact: true })).toBeEnabled()
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('检查失败')
+})
+
 test('主页面不会产生视口级横向溢出 @responsive', async ({ page }) => {
   for (const path of ['/', '/config', '/logs', '/diagnostics', '/system']) {
     await open(page, path)

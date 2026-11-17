@@ -251,10 +251,12 @@ const isGap = (item: Item): item is QueryLogGap => 'gap' in item
 const ignored = (qname: string) => settings.ignored_domains.some((d) => qname === d || qname.endsWith(`.${d}`))
 
 /**
- * 和服务端同样的筛选：q 不分大小写找域名或客户端；规则按「哪个列表里的哪条」认，回答后检查只算命中的那一步，内核拆开的
+ * 和服务端同样的筛选：q 不分大小写找域名或客户端，qname 就是这个域名；pipelines 是其中之一、exclude_pipelines 不是其中之一；
+ * 规则按「哪个列表里的哪条」认，回答后检查只算命中的那一步，内核拆开的
  * 「名字#N」算同一条；上游按被问到的算；有筛选时不出漏记行。kixdns:demo-querylog-scan-limit 演示一次只看那么多条、没凑满就交回
  * 看到哪儿。
- * The same filtering as the server: q finds the domain or client regardless of case; a rule is matched as which rule in which list, an
+ * The same filtering as the server: q finds the domain or client regardless of case and qname is exactly that domain; pipelines is one
+ * of them and exclude_pipelines none of them; a rule is matched as which rule in which list, an
  * answer check counts only the step that matched, and the kernel's split 「name#N」 counts as one; an upstream counts when it was asked;
  * gap rows are left out under any filter. kixdns:demo-querylog-scan-limit plays a read that looks at only so many records and hands
  * back how far it got.
@@ -265,18 +267,23 @@ export function demoQueryLogPage(config: KConfig, now: number, params: URLSearch
   const newest_id = all[0]?.id ?? null
   const q = (params.get('q') ?? '').trim().toLowerCase()
   const pipelines = (params.get('pipelines') ?? '').split(',').filter(Boolean)
+  const excluded = (params.get('exclude_pipelines') ?? '').split(',').filter(Boolean)
   const outcomes = (params.get('outcomes') ?? '').split(',').filter(Boolean)
   const client = params.get('client')
   const rule = params.get('rule')
   const rulePipeline = params.get('rule_pipeline')
   const response = params.get('rule_phase') === 'response'
   const upstream = params.get('upstream')
-  const filtered = Boolean(q || pipelines.length || outcomes.length || client || rule || upstream)
+  // 就是这个域名，不分大小写 / Exactly this domain, regardless of case
+  const qname = (params.get('qname') ?? '').trim().toLowerCase()
+  const filtered = Boolean(q || pipelines.length || excluded.length || outcomes.length || client || rule || upstream || qname)
   const keep = (item: Item) => {
     if (isGap(item)) return !filtered
     if (ignored(item.qname)) return false
     if (q && !item.qname.toLowerCase().includes(q) && !item.client.toLowerCase().includes(q)) return false
+    if (qname && item.qname.toLowerCase() !== qname) return false
     if (pipelines.length && !pipelines.includes(item.pipeline ?? '')) return false
+    if (excluded.includes(item.pipeline ?? '')) return false
     if (outcomes.length && !outcomes.includes(item.outcome)) return false
     if (client && item.client !== client) return false
     if (rule && !item.steps.some((st) => st.kind === 'rule' && st.phase === (response ? 'response' : 'request') && (!response || st.matched) && st.rule?.replace(/#\d+$/, '') === rule && (!rulePipeline || st.pipeline === rulePipeline))) return false

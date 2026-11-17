@@ -304,7 +304,8 @@ async function saveGithubToken(): Promise<void> {
     githubTokenVisible.value = false
     githubTokenError.value = ''
     toast.success('GitHub Token 已验证并保存')
-    await Promise.all([loadKernel(true), refreshUpdates()])
+    // 换了 Token 之前发出的检查不算数 / A check sent before the token changed does not count
+    await Promise.all([loadKernel(true), refreshUpdates(true)])
     await loadGithubTokenStatus()
   } catch (error) {
     githubTokenError.value = errorMessage(error)
@@ -328,7 +329,7 @@ async function deleteGithubToken(): Promise<void> {
     githubToken.value = ''
     githubTokenError.value = ''
     toast.success('GitHub Token 已删除')
-    await Promise.all([loadKernel(true), refreshUpdates()])
+    await Promise.all([loadKernel(true), refreshUpdates(true)])
     await loadGithubTokenStatus()
   } catch (error) {
     githubTokenError.value = errorMessage(error)
@@ -338,7 +339,12 @@ async function deleteGithubToken(): Promise<void> {
   }
 }
 
+// 离开系统页以后还在路上的读取：回来了也不再排下一次查询、不弹提示、不刷新页面；回到系统页时由新的这一页接着查（同查询日志、运行日志）
+// Reads still on the way after leaving the system page: when they land they schedule no further query, raise no toast and do not
+// reload the page; coming back to the system page, the new page goes on checking (as the query log and the runtime log do)
+let alive = true
 function schedulePanelUpdatePoll(delay = 2_000): void {
+  if (!alive) return
   if (panelUpdateTimer) clearTimeout(panelUpdateTimer)
   panelUpdateTimer = setTimeout(() => void pollPanelUpdate(), delay)
 }
@@ -355,6 +361,7 @@ async function panelServerHealthy(): Promise<boolean> {
 async function pollPanelUpdate(): Promise<void> {
   try {
     const next = await apiRequest<PanelUpdateStatus>('/api/v1/panel-update')
+    if (!alive) return
     const statusIdentity = panelUpdateIdentity(next)
     if (panelUpdateBaseline && statusIdentity === panelUpdateBaseline) {
       schedulePanelUpdatePoll()
@@ -363,7 +370,9 @@ async function pollPanelUpdate(): Promise<void> {
     panelUpdateBaseline = ''
     panelUpdate.value = next
     if (next.state === 'complete') {
-      if (await panelServerHealthy()) {
+      const healthy = await panelServerHealthy()
+      if (!alive) return
+      if (healthy) {
         toast.success(next.message || '面板在线更新完成')
         window.location.reload()
         return
@@ -375,6 +384,7 @@ async function pollPanelUpdate(): Promise<void> {
   } catch {
     // 面板更新会重启服务，短暂断线属于预期流程。
   }
+  if (!alive) return
   if (Date.now() < panelUpdateDeadline) {
     schedulePanelUpdatePoll()
   } else {
@@ -423,11 +433,19 @@ async function startPanelUpdate(): Promise<void> {
   }
 }
 
-function loadService(silent = false): Promise<void> {
-  if (pendingService) return pendingService
+// 定时的读取遇到正在进行的就搭车；停止、更新内核这类改动之后要的是改动以后的状态，必须重新发（fresh），改动之前发出的那次晚回来也不盖掉
+// （和概览的 loadStats 一样，每次读编一个号，只收最新那次的）
+// A timed read rides along with one in progress; after a change such as stopping or a kernel update the state must come from after it,
+// so a new read is sent (fresh) and one sent before the change cannot overwrite it when it lands late (each read gets a number and only
+// the latest is kept, as the overview's loadStats does)
+let serviceRequest = 0
+function loadService(silent = false, fresh = false): Promise<void> {
+  if (pendingService && !fresh) return pendingService
   loadingService.value = true
+  const request = ++serviceRequest
   pendingService = (async () => {
     const next = await apiRequest<ServiceStatus>('/api/v1/service')
+    if (request !== serviceRequest) return
     // 起不来时服务状态带着出路：可以退回的设置、可以写进配置文件的待应用版本，提示条照它指去配置页或日志
     // Not coming up, the service state carries the way out: settings that can go back or a pending version that can be written
     // into the file, and the notice points to the config page or the logs by it
@@ -440,9 +458,12 @@ function loadService(silent = false): Promise<void> {
     // stopped
     if (!waitingBack.value) noteRead(next.active_state === 'active' && !next.did_not_come_up, ['inactive', 'failed'].includes(next.active_state))
   })().catch((error: unknown) => {
+    if (request !== serviceRequest) return
     serviceError.value = `服务状态：${errorMessage(error)}`
     if (!silent && service.value) toast.error(serviceError.value)
   }).finally(() => {
+    // 后面又发了一次：收尾归它 / A later read was sent: winding up is its job
+    if (request !== serviceRequest) return
     loadingService.value = false
     pendingService = null
   })
@@ -525,7 +546,9 @@ async function control(action: ServiceAction): Promise<void> {
       toast.success('KixDNS 服务已停止')
     }
     serviceError.value = ''
-    await loadService(true)
+    // 操作之前发出的那次读取不算数（起不来时每 5 秒那次） / A read sent before the action does not count (the 5-second one while it
+    // does not come up)
+    await loadService(true, true)
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -554,7 +577,8 @@ async function updateKernel(): Promise<void> {
       method: 'POST',
       ...jsonBody({ source_id: latest.source_id }),
     })
-    await Promise.all([loadService(true), refreshUpdates()])
+    // 换内核之前发出的读取、检查都不算数 / Reads and checks sent before the switch do not count
+    await Promise.all([loadService(true, true), refreshUpdates(true)])
     toast.success(switchedMessage(service.value, `内核已${verb}`))
   } catch (error) {
     toast.error(errorMessage(error))
@@ -576,7 +600,7 @@ async function rollbackKernel(): Promise<void> {
   kernelAction.value = 'rollback'
   try {
     kernel.value = await apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel/rollback', { method: 'POST' })
-    await Promise.all([loadService(true), refreshUpdates()])
+    await Promise.all([loadService(true, true), refreshUpdates(true)])
     toast.success(switchedMessage(service.value, '已回退到上一个内核'))
   } catch (error) {
     toast.error(errorMessage(error))
@@ -614,6 +638,7 @@ watch(() => downNotice.value !== null || backUnconfirmed.value, (watching) => {
 const stopReading = readBeforeTelling(async () => { await pendingService?.catch(() => undefined); await loadService(true) })
 
 onBeforeUnmount(() => {
+  alive = false
   if (panelUpdateTimer) clearTimeout(panelUpdateTimer)
   clearInterval(downTimer)
   stopReading()

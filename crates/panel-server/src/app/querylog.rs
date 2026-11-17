@@ -97,6 +97,10 @@ const OUTCOMES: [&str; 8] = [
     "cancelled",
 ];
 const MAX_FILTER_TEXT: usize = 512;
+/// 列表参数最多几项：列表按项数限，每一项照样受 [`MAX_FILTER_TEXT`] 限；一个上游组多的配置，去向的 Pipeline 列表整串早就过了 512 字节
+/// At most this many items in a list parameter: lists are capped by count, each item still by [`MAX_FILTER_TEXT`]; with
+/// many upstream groups a destination's pipeline list passes 512 bytes as a whole long before that
+const MAX_FILTER_ITEMS: usize = 1_024;
 
 /// 内核支不支持查询日志：还不知道、不支持、支持 / Whether the kernel has the query log: not known yet, no, yes
 const SUPPORT_UNKNOWN: u8 = 0;
@@ -189,8 +193,14 @@ pub(super) fn routes() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 struct QueryLogQuery {
     q: Option<String>,
+    /// 就是这个域名（不分大小写），不像 `q` 那样找包含的 / Exactly this domain (case-insensitive), not a containment search like `q`
+    qname: Option<String>,
     /// 逗号分隔 / Comma-separated
     pipelines: Option<String>,
+    /// 最后进入的 Pipeline 不是其中之一，逗号分隔：「自定义回答」只要说去掉域名映射，不必把其余每个列表都列出来
+    /// The pipeline entered last is none of these, comma-separated: 「自定义回答」 needs only to leave the domain mapping out
+    /// rather than list every other pipeline
+    exclude_pipelines: Option<String>,
     /// 逗号分隔，面板的叫法 / Comma-separated, in the panel's words
     outcomes: Option<String>,
     client: Option<String>,
@@ -268,6 +278,7 @@ async fn query_log(
 }
 
 fn parse_filter(query: &QueryLogQuery) -> AppResult<Filter> {
+    let too_long = || AppError::BadRequest("querylog_filter_invalid", "筛选条件太长了".to_owned());
     let text = |value: &Option<String>| -> AppResult<Option<String>> {
         let Some(value) = value
             .as_deref()
@@ -277,22 +288,28 @@ fn parse_filter(query: &QueryLogQuery) -> AppResult<Filter> {
             return Ok(None);
         };
         if value.len() > MAX_FILTER_TEXT {
-            return Err(AppError::BadRequest(
-                "querylog_filter_invalid",
-                "筛选条件太长了".to_owned(),
-            ));
+            return Err(too_long());
         }
         Ok(Some(value.to_owned()))
     };
+    // 列表按项数限，不按整串多长 / A list is capped by its item count, not by its length
     let list = |value: &Option<String>| -> AppResult<Option<HashSet<String>>> {
-        Ok(text(value)?.map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(str::to_owned)
-                .collect()
-        }))
+        let Some(value) = value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let items: Vec<&str> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .collect();
+        if items.len() > MAX_FILTER_ITEMS || items.iter().any(|item| item.len() > MAX_FILTER_TEXT) {
+            return Err(too_long());
+        }
+        Ok(Some(items.into_iter().map(str::to_owned).collect()))
     };
     let outcomes = list(&query.outcomes)?;
     if let Some(unknown) = outcomes
@@ -318,7 +335,9 @@ fn parse_filter(query: &QueryLogQuery) -> AppResult<Filter> {
     let rule_pipeline = text(&query.rule_pipeline)?;
     Ok(Filter {
         q: text(&query.q)?.map(|q| q.to_lowercase()),
+        qname: text(&query.qname)?.map(|name| name.to_lowercase()),
         pipelines: list(&query.pipelines)?,
+        exclude_pipelines: list(&query.exclude_pipelines)?,
         outcomes,
         client: text(&query.client)?,
         rule: text(&query.rule)?.map(|name| RuleFilter {

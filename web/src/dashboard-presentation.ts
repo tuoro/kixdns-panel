@@ -1,5 +1,5 @@
 import type { MetricsSnapshot, RequestLatency, UpstreamCount, UpstreamTally } from './api/types'
-import { upstreamSuccessRate } from './utils'
+import { shownPercent, upstreamSuccessRate } from './utils'
 
 export type UpstreamHealth = 'pending' | 'healthy' | 'degraded' | 'unhealthy'
 
@@ -29,25 +29,32 @@ export function upstreamBasis(item: UpstreamCount): UpstreamBasis {
 /**
  * 可判断的响应不足 50 次记为观察中；成功率 ≥ 99% 且平均耗时 < 1 s 记为健康；
  * 成功率 < 95% 或平均耗时 ≥ 2 s 记为异常；其余为降级。
+ * 成功率按页面上写出来的那一位小数比：写着「99.0%」的就够 99%，不会旁边写着 99.0% 却染成降级。
+ * The success rate is compared at the one decimal the page shows: one reading 「99.0%」 meets 99%, so a rate shown as 99.0% is
+ * never coloured degraded.
  */
 export function upstreamHealth(item: UpstreamCount): UpstreamHealth {
   const { tally } = upstreamBasis(item)
   if (judgedAttempts(tally) < MIN_HEALTH_SAMPLES) return 'pending'
-  const rate = upstreamSuccessRate(tally)
+  const rate = shownPercent(upstreamSuccessRate(tally))
   const latency = tally.avg_latency_ms ?? 0
-  if (rate < 0.95 || latency >= 2_000) return 'unhealthy'
-  if (rate >= 0.99 && latency < 1_000) return 'healthy'
+  if (rate < 95 || latency >= 2_000) return 'unhealthy'
+  if (rate >= 99 && latency < 1_000) return 'healthy'
   return 'degraded'
 }
 
 /**
  * 上游状态和响应速度依据的时间段。面板每分钟采样一次，正常时窗口在 59 到 60 分钟之间，
  * 都叫一小时；KixDNS 一小时内重启过时窗口从它启动算起；面板还没采到样本时没有窗口，只有累计。
+ * snapshot：手上是 KixDNS 停了、读不到时留下的快照，窗口截在快照那一刻，从那里往前说，不说「最近」。
+ * snapshot: what is in hand is the snapshot left when KixDNS stopped or could not be read, so the window ends at the snapshot and is
+ * counted back from there, never as 最近.
  */
-export function recentWindowLabel(seconds: number | null): string {
+export function recentWindowLabel(seconds: number | null, snapshot = false): string {
   if (seconds === null) return '启动以来'
-  if (seconds >= 55 * 60) return '最近一小时'
-  return `最近 ${Math.max(1, Math.round(seconds / 60))} 分钟`
+  const lead = snapshot ? '快照前' : '最近'
+  if (seconds >= 55 * 60) return `${lead}一小时`
+  return `${lead} ${Math.max(1, Math.round(seconds / 60))} 分钟`
 }
 
 export interface LatencyBasis {

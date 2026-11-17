@@ -167,6 +167,17 @@ test('地址栏带着上游组的去向打开：等配置读到再筛，只列�
   for (const dest of await page.locator('.qlog-row .qlog-c-dest > span:first-child').allTextContents()) expect(dest).toBe(group)
 })
 
+test('按去向只看自定义回答：域名映射的回答不在里面；只看域名映射时全是映射', async ({ page }) => {
+  await useSampleConfig(page)
+  await page.goto('/logs?dest=answered')
+  await expect(page.locator('.qlog-row').first()).toBeVisible()
+  for (const dest of await page.locator('.qlog-row .qlog-c-dest > span:first-child').allTextContents()) expect(dest).toBe('自定义回答')
+  await page.getByLabel('按去向筛选').selectOption({ label: '域名映射' })
+  await expect(page).toHaveURL(/dest=mapped/)
+  await expect(page.locator('.qlog-row').first().locator('.qlog-c-dest > span:first-child')).toHaveText('域名映射')
+  for (const dest of await page.locator('.qlog-row .qlog-c-dest > span:first-child').allTextContents()) expect(dest).toBe('域名映射')
+})
+
 test('慢的旧读取晚回来也不盖住新的：清空搜索后列表是全部', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', '桌面就够')
   await openQueryLog(page)
@@ -527,4 +538,239 @@ test('只看这个客户端：开着的那条一定在筛过的结果里，详�
   expect(await page.locator(`.qlog-row[data-id="${id}"]`).count()).toBe(0)
   await expect(page.locator('.qlog-pane')).toBeVisible()
   await expect(page).toHaveURL(new RegExp(`id=${id}`))
+})
+
+// ---------- 列表里有什么只由一处说了算：轮询、往前翻、重读谁先谁后由测试定 / One owner of what the list holds: the test decides how
+// polls, older pages and reloads interleave ----------
+
+// 页面里的假查询日志：编号 1…top，越新越大；hold 挑中的请求停着等 release，fail 挑中的请求照给的错误失败。setup 是模块里先跑的一段
+// A fake query log in the page: ids 1…top, newer is larger; requests picked by hold wait for release, those picked by fail fail with the
+// given error. setup is code the module runs first
+interface FakeLog {
+  top: number
+  sent: string[]
+  held: (() => void)[]
+  hold: ((p: URLSearchParams) => boolean) | null
+  fail: ((p: URLSearchParams) => { message: string; status: number; code: string } | null) | null
+  stop?: number
+  release: () => number
+}
+// 用到页面时钟的用例在第一次读到以后把它停住：只有 runFor 才往前走，每一轮轮询都由测试来定（打开页面时的读取要走过演示后端的
+// 120 毫秒，停早了页面打不开） / Tests using the page clock stop it once the first read lands: only runFor moves it, so every polling
+// round is the test's doing (the reads on opening go through the demo backend's 120 ms, so stopping earlier leaves the page unopened)
+const fakeLog = (page: Page) => page.evaluate(() => {
+  const ql = (globalThis as unknown as { __ql: FakeLog }).__ql
+  return { top: ql.top, sent: ql.sent, held: ql.held.length }
+})
+async function fakeQueryLog(page: Page, tag: string, top: number, setup = ''): Promise<void> {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes(tag)) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?${tag}';
+      import { apiRequest as original, ApiError } from '/src/api/client.ts?${tag}';
+      const rec = (id) => ({ id, seq: id, time_unix_ms: Date.now() - (5000 - id) * 1000, client: '192.168.1.10', transport: 'udp', qname: 'host' + id + '.example.com', qtype: 'A', latency_us: 1200, status: 'completed', outcome: 'forwarded', rcode: 'NOERROR', answers: ['1.2.3.4'], pipeline: 'main', upstream: '1.1.1.1:53', steps: [{ at_us: 0, kind: 'pipeline', pipeline: 'main' }] });
+      const ql = globalThis.__ql = { top: ${top}, sent: [], held: [], hold: null, fail: null };
+      ql.release = () => { const held = ql.held; ql.held = []; held.forEach((go) => go()); return held.length; };
+      ${setup}
+      export async function apiRequest(path, init) {
+        if (!path.startsWith('/api/v1/querylog?')) return original(path, init);
+        const p = new URLSearchParams(path.split('?')[1]);
+        ql.sent.push(path);
+        if (ql.hold && ql.hold(p)) await new Promise((resolve) => ql.held.push(resolve));
+        const failure = ql.fail && ql.fail(p);
+        if (failure) throw new ApiError(failure.message, failure.status, failure.code);
+        const top = ql.top;
+        const meta = { newest_id: top, newest_unix_ms: Date.now(), scanned_to_unix_ms: null, supported: true };
+        if (p.get('after') !== null) {
+          const items = [];
+          for (let id = top; id > Number(p.get('after')); id--) items.push(rec(id));
+          return { items, next_before: null, ...meta };
+        }
+        // ql.stop：一次只往前找到这么多条就停下（扫到上限），列表末尾说查到哪儿了 / ql.stop: a read stops after this many (the scan
+        // limit), and the list's end says how far it got
+        const limit = ql.stop || Number(p.get('limit') ?? 200);
+        const items = [];
+        for (let id = p.get('before') !== null ? Number(p.get('before')) - 1 : top; id >= 1 && items.length < limit; id--) items.push(rec(id));
+        const last = items.at(-1);
+        return { items, next_before: last && last.id > 1 ? last.id : null, ...meta, scanned_to_unix_ms: ql.stop && last ? last.time_unix_ms : null };
+      }
+    ` })
+  })
+}
+// 相邻两行之间缺了哪些编号（这份假日志没有漏记行） / Which ids are missing between neighbouring rows (this fake log has no gap rows)
+const holes = (page: Page) => page.locator('.qlog-row').evaluateAll((rows) => {
+  const ids = rows.map((r) => Number(r.getAttribute('data-id')))
+  const missing: number[] = []
+  for (let i = 1; i < ids.length; i++) for (let id = ids[i - 1]! - 1; id > ids[i]!; id--) missing.push(id)
+  return missing
+})
+
+test('轮询一次只发一个：上一轮慢了还没回来，这一轮不再发，新查询也只进来一次', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await fakeQueryLog(page, 'ql-single', 10)
+  await page.clock.install()
+  await page.goto('/logs')
+  await expect(page.locator('.qlog-row')).toHaveCount(10)
+  await page.clock.pauseAt(Date.now() + 1_000)
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.hold = (p) => p.has('after') })
+  // 两轮轮询的时间都到了，第一轮还在路上 / Two polling rounds come due while the first is still on its way
+  await page.clock.runFor(5_000)
+  await page.clock.runFor(5_000)
+  expect((await fakeLog(page)).held).toBe(1)
+  await page.evaluate(() => { const ql = (globalThis as unknown as { __ql: FakeLog }).__ql; ql.top = 11; ql.release() })
+  await expect(page.locator('.qlog-row').first()).toHaveAttribute('data-id', '11')
+  await expect(page.locator('.qlog-row[data-id="11"]')).toHaveCount(1)
+  await expect(page.locator('.qlog-row')).toHaveCount(11)
+  // 下一轮从列表最上面那条往后要 / The next round asks for what is newer than the top of the list
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.hold = null })
+  await page.clock.runFor(5_000)
+  await expect.poll(async () => (await fakeLog(page)).sent.at(-1)).toContain('after=11')
+  await expect(page.locator('.qlog-row')).toHaveCount(11)
+})
+
+test('往前翻的那页还在路上时轮询把列表裁短：那页不接在裁过的尾巴后面，接着往前读也不留洞', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  // 地址栏带着的那条在第四页：往前翻到第四页时停住 / The entry in the address bar is on page four: reading back stops at page four
+  await fakeQueryLog(page, 'ql-trim', 1000, "ql.hold = (p) => p.get('before') === '401';")
+  await page.clock.install()
+  await page.goto('/logs?id=350')
+  await expect.poll(async () => (await fakeLog(page)).held).toBe(1)
+  await expect(page.locator('.qlog-row')).toHaveCount(600)
+  await page.clock.pauseAt(Date.now() + 1_000)
+  // 轮询拿到 1001…1005，放在最上面，列表裁回 600 条 / A poll brings 1001…1005 in at the top and trims the list back to 600
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.top = 1005 })
+  await page.clock.runFor(5_000)
+  await expect(page.locator('.qlog-row').first()).toHaveAttribute('data-id', '1005')
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.release() })
+  await expect(page.locator('.qlog-row.is-selected')).toHaveAttribute('data-id', '350')
+  expect(await holes(page)).toEqual([])
+})
+
+test('第一次读取失败以后：轮询照常整个重读，读到的行不当成换筛选之前的旧行', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await fakeQueryLog(page, 'ql-first-failed', 10, "let once = true; ql.fail = () => (once ? ((once = false), { message: '查询日志读取失败（模拟的 500）', status: 500, code: 'internal_error' }) : null);")
+  await page.clock.install()
+  await page.goto('/logs')
+  await expect(page.locator('.logs-notice')).toContainText('读取失败')
+  await page.clock.pauseAt(Date.now() + 1_000)
+  // 轮询替它重读的这一次停在路上：不出骨架，「重试」照样能按 / The re-read the poll sends is held on its way: no skeleton, and 重试
+  // can still be pressed
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.hold = (p) => !p.has('after') })
+  await page.clock.runFor(5_000)
+  await expect.poll(async () => (await fakeLog(page)).held).toBe(1)
+  await expect(page.locator('.log-skeleton')).toHaveCount(0)
+  await expect(page.locator('.logs-notice').getByRole('button', { name: '重试', exact: true })).toBeEnabled()
+  await page.evaluate(() => { const ql = (globalThis as unknown as { __ql: FakeLog }).__ql; ql.hold = null; ql.release() })
+  await expect(page.locator('.qlog-row')).toHaveCount(10)
+  await expect(page.locator('.qlog-stream')).not.toHaveClass(/is-loading/)
+  await expect(page.locator('.logs-notice')).toHaveCount(0)
+  // 这一轮是整个重读，不是从 0 号往后要 / This round is a whole read, not a poll after id 0
+  expect((await fakeLog(page)).sent.some((path) => path.includes('after='))).toBe(false)
+  await page.locator('.qlog-row').first().click()
+  await expect(page.locator('.qlog-pane')).toBeVisible()
+})
+
+test('点「有 N 条新查询」那次重读失败：攒着的新查询还在，往前翻的位置也还在，下次读到就进来', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await fakeQueryLog(page, 'ql-fresh-kept', 300)
+  await page.clock.install()
+  await page.goto('/logs')
+  await expect(page.locator('.qlog-row')).toHaveCount(200)
+  await page.clock.pauseAt(Date.now() + 1_000)
+  // 选着一条时新查询攒在提示条里 / With a row selected new queries wait in the banner
+  await page.locator('.qlog-row').nth(3).click()
+  await expect(page.locator('.qlog-pane')).toBeVisible()
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.top = 302 })
+  await page.clock.runFor(5_000)
+  const banner = page.locator('.qlog-stream .ui-banner')
+  await expect(banner).toHaveText('有 2 条新查询，点击显示')
+  // 整个重读失败，轮询和往前翻照常 / Whole reads fail; polls and older pages work
+  await page.evaluate(() => {
+    (globalThis as unknown as { __ql: FakeLog }).__ql.fail = (p) => (p.has('after') || p.has('before') ? null : { message: '查询日志读取失败（模拟的 500）', status: 500, code: 'internal_error' })
+  })
+  await banner.click()
+  await expect(page.locator('.logs-notice')).toContainText('数据可能已过期')
+  await expect(banner).toHaveText('有 2 条新查询，点击显示')
+  await page.locator('.qlog-stream').evaluate((el) => { el.scrollTop = el.scrollHeight })
+  await expect(page.locator('.qlog-row')).toHaveCount(300)
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.fail = null })
+  await banner.click()
+  await expect(page.locator('.qlog-row').first()).toHaveAttribute('data-id', '302')
+  await expect(page.locator('.logs-notice')).toHaveCount(0)
+})
+
+test('换了筛选那次没读到：旧筛选攒着的新查询不出提示条，往下翻也不拿旧列表的位置去翻新筛选', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await fakeQueryLog(page, 'ql-stale-paging', 300)
+  await page.clock.install()
+  await page.goto('/logs')
+  await expect(page.locator('.qlog-row')).toHaveCount(200)
+  await page.clock.pauseAt(Date.now() + 1_000)
+  await page.locator('.qlog-row').nth(3).click()
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.top = 302 })
+  await page.clock.runFor(5_000)
+  const banner = page.locator('.qlog-stream .ui-banner')
+  await expect(banner).toHaveText('有 2 条新查询，点击显示')
+  // 带上搜索的读取都失败 / Every read with the search fails
+  await page.evaluate(() => {
+    (globalThis as unknown as { __ql: FakeLog }).__ql.fail = (p) => (p.has('q') ? { message: '查询日志读取失败（模拟的 500）', status: 500, code: 'internal_error' } : null)
+  })
+  await page.getByLabel('搜索域名或客户端').fill('host29')
+  // 搜索框停手 250 毫秒才写进地址栏 / The search box writes to the address bar 250 ms after typing stops
+  await page.clock.runFor(300)
+  await expect(page).toHaveURL(/q=host29/)
+  await expect(page.locator('.logs-notice')).toContainText('下面还是换筛选之前的结果')
+  await expect(banner).toHaveCount(0)
+  const sent = (await fakeLog(page)).sent.length
+  await page.locator('.qlog-stream').evaluate((el) => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll')) })
+  expect((await fakeLog(page)).sent.slice(sent).filter((path) => path.includes('before='))).toEqual([])
+  await expect(page.locator('.qlog-row')).toHaveCount(200)
+})
+
+test('换了筛选那次没读到：旧列表停在哪、「继续往前查」不留在淡掉的旧行下面', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await fakeQueryLog(page, 'ql-stale-stop', 300, 'ql.stop = 50;')
+  await page.goto('/logs')
+  await expect(page.locator('.qlog-row')).toHaveCount(50)
+  await expect(page.locator('.qlog-stopped')).toContainText('只往前查到')
+  await page.evaluate(() => {
+    (globalThis as unknown as { __ql: FakeLog }).__ql.fail = (p) => (p.has('q') ? { message: '查询日志读取失败（模拟的 500）', status: 500, code: 'internal_error' } : null)
+  })
+  await page.getByLabel('搜索域名或客户端').fill('host29')
+  await expect(page).toHaveURL(/q=host29/)
+  await expect(page.locator('.logs-notice')).toContainText('下面还是换筛选之前的结果')
+  await expect(page.locator('.qlog-stopped')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '继续往前查' })).toHaveCount(0)
+})
+
+test('轮询读失败了照实说：普通的错给重试，查询日志目录打不开就不再轮询', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await fakeQueryLog(page, 'ql-poll-error', 10)
+  await page.clock.install()
+  await page.goto('/logs')
+  await expect(page.locator('.qlog-row')).toHaveCount(10)
+  await page.clock.pauseAt(Date.now() + 1_000)
+  await page.evaluate(() => {
+    (globalThis as unknown as { __ql: FakeLog }).__ql.fail = (p) => (p.has('after') ? { message: '查询日志读取失败（模拟的 500）', status: 500, code: 'internal_error' } : null)
+  })
+  await page.clock.runFor(5_000)
+  const notice = page.locator('.logs-notice')
+  await expect(notice).toContainText('数据可能已过期')
+  await expect(notice).toContainText('模拟的 500')
+  await expect(notice.getByRole('button', { name: '重试', exact: true })).toBeVisible()
+  // 下一轮读到了：提示收起 / The next round reads: the notice goes
+  await page.evaluate(() => { const ql = (globalThis as unknown as { __ql: FakeLog }).__ql; ql.fail = null; ql.top = 11 })
+  await page.clock.runFor(5_000)
+  await expect(page.locator('.qlog-row').first()).toHaveAttribute('data-id', '11')
+  await expect(notice).toHaveCount(0)
+  // 目录打不开：说原因，不给重试，也不再轮询 / The directory unusable: the reason, no retry, and no more polling
+  await page.evaluate(() => {
+    (globalThis as unknown as { __ql: FakeLog }).__ql.fail = () => ({ message: '查询日志的目录打不开，原因在面板自己的日志里（journalctl -u kixdns-panel）；处理好以后重启面板', status: 503, code: 'querylog_unavailable' })
+  })
+  await page.clock.runFor(5_000)
+  await expect(notice).toContainText('查询日志的目录打不开')
+  await expect(notice.getByRole('button', { name: '重试', exact: true })).toHaveCount(0)
+  const sent = (await fakeLog(page)).sent.length
+  await page.clock.runFor(15_000)
+  expect((await fakeLog(page)).sent.length).toBe(sent)
 })

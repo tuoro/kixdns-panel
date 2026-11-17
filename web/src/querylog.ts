@@ -251,14 +251,16 @@ export function destinationOptions(ctx: QueryLogContext | null): DestinationOpti
   }
   if (ctx) for (const id of ownForwards(ctx.pipelines, ctx.model)) options.push({ value: `pipeline:${id}`, label: ownForwardLabel(id, ctx.model, ctx.names), params: { pipelines: id, outcomes: forwarded } })
   const mapping = ctx?.model.mappingId ?? 'domain_mapping'
-  const unmapped = pipelineIds.filter((id) => id !== mapping).join(',')
+  // 自定义回答是域名映射以外的：只说去掉映射那个列表，不把其余每个列表都写进请求（上游组一多就超过服务端的长度上限）
+  // Custom answers are those outside the domain mapping: the request names only the mapping list to leave out, rather than every other
+  // list (with many upstream groups that ran past the server's length limit)
   options.push(
     { value: 'blocked', label: '拦截', params: { outcomes: 'blocked' } },
-    { value: 'answered', label: '自定义回答', params: { outcomes: 'answered', pipelines: unmapped } },
+    { value: 'answered', label: '自定义回答', params: { outcomes: 'answered', exclude_pipelines: mapping } },
   )
   // 概览把拦截和自定义回答并成一行时（或者认不出是哪种），从那一行跳过来要有对应的一项 / When the overview folds blocks and custom answers into one row (or cannot tell which), a jump from that row needs a matching option
   const direct = ctx ? directLabel(ctx.model) : ''
-  if (direct && direct !== '拦截' && direct !== '自定义回答') options.push({ value: 'direct', label: direct, params: { outcomes: 'blocked,answered', pipelines: unmapped } })
+  if (direct && direct !== '拦截' && direct !== '自定义回答') options.push({ value: 'direct', label: direct, params: { outcomes: 'blocked,answered', exclude_pipelines: mapping } })
   options.push({ value: 'mapped', label: '域名映射', params: { outcomes: 'answered', pipelines: mapping } }, { value: 'failed', label: '失败', params: { outcomes: 'failed' } })
   return options
 }

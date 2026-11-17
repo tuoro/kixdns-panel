@@ -387,8 +387,12 @@ fn normalize_domain(raw: &str) -> String {
 pub struct Filter {
     /// 域名或客户端里含有这段（不分大小写） / Domain or client containing this (case-insensitive)
     pub q: Option<String>,
+    /// 域名就是这个（小写，比较时不分大小写） / The domain is exactly this (lowercased, compared case-insensitively)
+    pub qname: Option<String>,
     /// 最后进入的 Pipeline 是其中之一 / The pipeline entered last is one of these
     pub pipelines: Option<HashSet<String>>,
+    /// 最后进入的 Pipeline 不是其中之一 / The pipeline entered last is none of these
+    pub exclude_pipelines: Option<HashSet<String>>,
     /// 结果是其中之一（面板的叫法） / The outcome is one of these (the panel's words)
     pub outcomes: Option<HashSet<String>>,
     pub client: Option<String>,
@@ -411,7 +415,9 @@ impl Filter {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.q.is_none()
+            && self.qname.is_none()
             && self.pipelines.is_none()
+            && self.exclude_pipelines.is_none()
             && self.outcomes.is_none()
             && self.client.is_none()
             && self.rule.is_none()
@@ -438,18 +444,20 @@ impl Filter {
         {
             return false;
         }
-        // 搜索词要转义时（非 ASCII、引号、反斜杠、控制字符）在行里换了样子，这时不预筛
+        // 搜索词要转义时（非 ASCII、引号、反斜杠、控制字符）在行里换了样子，这时不预筛；就是这个域名的也一样
         // A search term that needs escaping (non-ASCII, quotes, backslashes, control characters) looks different
-        // in the line, so it is not prefiltered
-        match &self.q {
-            Some(q)
-                if q.bytes()
+        // in the line, so it is not prefiltered; an exact domain likewise
+        let loosely = |text: &Option<String>| match text {
+            Some(text)
+                if text
+                    .bytes()
                     .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\') =>
             {
-                contains_ascii_ignore_case(line, q.as_bytes())
+                contains_ascii_ignore_case(line, text.as_bytes())
             }
             _ => true,
-        }
+        };
+        loosely(&self.q) && loosely(&self.qname)
     }
 
     fn matches(&self, record: &Map<String, Value>) -> bool {
@@ -464,8 +472,18 @@ impl Filter {
                 return false;
             }
         }
+        if let Some(qname) = &self.qname
+            && text("qname").is_none_or(|name| name.to_lowercase() != *qname)
+        {
+            return false;
+        }
         if let Some(pipelines) = &self.pipelines
             && !text("pipeline").is_some_and(|pipeline| pipelines.contains(pipeline))
+        {
+            return false;
+        }
+        if let Some(excluded) = &self.exclude_pipelines
+            && text("pipeline").is_some_and(|pipeline| excluded.contains(pipeline))
         {
             return false;
         }
