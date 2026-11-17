@@ -852,12 +852,24 @@ async fn clear_query_stats(
 ) -> AppResult<Json<StatsClearResult>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
-    state
+    let result = state
         .control
         .clear_stats()
         .await
-        .map(Json)
-        .map_err(map_control_error)
+        .map_err(map_control_error)?;
+    // 和清空缓存一样记一条；KixDNS 没清成时上面已经返回，不记 / Recorded as flushing the cache is; when KixDNS did not
+    // clear it the handler returned above and nothing is recorded
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "stats.clear".to_owned(),
+            String::new(),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
 }
 
 async fn validate_config(

@@ -250,6 +250,7 @@ const ACTION_NAMES: Record<string, string> = {
   'kixdns.kernel.update': '更新内核',
   'kixdns.kernel.rollback': '回退内核',
   'cache.flush': '清空缓存',
+  'stats.clear': '清空查询排行',
   'querylog.settings': '设置查询日志',
   'querylog.clear': '清空查询日志',
   'system.github_token.configure': '保存 GitHub Token',

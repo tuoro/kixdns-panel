@@ -12,7 +12,7 @@ use axum_extra::extract::CookieJar;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use getrandom::fill;
-use ipnet::IpNet;
+use ipnet::{IpNet, Ipv4Net};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -53,6 +53,7 @@ impl FromStr for TrustedProxies {
             .map(|network| {
                 network
                     .parse::<IpNet>()
+                    .map(canonical_network)
                     .map_err(|error| format!("可信代理网段 {network} 无效：{error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -66,34 +67,57 @@ impl FromStr for TrustedProxies {
     }
 }
 
+/// IPv4 映射写法的网段（`::ffff:10.0.0.0/104`）换成 IPv4 网段：地址都按 IPv4 写法比，两种写法的网段才都认得。
+/// A network in IPv4-mapped form (`::ffff:10.0.0.0/104`) becomes the IPv4 network: addresses are compared in IPv4
+/// form, so a network written either way still matches.
+fn canonical_network(network: IpNet) -> IpNet {
+    match network {
+        IpNet::V6(v6) if v6.prefix_len() >= 96 => v6
+            .network()
+            .to_ipv4_mapped()
+            .and_then(|v4| Ipv4Net::new(v4, v6.prefix_len() - 96).ok())
+            .map_or(network, IpNet::V4),
+        _ => network,
+    }
+}
+
 impl TrustedProxies {
+    /// 地址一律按 IPv4 写法给出和比较：双栈监听时 IPv4 的对端以 `::ffff:a.b.c.d` 出现，不还原就对不上 `127.0.0.1/32`，
+    /// 经代理来的人会全算到代理头上。
+    /// Addresses are compared and returned in IPv4 form: on a dual-stack bind an IPv4 peer shows up as `::ffff:a.b.c.d`,
+    /// which never matches `127.0.0.1/32` unless folded, and everyone coming through the proxy would count as the proxy.
     #[must_use]
     pub fn client_ip(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
+        let peer = peer.to_canonical();
         if !self.contains(peer) {
             return peer;
         }
         // 从右往左走：右边是可信代理追加的，左边是客户端自己能写的。遇到第一个
         // 不可信的合法地址就停，它左边的内容一律不解析，否则客户端只要在左边
         // 塞一项垃圾，就会被算成代理本身，连错几次锁住所有经代理登录的人。
+        // 按字节切开、逐项解码也是为此：左边有一个非 ASCII 字节，整个头也不能作废。
         // Walk right to left: the right end is appended by trusted proxies,
         // the left end is whatever the client wrote. Stop at the first valid
         // untrusted address and never parse anything to its left; otherwise a
         // client prepending one junk entry is counted as the proxy itself and
-        // a few failures lock out everyone who logs in through it.
+        // a few failures lock out everyone who logs in through it. That is also
+        // why the value is split as bytes and each entry decoded on its own: one
+        // non-ASCII byte on the left must not void the whole header.
         let mut walked = 0;
         let mut leftmost_trusted = None;
         for value in headers.get_all("x-forwarded-for").iter().rev() {
-            let Ok(value) = value.to_str() else {
-                return peer;
-            };
-            for address in value.rsplit(',').map(str::trim) {
+            for address in value.as_bytes().rsplit(|byte| *byte == b',') {
                 if walked == MAX_FORWARDED_HOPS {
                     return peer;
                 }
                 walked += 1;
-                let Ok(address) = address.parse::<IpAddr>() else {
+                let Some(address) = std::str::from_utf8(address.trim_ascii())
+                    .ok()
+                    .and_then(|address| address.parse::<IpAddr>().ok())
+                else {
                     return peer;
                 };
+                let address = address.to_canonical();
                 if !self.contains(address) {
                     return address;
                 }
@@ -570,5 +594,82 @@ mod tests {
         headers.append("x-forwarded-for", HeaderValue::from_static("junk"));
         headers.append("x-forwarded-for", HeaderValue::from_static("198.51.100.7"));
         assert_eq!(proxies.client_ip(peer, &headers), client);
+    }
+
+    #[test]
+    fn a_non_ascii_byte_left_of_the_real_client_is_never_decoded() {
+        let proxies: TrustedProxies = "127.0.0.1/32,10.0.0.0/8".parse().unwrap();
+        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let client = "198.51.100.7".parse::<IpAddr>().unwrap();
+        let resolve = |values: &[&[u8]]| {
+            let mut headers = HeaderMap::new();
+            for value in values {
+                headers.append("x-forwarded-for", HeaderValue::from_bytes(value).unwrap());
+            }
+            proxies.client_ip(peer, &headers)
+        };
+
+        // 客户端自己写在左边的字节，不管是不是可见 ASCII，都不该把整个请求算到代理头上。
+        // Bytes the client wrote on the left, visible ASCII or not, must not charge the
+        // whole request to the proxy.
+        assert_eq!(resolve(&[b"\xff, 198.51.100.7"]), client);
+        assert_eq!(resolve(&["é, 198.51.100.7, 10.0.0.1".as_bytes()]), client);
+        assert_eq!(resolve(&[b"\x80", b"198.51.100.7"]), client);
+        // 可信那一段里的坏字节照旧退回对端。
+        // A bad byte inside the trusted part still falls back to the peer.
+        assert_eq!(resolve(&[b"198.51.100.7, \xff, 10.0.0.1"]), peer);
+    }
+
+    #[test]
+    fn an_ipv4_mapped_address_counts_as_the_ipv4_address() {
+        let proxies = TrustedProxies::default();
+        let client = "198.51.100.7".parse::<IpAddr>().unwrap();
+        let forwarded = |value: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", HeaderValue::from_static(value));
+            headers
+        };
+
+        // 双栈监听时，nginx 从 127.0.0.1 连进来，面板看到的对端是 ::ffff:127.0.0.1。
+        // On a dual-stack bind, nginx connecting from 127.0.0.1 reaches the panel as
+        // ::ffff:127.0.0.1.
+        let mapped_loopback = "::ffff:127.0.0.1".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            proxies.client_ip(mapped_loopback, &forwarded("198.51.100.7")),
+            client
+        );
+        // 链上的一跳、客户端本身也一样，得到的是 IPv4 写法。
+        // The same for a hop on the chain and for the client itself, which comes out in
+        // IPv4 form.
+        let proxies: TrustedProxies = "127.0.0.1/32,10.0.0.0/8".parse().unwrap();
+        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert_eq!(
+            proxies.client_ip(peer, &forwarded("198.51.100.7, ::ffff:10.0.0.1")),
+            client
+        );
+        assert_eq!(
+            proxies.client_ip(peer, &forwarded("::ffff:198.51.100.7")),
+            client
+        );
+        // 不在可信网段里的对端照旧是它自己，同样用 IPv4 写法。
+        // An untrusted peer is still itself, in IPv4 form too.
+        assert_eq!(
+            proxies.client_ip(
+                "::ffff:203.0.113.9".parse().unwrap(),
+                &forwarded("198.51.100.7")
+            ),
+            "203.0.113.9".parse::<IpAddr>().unwrap()
+        );
+
+        // 可信网段写成映射形式时，两种写法的地址也都认。
+        // A trusted network written in mapped form matches both spellings as well.
+        let proxies: TrustedProxies = "::ffff:10.0.0.0/104".parse().unwrap();
+        for proxy in ["10.0.0.1", "::ffff:10.0.0.1"] {
+            assert_eq!(
+                proxies.client_ip(proxy.parse().unwrap(), &forwarded("198.51.100.7")),
+                client,
+                "{proxy}"
+            );
+        }
     }
 }

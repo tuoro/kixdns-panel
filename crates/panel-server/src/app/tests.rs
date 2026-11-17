@@ -264,6 +264,68 @@ async fn a_username_spray_from_one_address_does_not_lock_out_the_admin() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// 经可信代理登录一次：`forwarded` 为 `None` 时不带 X-Forwarded-For / One login through a trusted proxy; no X-Forwarded-For
+/// when `forwarded` is `None`
+async fn login_from(
+    context: &AuthenticatedApp,
+    peer: SocketAddr,
+    forwarded: Option<&[u8]>,
+    password: &str,
+) -> StatusCode {
+    let mut request = Request::post("/api/v1/auth/login").header(CONTENT_TYPE, "application/json");
+    if let Some(forwarded) = forwarded {
+        request = request.header(
+            "x-forwarded-for",
+            axum::http::HeaderValue::from_bytes(forwarded).unwrap(),
+        );
+    }
+    let mut request = request
+        .body(Body::from(
+            serde_json::json!({"username": "admin", "password": password}).to_string(),
+        ))
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(peer));
+    context.app.clone().oneshot(request).await.unwrap().status()
+}
+
+// 双栈监听、nginx 从 127.0.0.1 连进来时，对端是 ::ffff:127.0.0.1：它照样是可信代理，攻击者五次错误密码锁不住同一个
+// 代理后面的管理员
+// On a dual-stack bind with nginx connecting from 127.0.0.1, the peer is ::ffff:127.0.0.1: it is still a trusted proxy,
+// and an attacker's five wrong passwords cannot lock out the admin behind the same proxy
+#[tokio::test]
+async fn a_lockout_through_a_mapped_proxy_address_stays_with_the_attacker() {
+    let context = authenticated_app().await;
+    let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST.to_ipv6_mapped(), 42_005));
+    let attacker = Some(&b"203.0.113.9"[..]);
+    for _ in 0..5 {
+        let status = login_from(&context, proxy, attacker, "wrong-password").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let status = login_from(&context, proxy, attacker, "wrong-password").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let status = login_from(&context, proxy, Some(b"198.51.100.7"), "a-secure-password").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// 攻击者在 X-Forwarded-For 左边塞一个非 ASCII 字节：仍然算它自己的地址，既换不来一份新的五次预算，也锁不住直接从
+// 本机登录的人
+// An attacker putting a non-ASCII byte on the left of X-Forwarded-For is still counted under its own address: that
+// neither buys a fresh five-attempt budget nor locks out someone signing in on the host itself
+#[tokio::test]
+async fn a_non_ascii_byte_in_forwarded_for_stays_with_the_attacker() {
+    let context = authenticated_app().await;
+    let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST, 42_006));
+    let junk = Some(&b"\xff, 203.0.113.9"[..]);
+    for _ in 0..5 {
+        let status = login_from(&context, proxy, junk, "wrong-password").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let status = login_from(&context, proxy, Some(b"203.0.113.9"), "wrong-password").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let status = login_from(&context, proxy, None, "a-secure-password").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
 #[tokio::test]
 async fn setup_issues_session_and_write_requires_csrf() {
     let context = authenticated_app().await;
@@ -2166,6 +2228,75 @@ async fn an_applied_version_answers_applied_even_with_kixdns_down() {
     assert!(payload["active_config"].is_null());
 }
 
+// 另一个页面还停在待应用的 #N：那一版删掉、别处又存了一版以后，按「现在应用」回冲突，不会把新存的那份当成 #N 应用
+// Another page still shows pending #N: once that version is deleted and another is saved elsewhere, pressing 现在应用 is a
+// conflict and never applies the newly saved content as #N
+#[tokio::test]
+async fn a_page_on_a_deleted_pending_version_cannot_apply_the_next_one() {
+    let context = authenticated_app().await;
+    let shown = save_pending(&context, "shown", "页面上的那一版").await;
+    let document = get_json(&context, "/api/v1/config").await;
+    let request = Request::delete(format!("/api/v1/config/versions/{shown}"))
+        .header(CONTENT_TYPE, "application/json")
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::from(
+            serde_json::json!({ "expected_sha256": document["sha256"] }).to_string(),
+        ))
+        .unwrap();
+    let (status, deleted) = send_json(&context, request).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    let next = save_pending(&context, "saved-elsewhere", "别处新存的").await;
+    let _kixdns = start_fake_kixdns(context.directory.path(), true);
+
+    // 后台每 5 秒那一遍先让新存的生效也一样：正在用的不是 #N，还是冲突 / The same if the 5-second background pass applied the
+    // new save first: what is in use is not #N, still a conflict
+    let (status, payload) = apply_version(&context, shown).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{payload}");
+    assert_eq!(apply_audits(&context).await, 0);
+    assert_ne!(next, shown);
+    let request = Request::get(format!("/api/v1/config/versions/{shown}"))
+        .header(COOKIE, context.cookies.clone())
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send_json(&context, request).await.0, StatusCode::NOT_FOUND);
+}
+
+// 清空查询排行和清空缓存一样记一条操作记录；KixDNS 没清成时不记
+// Clearing the query ranking is audited as flushing the cache is; nothing is recorded when KixDNS did not clear it
+#[tokio::test]
+async fn clearing_the_query_ranking_is_audited() {
+    use axum::routing::post;
+    let context = authenticated_app().await;
+    let stats_audits = || async {
+        get_json(&context, "/api/v1/audit?action_prefix=stats.").await["events"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let (status, _) = post_empty(&context, "/api/v1/stats/clear").await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(stats_audits().await.is_empty());
+
+    let listener =
+        tokio::net::UnixListener::bind(context.directory.path().join("admin.sock")).unwrap();
+    let router = Router::new().route(
+        "/v1/stats/clear",
+        post(|| async {
+            axum::Json(serde_json::json!({ "protocol_version": 1, "cleared": true }))
+        }),
+    );
+    let kixdns = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (status, payload) = post_empty(&context, "/api/v1/stats/clear").await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    let events = stats_audits().await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["action"], "stats.clear");
+    assert_eq!(events[0]["actor"], "admin");
+    kixdns.abort();
+    let _ = kixdns.await;
+}
+
 /// 配置页挑 `GeoSite` 分类：读配置里的文件，同一个文件只读一次；相对路径、读不到的文件给出原因；不登录不给。
 /// Picking `GeoSite` categories on the config page: the config's files are read, each once; a relative or
 /// unreadable path comes back with the reason; nothing without signing in.
@@ -4023,8 +4154,8 @@ async fn the_rollback_keeps_an_unchecked_pending_version_out_of_the_formal_file(
         "没有写进配置文件：退回时带上的修改等 KixDNS 起来再应用"
     );
     assert_eq!(document["pending"]["from_rollback"], "settings_and_pending");
-    // 删掉带上的那一版，再存一版：编号被复用，内容不同，照常可以写进去，也不算退回写下的 / Delete the carried version and save
-    // another: the id is reused with different content, so it can be written in as usual and is not taken for the rollback's
+    // 删掉带上的那一版，再存一版：编号不再复用，新的一版照常可以写进去，也不算退回写下的 / Delete the carried version and save
+    // another: its id is not given again, and the new version can be written in as usual and is not taken for the rollback's
     let request = Request::delete(format!("/api/v1/config/versions/{id}"))
         .header(CONTENT_TYPE, "application/json")
         .header(COOKIE, context.cookies.clone())
@@ -4036,7 +4167,24 @@ async fn the_rollback_keeps_an_unchecked_pending_version_out_of_the_formal_file(
     let (status, deleted) = send_json(&context, request).await;
     assert_eq!(status, StatusCode::OK, "{deleted}");
     let later = save_pending(&context, "edited-after-rollback", "退回以后改的").await;
-    assert_eq!(later, id);
+    assert!(later > id, "{later} after {id}");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["pending_writable"], later);
+    assert!(document["pending"].get("from_rollback").is_none());
+    // 第 6 版数据库结构以前编号会复用：那时记下的退回记录可能指着同一个编号、另一份内容。编号和散列一起比，照样不算
+    // 退回写下的 / Before database schema 6 ids were reused, so a rollback record from then may name the same id with other
+    // content. Compared on the id and the hash together, it is still not taken for the rollback's
+    let database = crate::db::Database::open(context.directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let record = serde_json::json!({
+        "written": null,
+        "carried": { "id": later, "sha256": version["sha256"] },
+    });
+    database
+        .set_setting("kixdns_rollback_versions_v1", record.to_string(), 0)
+        .await
+        .unwrap();
     let document = get_json(&context, "/api/v1/config").await;
     assert_eq!(document["runtime"]["pending_writable"], later);
     assert!(document["pending"].get("from_rollback").is_none());
