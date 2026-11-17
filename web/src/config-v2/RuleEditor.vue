@@ -138,7 +138,9 @@ const kernelPipelines = computed<PipelineConfig[]>(() => compile(model).pipeline
 // 转到哪一组用配置页的叫法（主列表、规则组「X」、上游组「X」），和执行路径一样 / Jump targets use the config page's names (主列表, 规则组「X」, 上游组「X」), as the trace does
 const kernelNames = computed(() => traceNames(model))
 const kernelPipelineName = (id: string): string | null => kernelNames.value.pipeline(id)
-const ownPipelineId = computed(() => { const g = props.groupId ?? (props.ruleId !== null ? listOf(props.ruleId).group?.id ?? null : null); return g ? ruleGroupPipelineId(model, g) : mainPipelineId(model) })
+// 规则所在（或要放进）的规则组，主列表里的为 null / The rule group the rule sits in (or goes into); null in the main list
+const draftGroupId = computed(() => props.groupId ?? (props.ruleId !== null ? listOf(props.ruleId).group?.id ?? null : null))
+const ownPipelineId = computed(() => (draftGroupId.value ? ruleGroupPipelineId(model, draftGroupId.value) : mainPipelineId(model)))
 const rawFieldProblems = computed(() => {
   if (!draft.raw || rawMode.value !== 'form') return 0
   const ids = kernelPipelines.value.map((p) => p.id)
@@ -312,7 +314,7 @@ const afterLimit = computed(() => {
 const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${glueTail(reading.value[1]?.v ?? '')}` : `${withShi(reading.value[0]?.v ?? '')}，${glueTail(reading.value[1]?.v ?? '')}`))
 const readingMore = computed(() => reading.value.slice(2).map((row) => `${row.k}：${row.v}`))
 
-const kernelJson = computed(() => JSON.stringify(kernelPreview(model, draft), null, 2))
+const kernelJson = computed(() => JSON.stringify(kernelPreview(model, draft, draftGroupId.value), null, 2))
 
 // ---------- 完成 / done ----------
 // 跳到第一处要改的地方并把光标放进去 / Jump to the first thing to fix and put the caret there

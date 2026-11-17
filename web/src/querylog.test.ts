@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { QueryLogRecord, QueryLogStepRecord } from './api/types'
-import { compile, upstreamPipelineId } from './config-model/model'
+import { compile, ruleGroupPipelineId, upstreamPipelineId } from './config-model/model'
 import { sampleModel } from './config-model/testing/samples'
 import { traceNames } from './config-model/trace-names'
 import { answerOf, capProblem, dayText, detailFacts, domainParts, entryOf, errorWord, glueText, hoursProblem, ignoredDomains, latencyText, literalParts, regionAddresses, requestLine, routeOf, sourceOf, statusOf, stepRows, timeText, upstreamHost, type QueryLogContext } from './querylog'
@@ -529,5 +529,49 @@ describe('详情里地址的地区', () => {
     expect(requestLine(entryOf(record([])), now, regionOf)[0]).toBe('192.168.1.9')
     expect(requestLine(entryOf(record([], { client: '117.136.12.76' })), now, regionOf)[0]).toBe('117.136.12.76\u00a0CN')
     expect(requestLine(entryOf(record([], { client: '117.136.12.76' })), now)[0]).toBe('117.136.12.76')
+  })
+})
+
+describe('用户的规则名撞上面板生成的名字：查询日志说的还是这条规则', () => {
+  // 规则叫这些名字时，内核里用 rule-编号（编译端改的），日志里认回规则自己的名字
+  // With these names a rule is rule-<id> in the kernel (the compiler's choice), and the log reads back the rule's own name
+  function ctxWith(name: string): { ctx: QueryLogContext; kernelName: string } {
+    const model = sampleModel()
+    const rule = model.rules.find((r) => r.enabled && !r.raw && r.outcome.type === 'block')!
+    rule.name = name
+    const compiled = compile(model).pipelines
+    const pipelines = compiled as KernelPipeline[]
+    const main = compiled.find((p) => p.id === 'main')!.rules.map((r) => r.name)
+    const kernelName = main.find((n) => n === `rule-${rule.id}` || n.startsWith(`rule-${rule.id}#`)) ?? main.find((n) => n === name || n.startsWith(`${name}#`))!
+    return { ctx: { model, names: traceNames(model), pipelines }, kernelName }
+  }
+  const blockedBy = (kernelName: string) => entryOf(record([
+    { at_us: 0, kind: 'pipeline', pipeline: 'main' },
+    { at_us: 50, kind: 'rule', pipeline: 'main', rule: kernelName, phase: 'request', matched: true, decision: 'static' },
+  ], { outcome: 'blocked', rcode: 'NXDOMAIN', answers: [], upstream: undefined, rule: kernelName }))
+
+  it.each(['其余请求', '拦截列表', '域名映射 nas.home.arpa'])('规则叫「%s」', (name) => {
+    const { ctx, kernelName } = ctxWith(name)
+    const entry = blockedBy(kernelName)
+    expect(routeOf(entry, ctx).rule).toBe(name)
+    expect(text(detailFacts(entry, ctx)[0]!.sub)).toBe(`命中规则「${name}」`)
+    expect(stepRows(entry, ctx).map((row) => text(row.lead))[0]).toBe(`命中规则「${name}」，拦截`)
+  })
+})
+
+describe('规则组的其余请求定下去向：按所在的列表认', () => {
+  it('主列表里还有一条规则叫「组名·其余」：组里的兜底照样说「其余请求」', () => {
+    const model = sampleModel()
+    const group = model.ruleGroups[0]!
+    model.rules.find((r) => r.enabled && !r.raw)!.name = `${group.name}·其余`
+    const compiled = compile(model).pipelines
+    const ctx: QueryLogContext = { model, names: traceNames(model), pipelines: compiled as KernelPipeline[] }
+    const inGroup = ruleGroupPipelineId(model, group.id)
+    const entry = entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: 'main' },
+      { at_us: 10, kind: 'pipeline', pipeline: inGroup },
+      { at_us: 50, kind: 'rule', pipeline: inGroup, rule: `${group.name}·其余`, phase: 'request', matched: true, decision: 'static' },
+    ], { outcome: 'blocked', rcode: 'NXDOMAIN', answers: [], upstream: undefined, pipeline: inGroup, rule: `${group.name}·其余` }))
+    expect(routeOf(entry, ctx).rule).toBe('其余请求')
   })
 })

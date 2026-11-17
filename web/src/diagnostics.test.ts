@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { DnsTraceStep } from './api/types'
+import { blocklistPipelineId, compile } from './config-model/model'
+import { sampleModel } from './config-model/testing/samples'
+import { traceNames } from './config-model/trace-names'
 import { answeredByUpstream, asksUpstream, noteRuns, humanizeTraceDetail, missedRulesText, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, hidePlumbing, type TextPart } from './diagnostics'
 
 describe('DNS 应答台账', () => {
@@ -168,6 +171,7 @@ describe('内核的名字换回配置页上的名字', () => {
   const names = {
     rule: (label: string) => (label === 'rule-3' ? '域名是 example.org' : null),
     pipeline,
+    ref: () => null,
     entry: (id: string) => (id === 'upstream-cn' ? '主列表' : pipeline(id)),
     matched: (label: string) => (label === '其余请求' ? '没有规则命中，按「其余请求」处理' : null),
     plumbing: (label: string, at: string | null) => label === at && at === 'upstream-cn',
@@ -191,7 +195,7 @@ describe('内核的名字换回配置页上的名字', () => {
 })
 
 describe('转发用的那条规则不单列', () => {
-  const names = { rule: () => null, pipeline: () => null, entry: () => null, matched: () => null, plumbing: (label: string, at: string | null) => label === at && (at === 'upstream-cn' || at === 'rule-3'), ownForward: (id: string) => id === 'rule-3' }
+  const names = { rule: () => null, ref: () => null, pipeline: () => null, entry: () => null, matched: () => null, plumbing: (label: string, at: string | null) => label === at && (at === 'upstream-cn' || at === 'rule-3'), ownForward: (id: string) => id === 'rule-3' }
   it('和所在 Pipeline 同名的那条去掉，用户的规则留着', () => {
     const steps = [kstep('rule', 'matched', '国内域名', '管线：main'), kstep('pipeline', 'jump', 'main -> upstream-cn'), kstep('rule', 'matched', 'upstream-cn', '管线：upstream-cn')]
     expect(hidePlumbing(steps, names).map((step) => step.label)).toEqual(['国内域名', 'main -> upstream-cn'])
@@ -234,5 +238,28 @@ describe('细节里的「·」贴在前一段末尾', () => {
   it('分隔点并进前一段，后一段前面空一格，最后一段后面没有点', () => {
     const runs = noteRuns(detailParts('客户端：117.136.12.76；监听器：default；传输：Some(Https)'))
     expect(runs.map((run) => [run.part.label, run.dot, run.space])).toEqual([['客户端', true, false], ['监听标签', true, true], ['传输', false, true]])
+  })
+})
+
+describe('试一下的执行路径按所在列表认规则名', () => {
+  it('主列表里的规则叫「拦截列表」「其余请求」：命中时说的是这条规则，不说成拦截列表或兜底', () => {
+    const model = sampleModel()
+    const [a, b] = model.rules.filter((r) => r.enabled && !r.raw)
+    a!.name = '拦截列表'
+    b!.name = '其余请求'
+    const names = traceNames(model)
+    const main = compile(model).pipelines.find((p) => p.id === 'main')!.rules.map((r) => r.name)
+    const kernelOf = (id: number, name: string) => main.find((n) => n === `rule-${id}` || n.startsWith(`rule-${id}#`)) ?? main.find((n) => n === name || n.startsWith(`${name}#`))!
+    expect(plain(describeStep(kstep('rule', 'matched', kernelOf(a!.id, a!.name), '管线：main'), { names }).lead)).toBe('命中规则「拦截列表」')
+    expect(plain(describeStep(kstep('rule', 'matched', kernelOf(b!.id, b!.name), '管线：main'), { names }).lead)).toBe('命中规则「其余请求」')
+    expect(plain(describeStep(kstep('rule', 'matched', '其余请求', '管线：main'), { names }).lead)).toBe('没有规则命中，按「其余请求」处理')
+  })
+
+  it('主列表里有规则叫「拦截列表」时，拦截列表那个列表里真正的那条照样说拦截', () => {
+    const model = sampleModel()
+    model.rules.find((r) => r.enabled && !r.raw)!.name = '拦截列表'
+    model.blocklists.custom = 'ads.example'
+    const names = traceNames(model)
+    expect(plain(describeStep(kstep('rule', 'matched', '拦截列表', `管线：${blocklistPipelineId(model)}`), { names }).lead)).toBe('要拦截的域名里有它')
   })
 })

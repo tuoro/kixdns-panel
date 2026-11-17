@@ -43,6 +43,8 @@ const menu = computed(() => [
 ])
 const named = computed(() => Boolean(props.rule.name.trim()) || Boolean(props.rule.raw))
 const hits = computed(() => hitsOf(props.rule))
+// 查询日志按规则在内核里的名字筛；高级规则的几条没有共同的名字时没法筛，只写数 / The query log filters by the rule's kernel name; an advanced rule whose kernel rules share no name cannot be filtered, so only the count shows
+const logQuery = computed(() => ruleLogQuery(props.rule))
 const title = computed(() => ruleTitle(props.rule))
 // 结果是「转到规则组」时，点结果那一格跳到那个组的卡片（规则组不按位置执行，从这里看得到它接在哪条规则后面）
 // When the outcome is 转到规则组, clicking the outcome jumps to that group's card (groups do not run by position; this shows which rule they hang off)
@@ -81,7 +83,8 @@ function showGroup(): void {
     </button>
     <span class="rrow__pill"><span v-if="rule.raw" class="opill opill--pass" title="按内核写法原样保留"><span class="opill__verb">高级</span><span class="opill__val">按内核写法保留</span></span><button v-else-if="target" class="rrow__goto" type="button" :aria-label="`跳到规则组「${target}」`" @click="showGroup"><OutcomePill :outcome="rule.outcome" /></button><OutcomePill v-else :outcome="rule.outcome" /></span>
     <!-- 命中过的点进查询日志，只看这条规则的查询 / With hits, a click opens the query log filtered to this rule -->
-    <RouterLink v-if="hits" class="rrow__hits" :to="{ path: '/logs', query: ruleLogQuery(rule) }" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次，点开看查询日志`"><span class="rrow__hits-label">命中 </span>{{ fmtCount(hits) }}</RouterLink>
+    <RouterLink v-if="hits && logQuery" class="rrow__hits" :to="{ path: '/logs', query: logQuery }" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次，点开看查询日志`"><span class="rrow__hits-label">命中 </span>{{ fmtCount(hits) }}</RouterLink>
+    <span v-else-if="hits" class="rrow__hits" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次`"><span class="rrow__hits-label">命中 </span>{{ fmtCount(hits) }}</span>
     <span v-else class="rrow__hits is-zero" title="启动以来命中 0 次"><span class="rrow__hits-label">命中 </span>—</span>
     <label class="ui-switch rrow__switch"><input v-model="rule.enabled" type="checkbox" :aria-label="`启用规则：${title}`"><i></i></label>
     <span class="rrow__menu"><UiMenu :items="menu" :label="`规则「${title}」的操作`" :title="`第 ${index} 条 · ${title}`" anchor=".rrow" @select="emit('action', $event)" /></span>
