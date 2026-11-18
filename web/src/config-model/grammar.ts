@@ -1,4 +1,5 @@
 import { PREFIX } from './kernel'
+import { kernelRegexVerdict } from './regex-check'
 
 // 内核读配置时认的写法：编辑器查一个值写没写对都看这里，读法和内核加载配置时一样，内核拒绝的这里也不认，内核会悄悄另作解释的这里也不放过。
 // 依据 kixdns 79e8fd5：matcher/mod.rs parse_dns_type、parse_dns_class、client_net、cidr_list、domain_regex、ResponseRcode、ResponseTxtContent；
@@ -70,11 +71,26 @@ export function isNet(text: string): boolean {
 export const isCidr = (v: string): boolean => isNet(cidrOf(v))
 
 // ---------- 域名 / names ----------
-export const isDomain = (v: string): boolean => /^(\*\.)?[a-z0-9_-]+(\.[a-z0-9_-]+)*\.?$/i.test(v)
+const ASCII_NAME = /^(\*\.)?[a-z0-9_-]+(\.[a-z0-9_-]+)*\.?$/i
+/**
+ * 规则和映射里的域名写进内核的样子：内核拿查询名的每一级照原样比，查询名到内核时是 punycode，所以中文这样的级换成 punycode（IDNA，和浏览器
+ * 地址栏一样，顺带变成小写）；全是 ASCII 的一个字不动。开头的 *. 照样留着；换不了（带空格、冒号、斜杠这类）的原样，isDomain 不收它
+ * A rule's or mapping's name as written to the kernel: the kernel compares each label of the query name as written and query names arrive in
+ * punycode, so labels such as Chinese ones become punycode (IDNA, as a browser's address bar does, lower-cased on the way); an all-ASCII
+ * name is left exactly as it is. A leading *. stays as it is; one that cannot convert (with a space, colon, slash and the like) stays as
+ * written, and isDomain refuses it
+ */
+export function kernelDomain(name: string): string {
+  if (!/[^\x00-\x7f]/.test(name) || /[\s/:?#@[\]\\%]/.test(name)) return name
+  try { return new URL(`http://${name}`).hostname } catch { return name }
+}
+/** 规则和映射里的域名：中文这样的域名照收，换成 punycode 以后看写得对不对 / A name in a rule or mapping: Chinese and other Unicode names are
+ * taken, checked once converted to punycode */
+export const isDomain = (v: string): boolean => ASCII_NAME.test(kernelDomain(v))
 /** CNAME 的目标照 hickory 的域名读：每一级最长 63 字节，不能以横线开头，整个名字不超过 253 字节 / A CNAME target read as hickory reads
  * names: each label at most 63 bytes and not starting with a hyphen, the whole name at most 253 bytes */
 export const isCnameTarget = (v: string): boolean =>
-  isDomain(v) && v.replace(/\.$/, '').length <= 253 && v.replace(/\.$/, '').split('.').every((label) => label.length <= 63 && !label.startsWith('-'))
+  ASCII_NAME.test(v) && v.replace(/\.$/, '').length <= 253 && v.replace(/\.$/, '').split('.').every((label) => label.length <= 63 && !label.startsWith('-'))
 
 // ---------- 正则 / regexes ----------
 // Rust 正则认的字母转义：哪儿都能用的，和只能在字符组外面用的；别的字母、数字（反向引用，连 \0）都不认，标点随便转义
@@ -82,29 +98,44 @@ export const isCnameTarget = (v: string): boolean =>
 // (backreferences, \0 included), are refused, while punctuation may always be escaped
 const ESCAPES = 'afnrtvdDsSwWpPxuU'
 const OUTSIDE_CLASS = 'bBAz'
-/** 内核按 Rust 的正则读：前后断言、反向引用、\k、\c、\Z、字符组里的 \b 这些 JS 认的写法它不认；(?P<名字>…) 和开头的 (?i) 这类标志它认。
- * 转义和断言照 Rust 查，其余的语法交给 JS 的正则 / The kernel reads Rust regex syntax: lookaround, backreferences, \k, \c, \Z and \b inside a
- * class, all fine in JS, are refused, while (?P<name>…) and leading flags such as (?i) are taken. Escapes and lookaround are checked as Rust
- * does; the rest of the syntax is left to JS's regex */
-export function kernelRegexOk(regex: string): boolean {
-  let inClass = false
+/**
+ * 内核一定不收、页面自己就看得出的写法：前后断言、反向引用（连 \0）、Rust 不认的字母转义（\k、\c、\Z、字符组里的 \b……）。字符组照 Rust 读：
+ * 紧跟在 [ 或 [^ 后面的 ] 是字符本身，字符组里的 [ 开一个嵌套的字符组。带 x 标志的不在这里查：x 模式里 # 后面是注释，那里写什么内核都收。
+ * 只查这些，绝不比内核严；别的（重复写错、范围写错、编译后太大……）等服务端照内核编译一遍再说
+ * What the kernel surely refuses and the page can tell itself: lookaround, backreferences (\0 included), letter escapes Rust does not know
+ * (\k, \c, \Z, \b inside a class…). Classes are read as Rust reads them: a ] right after [ or [^ is the character itself, and a [ inside a
+ * class opens a nested one. A pattern with the x flag is not checked here: in x mode a # starts a comment, where the kernel takes anything.
+ * Only these, so never stricter than the kernel; the rest (a bad repetition, a bad range, too large compiled…) waits for the server to
+ * compile it as the kernel does
+ */
+export function regexSurelyRefused(regex: string): boolean {
+  if (/\(\?[A-Za-z-]*x/.test(regex)) return false
+  let depth = 0
   for (let i = 0; i < regex.length; i++) {
     const c = regex[i]!
     if (c === '\\') {
       const next = regex[i + 1] ?? ''
-      if (/[0-9]/.test(next) || (/[A-Za-z]/.test(next) && !ESCAPES.includes(next) && (inClass || !OUTSIDE_CLASS.includes(next)))) return false
+      if (/[0-9]/.test(next) || (/[A-Za-z]/.test(next) && !ESCAPES.includes(next) && (depth > 0 || !OUTSIDE_CLASS.includes(next)))) return true
       i++
-    } else if (inClass) {
-      if (c === ']') inClass = false
-    } else if (c === '[') inClass = true
-    else if (/^\(\?<?[=!]/.test(regex.slice(i, i + 4))) return false
+    } else if (c === '[') {
+      depth++
+      if (regex[i + 1] === '^') i++
+      if (regex[i + 1] === ']') i++
+    } else if (c === ']' && depth > 0) depth--
+    else if (depth === 0 && /^\(\?<?[=!]/.test(regex.slice(i, i + 4))) return true
   }
-  try {
-    new RegExp(regex.replace(/^(?:\(\?[imsUuxR-]+\))+/, '').replace(/\(\?P</g, '(?<'))
-    return true
-  } catch {
-    return false
-  }
+  return false
+}
+/**
+ * 内核读不读得了这个正则（域名的、TXT 内容的）。面板服务端照内核编译过的就用它的回答（见 regex-check.ts）；还没回答、连不上时只拦
+ * regexSurelyRefused 那几种，别的先不标红，保存时内核自己还会再查一遍
+ * Whether the kernel can read this regex (for names, for TXT content). Once the panel server has compiled it as the kernel does, its answer
+ * is used (see regex-check.ts); before that, or while it cannot be reached, only what regexSurelyRefused finds is stopped and nothing else is
+ * marked yet, the kernel checking once more on save
+ */
+export function kernelRegexOk(regex: string): boolean {
+  const verdict = kernelRegexVerdict(regex)
+  return verdict === undefined ? !regexSurelyRefused(regex) : verdict === null
 }
 /** TXT 内容的正则最长 1000 字节 / A TXT content regex is at most 1000 bytes */
 export const TXT_REGEX_BYTES = 1000

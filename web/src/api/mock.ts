@@ -1,6 +1,7 @@
 import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
 import { exportConfig, panelHash, PANEL_FORMAT, readConfig } from '../config-model/document'
 import { compile } from '../config-model/model'
+import { regexSurelyRefused } from '../config-model/grammar'
 import { SETTING_SECTIONS } from '../config-editor/schema'
 import { sampleModel } from '../config-model/testing/samples'
 import type {
@@ -1217,6 +1218,17 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     if (index < 0) throw new Error('配置文件不存在')
     removeConfigVersions([id], emptyFirstInstall)
     return { deleted_id: id } as DeleteConfigVersionResult as T
+  }
+  // 正则照内核编译：演示里没有内核的正则库，按页面自己查得出的那几种（前后断言、反向引用、Rust 不认的转义）回答，别的都算收；
+  // kixdns:demo-regex-refused（JSON 数组）里列的也算内核不收，演示服务端回答以后才标红的样子
+  // Regexes compiled as the kernel does: the demo has no kernel regex library, so it answers by the few kinds the page can tell itself
+  // (lookaround, backreferences, escapes Rust does not know) and takes the rest; those listed in kixdns:demo-regex-refused (a JSON array)
+  // count as refused too, showing a mark that appears once the server answers
+  if (path === '/api/v1/config/regex-check' && method === 'POST') {
+    const { patterns } = JSON.parse(String(init?.body)) as { patterns: string[] }
+    const listed = typeof localStorage === 'undefined' ? null : localStorage.getItem('kixdns:demo-regex-refused')
+    const refused = new Set<string>(listed ? JSON.parse(listed) as string[] : [])
+    return { errors: patterns.map((p) => (refused.has(p) || regexSurelyRefused(p) ? 'regex parse error' : null)) } as T
   }
   if (path === '/api/v1/config/validate') {
     // kixdns:demo-validate-slow：校验要 1.5 秒，演示校验途中按保存、离开页面 / kixdns:demo-validate-slow: validation takes 1.5 s, to show saving or leaving while it runs

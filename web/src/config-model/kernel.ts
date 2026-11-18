@@ -25,7 +25,9 @@ export interface KConfigLike { version?: string; settings?: Record<string, unkno
 // Whether two kernel JSON values are the same: array order counts, key order does not — the kernel reads by key name, and the panel server
 // moves keys within settings when it edits a config (Geo data, blocklists)
 const sortedKeys = (_key: string, v: unknown): unknown => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v)
-export const sameKernel = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null, sortedKeys) === JSON.stringify(b ?? null, sortedKeys)
+/** 一份内核 JSON 写成一个键，sameKernel 一样的键也一样 / One kernel JSON value as a key, equal whenever sameKernel says equal */
+export const kernelKey = (v: unknown): string => JSON.stringify(v ?? null, sortedKeys)
+export const sameKernel = (a: unknown, b: unknown): boolean => kernelKey(a) === kernelKey(b)
 
 // 加载时：每项都是默认 and 而规则级不是 and，就把规则级运算符抄到每一项；求值时第一项按肯定起头，其余从左往右并入
 // At load: when every item is the default and and the rule-level operator is not, that operator is copied onto each item;

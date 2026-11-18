@@ -2695,6 +2695,65 @@ async fn dns_diagnostic_refuses_options_the_kernel_does_not_declare() {
     }
 }
 
+/// 正则检查照内核编译域名和 TXT 正则的办法回答：`testdata/kernel-regex.json` 里每一条都是拿内核的 `config::validate` 跑出来的，
+/// 这里的回答（内核收为 null，不收为内核报的原因）一条不差。要登录、要 CSRF，和别的检查一样；一次太多的整个不收
+/// The regex check answers as the kernel compiles name and TXT regexes: each entry of `testdata/kernel-regex.json` came from the
+/// kernel's `config::validate`, and the answers here (null when the kernel takes it, otherwise the cause it gives) match every one. It
+/// takes a session and CSRF as the other checks do; too many at once is refused whole
+#[tokio::test]
+async fn regex_check_answers_as_the_kernel_compiles() {
+    #[derive(serde::Deserialize)]
+    struct Case {
+        pattern: String,
+        error: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Table {
+        patterns: Vec<Case>,
+    }
+    let table: Table =
+        serde_json::from_str(include_str!("../../../../testdata/kernel-regex.json")).unwrap();
+    let context = authenticated_app().await;
+    let check = |patterns: &[&str], csrf: bool, cookies: bool| {
+        let mut request =
+            Request::post("/api/v1/config/regex-check").header(CONTENT_TYPE, "application/json");
+        if cookies {
+            request = request.header(COOKIE, context.cookies.clone());
+        }
+        if csrf {
+            request = request.header("x-csrf-token", context.csrf_token.clone());
+        }
+        request
+            .body(Body::from(
+                serde_json::json!({ "patterns": patterns }).to_string(),
+            ))
+            .unwrap()
+    };
+    let (status, _) = send_json(&context, check(&["a"], true, false)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = send_json(&context, check(&["a"], false, true)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let patterns: Vec<&str> = table.patterns.iter().map(|c| c.pattern.as_str()).collect();
+    let (status, body) = send_json(&context, check(&patterns, true, true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let errors: Vec<Option<String>> = serde_json::from_value(body["errors"].clone()).unwrap();
+    let expected: Vec<(&str, Option<&str>)> = table
+        .patterns
+        .iter()
+        .map(|c| (c.pattern.as_str(), c.error.as_deref()))
+        .collect();
+    let answered: Vec<(&str, Option<&str>)> = patterns
+        .iter()
+        .copied()
+        .zip(errors.iter().map(Option::as_deref))
+        .collect();
+    assert_eq!(answered, expected);
+    let many = vec!["a"; 201];
+    let (status, body) = send_json(&context, check(&many, true, true)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "regex_check_invalid");
+}
+
 #[test]
 fn reload_failures_read_as_one_plain_phrase() {
     use crate::control::ControlError;

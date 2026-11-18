@@ -1,10 +1,10 @@
 import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, ownMatcher, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { toTree, treeText } from './condTree'
 import {
-  byteLength, cidrOf, isCidr, isCnameTarget, isDomain, isIp, isPrefix, isQclass, isQtype, isRcode, isTtl, kernelRegexOk, QCLASSES, QTYPES, RCODES, TTL_PROBLEM,
+  byteLength, cidrOf, isCidr, isCnameTarget, isDomain, isIp, isPrefix, isQclass, isQtype, isRcode, isTtl, kernelDomain, kernelRegexOk, QCLASSES, QTYPES, RCODES, TTL_PROBLEM,
   TXT_REGEX_BYTES, TXT_SEGMENT_BYTES, upstreamFault, upstreamTransport, type UpstreamFault,
 } from './grammar'
-export { isCidr, isDomain, isIp } from './grammar'
+export { isCidr, isDomain, isIp, kernelDomain } from './grammar'
 // 配置页的数据模型：上游组配一次，规则引用组名；规则组、域名映射、默认值也在这里。compile() 把它落成内核配置，
 // importer.ts 把内核配置读回来，document.ts 负责和配置文件之间的存取。
 // The config page's model: upstream groups are configured once and rules reference them by name; rule groups, mappings and
@@ -143,6 +143,20 @@ export function withDefaultPort(item: UpstreamAddress): UpstreamAddress {
   const bare = isIp(host) || (protocol === 'tcp' && /^[A-Za-z0-9.-]+$/.test(host))
   return bare ? { ...item, address: `${prefix}${host.includes(':') ? `[${host}]` : host}:53` } : item
 }
+/**
+ * 一串逗号隔开的上游（设置里的默认上游）逐个按 withDefaultPort 补端口，没写前缀的照 UDP 读，和内核一样；要补的那几个换掉，别的写法（空格、逗号）
+ * 一个字不动。默认上游写完（离开这一格、按回车）时用它，和上游组的地址按「完成」时一样
+ * A comma-separated string of upstreams (the settings' default upstream) given ports one by one by withDefaultPort, one without a prefix read
+ * as UDP as the kernel does; only those needing a port change, and the rest of the writing (spaces, commas) stays exactly as it was. Used when
+ * 默认上游 is written (leaving the box, pressing Enter), as an upstream group's addresses are on 完成
+ */
+export function withDefaultPorts(text: string): string {
+  return text.split(',').map((part) => {
+    const address = part.trim()
+    const done = address ? withDefaultPort({ address, protocol: 'auto' }).address : address
+    return done === address ? part : part.replace(address, done)
+  }).join(',')
+}
 
 // ---------- 文字摘要 / summaries ----------
 
@@ -201,7 +215,7 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
     { value: 'prefix', label: '开头是', negate: false, txtMode: 'prefix' }, { value: 'nprefix', label: '开头不是', negate: true, txtMode: 'prefix' },
     { value: 're', label: '匹配正则', negate: false, txtMode: 'regex' }, { value: 'nre', label: '不匹配正则', negate: true, txtMode: 'regex' },
-  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? kernelRegexOk(v) && byteLength(v) <= TXT_REGEX_BYTES : true) },
+  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? byteLength(v) <= TXT_REGEX_BYTES && kernelRegexOk(v) : true) },
   qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN', upper: true, suggest: 'qclass', valid: isQclass, explain: onlyThese('查询类别', isQclass, CLASSES_TEXT) },
   edns: { label: '回答的 EDNS', ops: [{ value: 'is', label: '带', phrase: '回答带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '回答不带 EDNS', negate: true }], values: false, placeholder: '' },
 }
@@ -479,7 +493,8 @@ const eachValue = (c: { negate: boolean; values: string[] }, make: (x: string) =
 function requestTerms(c: Condition): Term[] {
   const v = c.values.map((x) => x.trim()).filter(Boolean)
   switch (c.field) {
-    case 'domain': return eachValue(c, (x) => (c.regex ? { type: 'domain_regex', value: x } : c.exact ? { type: 'domain_exact', value: x } : { type: 'domain_suffix', value: withoutWildcard(x) }))
+    // 中文这样的域名写成 punycode（kernelDomain），正则原样 / Names such as Chinese ones go as punycode (kernelDomain), regexes as written
+    case 'domain': return eachValue(c, (x) => (c.regex ? { type: 'domain_regex', value: x } : c.exact ? { type: 'domain_exact', value: kernelDomain(x) } : { type: 'domain_suffix', value: kernelDomain(withoutWildcard(x)) }))
     case 'geosite': return eachValue(c, (x) => ({ type: 'geo_site', value: x }))
     // client_ip 只认一个网段（matcher/mod.rs client_net）：和域名一样一个值一个匹配器 / client_ip takes one network (matcher/mod.rs client_net),
     // so like domains it is one matcher per value
@@ -499,7 +514,7 @@ function responseTerms(c: ResponseCondition): Term[] {
     case 'answer_type': return each((x) => ({ type: 'response_type', value: x.toUpperCase() }))
     case 'upstream': return each((x) => ({ type: 'upstream_equals', value: x }))
     case 'qclass': return each((x) => ({ type: 'response_qclass', value: x.toUpperCase() }))
-    case 'request_domain': return each((x) => (c.regex ? { type: 'request_domain_regex', value: x } : c.exact ? { type: 'request_domain_exact', value: x } : { type: 'request_domain_suffix', value: withoutWildcard(x) }))
+    case 'request_domain': return each((x) => (c.regex ? { type: 'request_domain_regex', value: x } : c.exact ? { type: 'request_domain_exact', value: kernelDomain(x) } : { type: 'request_domain_suffix', value: kernelDomain(withoutWildcard(x)) }))
     // 「不属于」也按否定的项写（不用 _not 那个匹配器）：几个值时和别的字段一样由下面的条件链和 ruleProblems 的「满足任一」那条管。回答阶段总拿着
     // GeoSite 数据（engine/rules.rs acquire_geo_locks），所以否定的 response_request_domain_geosite 和 _not 那个一样
     // 不属于 is a negated term too (not the _not matcher): with several values it is handled, like any other field, by the chains below and
@@ -743,6 +758,9 @@ export const mappingIsIp = (r: Mapping) => splitList(r.target).every(isIp)
 // A mapping covers subdomains already, so *. changes nothing; the suffix written to the kernel leaves it out (kept, it became the suffix 「*.x」
 // and matched nothing), as 属于 in a condition does
 export const mappingDomain = (r: Pick<Mapping, 'domain'>): string => withoutWildcard(r.domain.trim())
+/** 映射写进内核的后缀：中文这样的域名换成 punycode；页面上和规则名照写的 / The suffix a mapping writes to the kernel: names such as Chinese ones
+ * as punycode, while the page and the rule name keep what was written */
+export const mappingKernelDomain = (r: Pick<Mapping, 'domain'>): string => kernelDomain(mappingDomain(r))
 function mappingActions(r: Mapping): Record<string, unknown>[] {
   if (mappingIsIp(r)) return [{ type: 'static_ip_response', ip: splitList(r.target).join(',') }]
   return [{ type: 'static_cname_response', target: r.target.trim(), ...(r.ttl === null ? {} : { ttl: r.ttl }) }]
@@ -750,7 +768,7 @@ function mappingActions(r: Mapping): Record<string, unknown>[] {
 /** 写进内核的映射：启用、域名和目标都填了 / A mapping that goes into the kernel: enabled, with domain and target filled in */
 export const mappingLive = (r: Mapping): boolean => r.enabled && Boolean(r.domain.trim()) && Boolean(r.target.trim())
 /** 一条映射在内核里的那条规则 / A mapping's rule in the kernel */
-export const mappingRule = (r: Mapping): KRule => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: mappingDomain(r), operator: 'and' }] })
+export const mappingRule = (r: Mapping): KRule => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: mappingKernelDomain(r), operator: 'and' }] })
 /** 一个上游组在内核里的那个 Pipeline：转发到组的地址，带组的子网和备用 / An upstream group's pipeline in the kernel: a forward to its addresses with its subnet and fallback */
 export const groupPipeline = (model: Model, g: UpstreamGroup): KPipeline => forwardPipeline(model, upstreamPipelineId(model, g.id), g.id, g.ecs, groupFallback(model, g) ?? {})
 export function kernelRuleCount(rule: Rule): number {
@@ -828,7 +846,7 @@ function compileClaiming(model: Model, claim: Claim): KernelConfig {
   const main = [...listRules(model, mainId, model.rules, '其余请求', claim), emptyRule('其余请求', outcomeActions(model, model.rest))]
   claim(mainId, '其余请求', { kind: 'rest' })
   pipelines.push({ ...model.mainExtra, id: mainId, rules: main })
-  const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: mappingDomain(r), operator: i ? 'or' : 'and' })) }] : []
+  const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: mappingKernelDomain(r), operator: i ? 'or' : 'and' })) }] : []
   const blocklistId = blocklistPipelineId(model)
   const blocking = blocklistEntries(model, blocklistId)
   if (blocking.length) {

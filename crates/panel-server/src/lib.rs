@@ -18,6 +18,7 @@ mod protobuf;
 mod querylog;
 mod querylog_records;
 mod recent_window;
+mod regex_check;
 mod temporaries;
 mod updates;
 

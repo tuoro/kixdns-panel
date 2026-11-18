@@ -1,7 +1,7 @@
 import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, mergedFileIn, ownMatcher, ownRuleText, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
-import { effectiveOps, normalizeAddress, sameKernel, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
+import { effectiveOps, kernelKey, normalizeAddress, sameKernel, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
 import {
-  blocklistEntries, blocklistKey, emptyBlocklists, groupPipeline, isIp, kernelAddress, mappingLive, mappingRule, POLLUTED_CIDRS, ruleKernel, settingsFromKernel, splitList,
+  blocklistEntries, blocklistKey, emptyBlocklists, groupPipeline, isIp, kernelAddress, mappingKernelDomain, mappingLive, mappingRule, POLLUTED_CIDRS, ruleKernel, settingsFromKernel, splitList,
   type Blocklists, type BlockResponse, type Condition, type Ecs, type Mapping, type Model, type Outcome, type Protocol, type Remedy, type ResponseCondition,
   type ResponseHandling, type Rule, type RuleGroup, type UpstreamAddress, type UpstreamGroup, nextId as nextFreeId } from './model'
 
@@ -738,11 +738,20 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, orig
   // a rule group or kept verbatim) the previous id is not taken, or this rule, with its own forward now or later, compiles to two of one name.
   // The own forward it was read from does not count: folded into the rule, it is not written out on its own
   const takesId = (r: Rule, id: number) => !pipelineIds.has(`rule-${id}`) || origin.rules.get(r)?.pipeline?.id === `rule-${id}`
-  const keep = (list: Rule[], r: Rule, cand: Rule): Rule => {
+  // 编出来的样子（不带内核规则名）写成一个键：名字、停用与否不进编出来的样子，上一份的每条只编一次 / What a rule compiles to (kernel rule names
+  // left out) as one key: neither the name nor being disabled enters it, so each previous rule is compiled once
+  const kernelOf = (rules: unknown[], pipeline: unknown) => kernelKey([unnamed(rules), pipeline ?? null])
+  const compiled = new Map<Rule, string>()
+  const compiledKey = (cand: Rule) => {
+    if (!compiled.has(cand)) { const k = ruleKernel(model, cand, ''); compiled.set(cand, kernelOf(k.rules, k.pipeline)) }
+    return compiled.get(cand)!
+  }
+  const compilesAs = (r: Rule, cand: Rule): boolean => {
     const from = origin.rules.get(r)
-    if (!from || !refersHere(model, cand) || !takesId(r, cand.id)) return r
-    const k = ruleKernel(model, cand, '')
-    if (!sameKernel(unnamed(k.rules), unnamed(from.rules)) || !sameKernel(k.pipeline, from.pipeline)) return r
+    return Boolean(from) && refersHere(model, cand) && takesId(r, cand.id) && compiledKey(cand) === kernelOf(from!.rules, from!.pipeline)
+  }
+  const keep = (list: Rule[], r: Rule, cand: Rule): Rule => {
+    if (!compilesAs(r, cand)) return r
     list[list.indexOf(r)] = cand
     return cand
   }
@@ -766,17 +775,33 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, orig
       if (!r.raw && !p.raw && condsKey(r.conditions) === condsKey(p.conditions)) r.conditions = p.conditions
       if (!r.raw && !p.raw && r.response.mode === 'custom' && p.response.mode === 'custom' && JSON.stringify({ ...r.response, conditions: r.response.conditions.map(fullKey).sort() }) === JSON.stringify({ ...p.response, conditions: p.response.conditions.map(fullKey).sort() })) r.response = p.response
     }
-    // 改名：还没认回来的规则和上一份启用的规则里同一位置的那条，除了名字编出来一样，就是 JSON 里改了名字：编号、备注、改动时间跟着它，名字用新的
-    // A rename: a rule still unmatched and the previous enabled rule at the same place compile alike but for the name, so the name was changed in
-    // the JSON: the id, note and edit time come along, the name is the new one
+    // 改名、挪位置、把停用的加回来：还没认回来的规则，和上一份里还没认回来的一条除了名字编出来一样（停用的按它启用时编出来的样子），就是那一条——
+    // JSON 里改了名字（可能同时挪了位置），或者照它启用时的样子把停用的那条加了回来，和停用的映射一样算启用了它。编号、备注、改动时间跟着它，名字用新的
+    // （内核里叫 rule-编号的认的就是这个编号，名字照旧）。列表里哪儿都认；几条都合适时先要启用着的（改名比删一条再加回停用的常见），再要名字或编号也
+    // 对得上的，再要同一位置的，最后按先后。名字和内容都改了的对不上任何一条，是新规则
+    // A rename, a move, a disabled rule added back: a rule still unmatched that compiles like a still unmatched previous one but for the name
+    // (a disabled one as it compiles when enabled) is that one — the JSON renamed it (perhaps moving it too), or added the disabled one back as
+    // it compiles enabled, which enables it as with a disabled mapping. The id, note and edit time come along and the name is the new one (a
+    // kernel name rule-<id> stands for that id, the name staying). It is found anywhere in the list; of several that fit, enabled ones come
+    // first (a rename is likelier than deleting one and re-adding a disabled one), then one whose name or id agrees too, then the one at the
+    // same place, then the first. A rule with both name and content changed fits none and is new
     const read = now.filter((r) => origin.rules.has(r))
     const live = before.filter((x) => x.enabled)
     const matched = new Set(paired.values())
     read.forEach((r, i) => {
-      const p = live[i]
-      if (!p || paired.has(p) || matched.has(r)) return
-      const cand = keep(now, r, { ...clone(p), name: r.name })
-      if (cand !== r) paired.set(p, cand)
+      if (matched.has(r)) return
+      const id = kernelIds.get(r)
+      // 高级规则原样写回，名字在原样的内核规则里：用内核里现在的那份，不然改的名字写回去又变回原来的 / An advanced rule is written back verbatim
+      // with its names inside the kernel rules: the kernel's current ones are used, or the new name would be written back as the old one
+      const named = (p: Rule): Rule => ({ ...clone(p), enabled: true, name: id !== undefined && p.id === id ? p.name : r.name, ...(r.raw ? { raw: clone(r.raw) } : {}) })
+      const fits = before.filter((p) => !paired.has(p) && compilesAs(r, p))
+      const pool = fits.some((p) => p.enabled) ? fits.filter((p) => p.enabled) : fits
+      const p = pool.find((x) => (r.name !== '' && x.name === r.name) || (id !== undefined && x.id === id))
+        ?? (pool.length > 1 ? pool.find((x) => x === live[i]) : undefined) ?? pool[0]
+      if (!p) return
+      const cand = named(p)
+      now[now.indexOf(r)] = cand
+      paired.set(p, cand)
     })
     // 认回来的规则编出来和内核里一样：整条留上一份 / A matched rule that compiles to what the kernel holds stays the previous one entirely
     for (const [p, r] of paired) if (origin.rules.has(r)) paired.set(p, keep(now, r, clone(p)))
@@ -784,7 +809,8 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, orig
     // When the rule before is disabled too (already put back) it anchors there: looking at matched rules only, consecutive disabled rules came back reversed
     // and swapped on every hand edit
     before.forEach((p, i) => {
-      if (p.enabled) return
+      // 加回来、已经启用的那条不再放一份停用的 / One added back and enabled is not put back disabled as well
+      if (p.enabled || paired.has(p)) return
       const anchor = before.slice(0, i).reverse().find((x) => paired.has(x) || !x.enabled)
       const at = anchor ? now.indexOf(paired.get(anchor) ?? anchor) + 1 : 0
       now.splice(at, 0, p)
@@ -795,9 +821,11 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, orig
   // Mappings match by domain (one mapping per domain), each previous one taken once; one that compiles alike stays the previous one entirely
   // (its TTL, how the target is written). A disabled one compiles to nothing: added back in the JSON it was enabled and reads from the kernel;
   // otherwise it goes back to its place as disabled rules do
+  // 域名按写进内核的样子比：上一份写的中文，内核里是它的 punycode / Domains compare as written to the kernel: the previous model's Chinese
+  // name is its punycode in the kernel
   const pairedMappings = new Map<Mapping, Mapping>()
   model.mappings.forEach((m, i) => {
-    const p = prev.mappings.find((x) => !pairedMappings.has(x) && x.domain === m.domain)
+    const p = prev.mappings.find((x) => !pairedMappings.has(x) && mappingKernelDomain(x) === mappingKernelDomain(m))
     if (!p) return
     const from = origin.mappings.get(m)
     model.mappings[i] = mappingLive(p) && from && sameKernel(mappingRule(p), from) ? clone(p) : Object.assign(m, { id: p.id })

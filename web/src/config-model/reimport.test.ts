@@ -38,6 +38,12 @@ function jsonEditElsewhere(m: Model): ReadResult {
   return readConfig(k as unknown as Record<string, unknown>, m)
 }
 const PATHS = [['系统写入只改了 settings', geoSync], ['JSON 视图里改了别的规则', jsonEditElsewhere]] as const
+// JSON 视图里改了内核部分再读回草稿 / The JSON view edits the kernel part and reads back into the draft
+const editKernel = (m: Model, edit: (k: KernelConfig) => void) => {
+  const k = clone(compile(m))
+  edit(k)
+  return readConfig(k as unknown as Record<string, unknown>, m).model
+}
 
 // 按页面的做法加一条规则：newRule 起空壳，条件用编辑器的 newOf / A rule added as the page adds one: newRule for the shell, the editor's newOf for conditions
 function addRule(m: Model, name: string, outcome: Outcome, domain: string, patch: (r: Rule, id: () => number) => void = () => {}): Rule {
@@ -235,6 +241,121 @@ describe('重新读入：编出来一样的写法不换成另一种 / reading ba
     expect(ruleNamed(back, '版本')).toEqual({ ...unnamed, name: '版本' })
   })
 
+  // 认改名不只看同一位置：除了名字编出来一样的，在列表里哪儿都认；只差名字的有好几条时才按位置挑
+  // A rename is not found at the same place only: one that compiles alike but for the name is found anywhere in the list; only when several
+  // differ in the name alone does the place decide
+  it('JSON 视图里给规则改了名字、又挪了位置：编号、备注、改动时间照样跟着它', () => {
+    const m = sampleModel()
+    const firefox = ruleNamed(m, '火狐 DoH 探测')!
+    const k = clone(compile(m)) as KernelConfig
+    const main = k.pipelines.find((p) => p.id === 'main')!
+    const [moved] = main.rules.splice(main.rules.findIndex((r) => r.name === firefox.name), 1)
+    main.rules.unshift({ ...moved!, name: '火狐探测' })
+    const back = readConfig(k as unknown as Record<string, unknown>, m).model
+    expect(back.rules[0]).toEqual({ ...firefox, name: '火狐探测' })
+    expect(back.rules.filter((r) => r.id === firefox.id).length).toBe(1)
+  })
+
+  it('只差名字的几条一起改了名：按位置认，编号不串', () => {
+    const m = sampleModel()
+    const a = addRule(m, '甲', { type: 'block', response: 'NXDOMAIN' }, 'twin.example')
+    const b = addRule(m, '乙', { type: 'block', response: 'NXDOMAIN' }, 'twin.example')
+    const back = editKernel(m, (k) => {
+      const main = k.pipelines.find((p) => p.id === 'main')!
+      main.rules.find((r) => r.name === '甲')!.name = '甲二'
+      main.rules.find((r) => r.name === '乙')!.name = '乙二'
+    })
+    expect([ruleNamed(back, '甲二')!.id, ruleNamed(back, '乙二')!.id]).toEqual([a.id, b.id])
+  })
+
+  it('只差名字的两条：删了前一条、改了后一条的名字，后一条按位置认回自己的编号', () => {
+    const m = sampleModel()
+    const a = addRule(m, '甲', { type: 'block', response: 'NXDOMAIN' }, 'twin.example')
+    const b = addRule(m, '乙', { type: 'block', response: 'NXDOMAIN' }, 'twin.example')
+    const back = editKernel(m, (k) => {
+      const main = k.pipelines.find((p) => p.id === 'main')!
+      const at = main.rules.findIndex((r) => r.name === '甲')
+      main.rules[at] = { ...main.rules[at]!, name: '新的', matchers: [{ type: 'domain_suffix', value: 'new.example', operator: 'and' }] }
+      main.rules.find((r) => r.name === '乙')!.name = '乙二'
+    })
+    expect(ruleNamed(back, '乙二')!.id).toBe(b.id)
+    expect(back.rules.some((r) => r.id === a.id)).toBe(false)
+  })
+
+  it('启用的和停用的只差名字：JSON 里给启用的改名、挪位置，认回的是启用的那条，停用的照旧停用', () => {
+    const m = sampleModel()
+    const off = addRule(m, '停用的', { type: 'block', response: 'NXDOMAIN' }, 'same.example', (r) => { r.enabled = false })
+    const on = addRule(m, '启用的', { type: 'block', response: 'NXDOMAIN' }, 'same.example')
+    const back = editKernel(m, (k) => {
+      const main = k.pipelines.find((p) => p.id === 'main')!
+      const [moved] = main.rules.splice(main.rules.findIndex((r) => r.name === on.name), 1)
+      main.rules.unshift({ ...moved!, name: '改了名的' })
+    })
+    expect(back.rules[0]).toEqual({ ...on, name: '改了名的' })
+    expect(back.rules.find((r) => r.id === off.id)).toEqual(off)
+  })
+
+  it('几条停用的只差名字：JSON 里加回来哪一条，启用的就是名字（没名字的按编号）对得上的那条', () => {
+    const m = sampleModel()
+    const x = addRule(m, '甲停用', { type: 'block', response: 'NXDOMAIN' }, 'off.example', (r) => { r.enabled = false })
+    const y = addRule(m, '乙停用', { type: 'block', response: 'NXDOMAIN' }, 'off.example', (r) => { r.enabled = false })
+    const u = addRule(m, '', { type: 'block', response: 'REFUSED' }, 'off.example', (r) => { r.enabled = false })
+    const v = addRule(m, '', { type: 'block', response: 'REFUSED' }, 'off.example', (r) => { r.enabled = false })
+    const enabled = (ids: number[]) => ({ ...m, rules: m.rules.map((r) => (ids.includes(r.id) ? { ...r, enabled: true } : r)) })
+    const back = readConfig(clone(compile(enabled([y.id, v.id]))) as unknown as Record<string, unknown>, m).model
+    expect([x, y, u, v].map((r) => back.rules.find((b) => b.id === r.id)!.enabled)).toEqual([false, true, false, true])
+    expect(back.rules.length).toBe(m.rules.length)
+  })
+
+  it('名字和内容都改了：是一条新规则', () => {
+    const m = sampleModel()
+    const firefox = ruleNamed(m, '火狐 DoH 探测')!
+    const back = editKernel(m, (k) => {
+      const main = k.pipelines.find((p) => p.id === 'main')!
+      const r = main.rules.find((x) => x.name === firefox.name)!
+      r.name = '火狐探测'
+      r.matchers[0]!.value = 'use-application-dns.example'
+    })
+    expect(ruleNamed(back, '火狐探测')!.id).not.toBe(firefox.id)
+    expect(ruleNamed(back, '火狐探测')!.note).toBe('')
+  })
+
+  // 停用的规则编出来什么都没有：JSON 里把它（照它启用时编出来的样子）加回来，就是启用了它，和停用的映射一样
+  // A disabled rule compiles to nothing: added back in the JSON (as it compiles when enabled) it was enabled, as with a disabled mapping
+  it('JSON 里把停用着的规则加回来：就是启用了它，编号、备注、位置照旧，不多出一条', () => {
+    const m = sampleModel()
+    const old = m.rules.find((r) => !r.enabled)!
+    old.note = '供应商已经下线'
+    const enabled = { ...m, rules: m.rules.map((r) => (r === old ? { ...r, enabled: true } : r)) }
+    const back = readConfig(clone(compile(enabled)) as unknown as Record<string, unknown>, m).model
+    expect(back.rules).toEqual(enabled.rules)
+  })
+
+  it('JSON 里把停用着的规则换了名字加回来：启用它，名字用新的', () => {
+    const m = sampleModel()
+    const old = m.rules.find((r) => !r.enabled)!
+    const k = clone(compile({ ...m, rules: m.rules.map((r) => (r === old ? { ...r, enabled: true } : r)) }))
+    k.pipelines.find((p) => p.id === 'main')!.rules.find((r) => r.name === old.name)!.name = '统计接口'
+    const back = readConfig(k as unknown as Record<string, unknown>, m).model
+    expect(back.rules.filter((r) => r.id === old.id)).toEqual([{ ...old, enabled: true, name: '统计接口' }])
+    expect(back.rules.length).toBe(m.rules.length)
+  })
+
+  // 中文域名写进内核是 punycode：读回来按编出来的样子认，页面上还是写的中文 / A Chinese name reaches the kernel as punycode: read back it is
+  // matched by what it compiles to, and the page still shows the Chinese
+  it('中文域名的规则和映射：系统写入、JSON 里改了别处，读回来还是写的中文', () => {
+    for (const read of [geoSync, jsonEditElsewhere]) {
+      const m = sampleModel()
+      const r = addRule(m, '中文站', { type: 'block', response: 'NXDOMAIN' }, '中文.example')
+      const unnamed = addRule(m, '', { type: 'block', response: 'REFUSED' }, '例子.测试')
+      m.mappings.push({ id: nextId(m), domain: '例子.测试', target: '192.168.1.20', ttl: null, enabled: true })
+      const back = read(m).model
+      expect(ruleNamed(back, '中文站')).toEqual(r)
+      expect(back.rules.find((x) => x.id === unnamed.id)).toEqual(unnamed)
+      expect(back.mappings).toEqual(m.mappings)
+    }
+  })
+
   it('高级规则后面那条在 JSON 里改了名字：编号、备注照样跟着它', () => {
     const m = sampleModel()
     // 内核规则里多一个认不出的字段：读进来是高级规则，原样写回 / An unknown field in the kernel rule: read in as an advanced rule and written back verbatim
@@ -246,6 +367,17 @@ describe('重新读入：编出来一样的写法不换成另一种 / reading ba
     k.pipelines.find((p) => p.id === 'main')!.rules.find((r) => r.name === firefox.name)!.name = '火狐探测'
     const back = readConfig(k as unknown as Record<string, unknown>, m).model
     expect(ruleNamed(back, '火狐探测')).toEqual({ ...firefox, name: '火狐探测' })
+  })
+
+  it('高级规则在 JSON 里改了名字：编号、备注跟着它，写回去是新名字', () => {
+    const m = sampleModel()
+    const odd = newRule(nextId(m), { type: 'continue' })
+    odd.raw = [{ name: '手写的', matchers: [{ type: 'domain_suffix', value: 'odd.example', operator: 'and' }], matcher_operator: 'and', actions: [{ type: 'deny' }], comment: '手写' }]
+    odd.note = '手写的规则'
+    m.rules.unshift(odd)
+    const back = editKernel(m, (k) => { k.pipelines.find((p) => p.id === 'main')!.rules.find((r) => r.name === '手写的')!.name = '手写改名' })
+    expect(back.rules.find((r) => r.id === odd.id)).toMatchObject({ name: '手写改名', note: '手写的规则' })
+    expect(compile(back).pipelines.find((p) => p.id === 'main')!.rules.map((r) => r.name)).toContain('手写改名')
   })
 
   it('重名的两条在 JSON 里改掉一条的名字：另一条在内核里的名字跟着变回自己的名字，意思照旧', () => {
@@ -286,11 +418,6 @@ describe('重新读入的保护：只有编出来逐项一样才留上一份 / t
     expect(ruleNamed(back, '公司内网')!.conditions[0]![0]!.values).toEqual(['corp.example.net', 'corp.internal'])
   })
 
-  const editKernel = (m: Model, edit: (k: KernelConfig) => void) => {
-    const k = clone(compile(m))
-    edit(k)
-    return readConfig(k as unknown as Record<string, unknown>, m).model
-  }
   const forwardOf = (k: KernelConfig, id: string) => k.pipelines.find((p) => p.id === id)!.rules[0]!.actions[0]! as Record<string, unknown>
 
   it('JSON 里给上游组加了地址：这个组按内核里现在的样子读', () => {

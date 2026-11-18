@@ -18,11 +18,14 @@ const version = defineModel<string | undefined>('version')
 // lead: a group listed first whose rows the caller supplies through the #lead slot. Both are optional.
 // problems：使用方查出来写得不对的设置，key 对一句说法：框标红，说法写在框下面（和别处的出错一样）
 // problems: settings the caller found written wrong, key to one sentence: the box turns red with the sentence under it (as errors do elsewhere)
+// commit：文字框写完（离开这一格、按回车）时由使用方整理一遍的设置，key 对整理的办法（默认上游补端口）
+// commit: text settings the caller tidies once written (leaving the box, pressing Enter), key to how (默认上游 takes its ports)
 const props = defineProps<{
   changed?: ReadonlySet<string>
   hiddenKeys?: readonly string[]
   lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean; help?: string }
   problems?: Readonly<Record<string, string>>
+  commit?: Readonly<Record<string, (value: string) => string>>
 }>()
 const problemId = (field: SettingField) => `settings-problem-${field.key}`
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
@@ -162,6 +165,13 @@ function setText(field: SettingField, event: Event): void {
   setValue(field.key, (event.currentTarget as HTMLInputElement).value)
 }
 
+// 写完一格：使用方要整理的整理一遍，整理出来不一样才换 / A box written: tidied when the caller asks, replaced only when that changes it
+function commitText(field: SettingField, event: Event): void {
+  const tidy = props.commit?.[field.key]
+  const value = (event.currentTarget as HTMLInputElement).value
+  if (tidy && tidy(value) !== value) setValue(field.key, tidy(value))
+}
+
 function setNumber(field: SettingField, event: Event): void {
   const raw = (event.currentTarget as HTMLInputElement).value
   if (raw === '') {
@@ -244,7 +254,7 @@ function removeListItem(field: SettingField, index: number): void {
               <!-- 框和出错的说法在同一格里：说法紧跟在框下面，不被左边几行说明顶下去 / The box and its error share one cell, so the error follows the box
                    directly instead of being pushed down by a several-line note on the left -->
               <span class="ui-setrow__control settings-control"><span class="ui-input">
-                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setText(field, $event)">
+                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setText(field, $event)" @change="commitText(field, $event)">
                 <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setNumber(field, $event)">
                 <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setCsv(field, $event)">
                 <em v-if="field.unit" class="ui-setrow__unit">{{ field.unit }}</em>

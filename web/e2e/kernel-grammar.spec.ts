@@ -57,6 +57,57 @@ test('上游组：固定子网的前缀超出范围、发送客户端子网的�
   await expect(drawer.locator('.pdrawer__problem')).toBeVisible()
 })
 
+// 正则照内核读：页面请面板服务端用内核的正则库编译一遍（演示里 kixdns:demo-regex-refused 说内核不收哪些）。a++ 内核收，以前 JS 读不了就标红；
+// [a-\d] 内核不收，以前 JS 收了不说；前后断言不用等回答就标红
+// Regexes read as the kernel reads them: the page asks the panel server to compile them with the kernel's regex library (in the demo
+// kixdns:demo-regex-refused says which the kernel refuses). a++ the kernel takes, once marked because JS could not read it; [a-\d] the
+// kernel refuses, once let through by JS; lookaround is marked without waiting for the answer
+test('域名正则照内核读：内核收的不标红，内核不收的标红', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-regex-refused', JSON.stringify(['[a-\\d]'])))
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  await page.getByRole('button', { name: '新建规则', exact: true }).first().click()
+  const editor = page.locator('.editor')
+  await editor.getByRole('button', { name: '添加条件' }).first().click()
+  await page.getByRole('menuitem', { name: '域名', exact: true }).click()
+  const row = editor.locator('.cform__row').first()
+  await row.locator('select').selectOption('re')
+  const input = row.locator('.chips input')
+  for (const value of ['a++', '[a-\\d]', '(?=x)']) {
+    await input.fill(value)
+    await input.press('Enter')
+  }
+  const chips = row.locator('.chip')
+  await expect(chips).toHaveText(['a++', '[a-\\d]', '(?=x)'])
+  await expect(chips.nth(1)).toHaveClass(/chip--bad/)
+  await expect(chips.nth(2)).toHaveClass(/chip--bad/)
+  await expect(chips.nth(0)).not.toHaveClass(/chip--bad/)
+})
+
+// 中文域名照收，写进内核时换成 punycode，页面上显示写的中文 / Chinese names are taken, written to the kernel as punycode, and shown as written
+test('中文域名：域名映射照收，显示写的中文', async ({ page }) => {
+  await page.goto('/config?section=mapping')
+  await page.getByLabel('要映射的域名').fill('中文.example')
+  await page.getByLabel('回答的 IP 或域名').fill('192.168.1.10')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.locator('.rw__row .rw__dt', { hasText: '中文.example' })).toHaveCount(1)
+  // 它的 punycode 写法是同一个域名 / Its punycode spelling is the same name
+  await page.getByLabel('要映射的域名').fill('xn--fiq228c.example')
+  await page.getByLabel('回答的 IP 或域名').fill('192.168.1.11')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.getByText('xn--fiq228c.example 已经有映射了')).toBeVisible()
+})
+
+test('中文域名：快速添加照收，显示写的中文', async ({ page }, testInfo) => {
+  await page.goto('/config')
+  await expect(page.locator('main h1')).toBeVisible()
+  if (testInfo.project.name !== 'mobile') await page.getByRole('button', { name: '快速添加' }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('例子.测试')
+  await quick.press('Enter')
+  await expect(page.locator('[data-rule]', { hasText: '例子.测试' })).toHaveCount(1)
+})
+
 test('域名映射：写了 *. 存的是去掉 *. 的域名，批量导入也一样', async ({ page }) => {
   await page.goto('/config?section=mapping')
   await page.getByLabel('要映射的域名').fill('*.home.arpa')

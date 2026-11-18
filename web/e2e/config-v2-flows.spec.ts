@@ -230,6 +230,33 @@ test('有高级规则时的「默认上游」写错了当场标出来，说法�
   await expect(error).toHaveCount(0)
 })
 
+// 「默认上游」和上游组的地址一样：只写了 IP（或 TCP 的主机）的，写完（离开这一格、按回车）就按 53 补上；补不了的照旧标出来
+// 默认上游 works as an upstream group's addresses: an IP (or a TCP host) alone takes 53 once written (leaving the box, pressing Enter); one
+// that cannot be completed is still marked
+test('有高级规则时的「默认上游」只写了 IP：写完就按 53 补上，和上游组的地址一样 @responsive', async ({ page }) => {
+  await open(page)
+  const config = { version: '1.0', settings: { default_upstream: '1.1.1.1:53' }, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'ads', matchers: [{ type: 'geo_site', value: 'category-ads-all' }], actions: [{ type: 'deny' }, { type: 'static_response', rcode: 'NXDOMAIN' }] }] }] }
+  await page.locator('input[type=file]').setInputFiles({ name: 'raw.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  await expect(page.locator('.toast', { hasText: '已导入 raw.json' })).toBeVisible()
+  const report = page.getByRole('button', { name: '知道了', exact: true })
+  if (await report.count()) await report.click()
+  await toSection(page, '基础设置')
+  await page.locator('.settings-nav').getByRole('button', { name: /基础与监听/ }).click()
+  const field = page.getByLabel('默认上游', { exact: true })
+  await field.fill('9.9.9.9, tcp://dns.example')
+  await field.blur()
+  await expect(field).toHaveValue('9.9.9.9:53, tcp://dns.example:53')
+  await expect(field).not.toHaveAttribute('aria-invalid', 'true')
+  await field.fill('2001:db8::1')
+  await field.press('Enter')
+  await expect(field).toHaveValue('[2001:db8::1]:53')
+  await expect(field).not.toHaveAttribute('aria-invalid', 'true')
+  await field.fill('dns.example')
+  await field.blur()
+  await expect(field).toHaveValue('dns.example')
+  await expect(field).toHaveAttribute('aria-invalid', 'true')
+})
+
 // 放弃修改：草稿回到运行中的配置，保存条收起，提示里能撤销 / Discard: the draft returns to the running config, the bar leaves, and the toast can undo
 test('放弃修改清掉保存条，提示里可以撤销', async ({ page }) => {
   await open(page)

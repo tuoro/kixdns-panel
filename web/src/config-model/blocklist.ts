@@ -145,7 +145,10 @@ function parsePattern(pattern: string): Match | Skip {
   if (pattern.length > 1 && pattern.startsWith('/') && pattern.endsWith('/')) {
     const regex = pattern.slice(1, -1)
     if (!regex) return { reason: 'unreadable' }
-    return kernelRegexOk(regex) ? { kind: 'regex', value: ignoringCase(regex) } : { reason: 'bad-regex' }
+    // 问的是写进内核的那个（带大写字母的加了 (?i)）：自己写的规则落成 domain_regex，内核照它编译 / What is asked about is what reaches the kernel
+    // (with (?i) for a capital letter): one's own rule becomes a domain_regex, which the kernel compiles
+    const value = ignoringCase(regex)
+    return kernelRegexOk(value) ? { kind: 'regex', value } : { reason: 'bad-regex' }
   }
   let lower = pattern.toLowerCase()
   // AdGuard 拿「http://域名」去匹配 DNS 查询，所以开头的 `://` 和 `|` 一样是域名的开头
