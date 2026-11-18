@@ -1,11 +1,13 @@
+import { QCLASSES, QTYPES, RCODES } from './grammar'
 import type { FieldDef, OpDef } from './model'
 
-// 输入时的建议：地区用固定的常见值，记录类型、类别、响应码是 DNS 的固定集合；GeoSite 分类从数据里读，见 geosite.ts
-// Suggestions while typing: regions are a fixed list of common values, and record types, classes and rcodes are DNS's own sets; GeoSite categories come from the data, see geosite.ts
+// 输入时的建议：地区用固定的常见值；记录类型、类别、响应码就是内核认的那几个（grammar.ts），建议出来的都存得进去；GeoSite 分类从数据里读，见 geosite.ts
+// Suggestions while typing: regions are a fixed list of common values; record types, classes and rcodes are exactly the ones the kernel takes
+// (grammar.ts), so whatever is suggested can be saved; GeoSite categories come from the data, see geosite.ts
 export const COUNTRY_SUGGESTIONS = ['CN', 'HK', 'TW', 'JP', 'SG', 'US', 'private']
-export const QTYPE_SUGGESTIONS = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'SOA', 'HTTPS', 'SVCB', 'CAA', 'ANY']
-export const QCLASS_SUGGESTIONS = ['IN', 'CH', 'HS']
-export const RCODE_SUGGESTIONS = ['NOERROR', 'SERVFAIL', 'NXDOMAIN', 'REFUSED', 'FORMERR', 'NOTIMP']
+export const QTYPE_SUGGESTIONS: readonly string[] = QTYPES
+export const QCLASS_SUGGESTIONS: readonly string[] = QCLASSES
+export const RCODE_SUGGESTIONS: readonly string[] = RCODES
 
 // 条件表单的「添加条件」菜单只列字段（域名、客户端 IP……），按「域名 / 查询 / 客户端」排；「是 / 不是 / 正则」在这一行名字下面的小菜单里改，
 // 不再拆成「排除域名」「域名正则」一长串。请求条件（规则的「如果」）和回答条件（「上游回答后」）各一份顺序，表单是同一个。

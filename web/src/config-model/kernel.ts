@@ -47,7 +47,8 @@ export function foldChain(matchers: KMatcher[], ruleOp: string | undefined, hit:
 }
 
 // ---------- 上游地址 / upstream addresses ----------
-const PREFIX: Record<string, string> = { tcp: 'tcp', udp: 'udp', 'tcp+udp': 'tcp_udp', 'udp+tcp': 'tcp_udp', doh: 'doh', https: 'doh', dot: 'dot', tls: 'dot', doq: 'doq', quic: 'doq' }
+// transport_for_scheme：地址前缀对应的传输，大小写不论 / transport_for_scheme: the transport an address prefix names, in any case
+export const PREFIX: Record<string, string> = { tcp: 'tcp', udp: 'udp', 'tcp+udp': 'tcp_udp', 'udp+tcp': 'tcp_udp', doh: 'doh', https: 'doh', dot: 'dot', tls: 'dot', doq: 'doq', quic: 'doq' }
 // parse_upstream_addr：有前缀按前缀，没有就用动作的 transport（缺省 UDP） / parse_upstream_addr: the prefix wins, else the action's transport (UDP by default)
 export function normalizeAddress(addr: string, transport = 'udp'): string {
   const at = addr.indexOf('://')

@@ -1,3 +1,5 @@
+import { byteLength, isIp, isNet, isQclass, isQtype, isRcode, isTtl, kernelRegexOk, QCLASSES, QTYPES, RCODES, TTL_PROBLEM, TXT_REGEX_BYTES, TXT_SEGMENT_BYTES } from '../config-model/grammar'
+import { upstreamProblem } from '../config-model/model'
 import { matcherHint } from './matcher-hints'
 import { MATCHER_DEFINITIONS } from './schema'
 import type { ActionConfig, MatcherConfig, MatcherScope } from './types'
@@ -40,6 +42,24 @@ export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope):
   if (fields.includes('country_codes') && !matcher.country_codes?.some((code) => code.trim())) {
     errors.country_codes = required
   }
+  // 内核读不进、或者会另作解释的写法当场标出来，读法和条件表单一样（config-model/grammar.ts） / What the kernel cannot read, or would read
+  // some other way, is marked at once, by the same reading as the condition form (config-model/grammar.ts)
+  const value = matcher.value ?? ''
+  if (!errors.value && value.trim()) {
+    const regex = ['domain_regex', 'request_domain_regex'].includes(matcher.type) || (matcher.type === 'response_txt_content' && matcher.mode === 'regex')
+    if (['qtype', 'response_type'].includes(matcher.type) && !isQtype(value)) errors.value = `KixDNS 只认 ${QTYPES.join('、')}`
+    else if (['qclass', 'response_qclass'].includes(matcher.type) && !isQclass(value)) errors.value = `KixDNS 只认 ${QCLASSES.join('、')}`
+    else if (matcher.type === 'response_rcode' && !isRcode(value)) errors.value = `KixDNS 只认 ${RCODES.join('、')}，其余的响应码写 OTHER`
+    else if (regex && !kernelRegexOk(value)) errors.value = '正则写得不对：KixDNS 不认前后断言、反向引用这些写法'
+    else if (regex && matcher.type === 'response_txt_content' && byteLength(value) > TXT_REGEX_BYTES) errors.value = `TXT 的正则最长 ${TXT_REGEX_BYTES} 字节`
+  }
+  // 规则和入口的 client_ip 只认一个网段；回答阶段的网段是逗号隔开的列表 / A rule's or entry's client_ip takes one network; answer-phase networks
+  // are a comma-separated list
+  const cidr = matcher.cidr ?? ''
+  if (!errors.cidr && cidr.trim()) {
+    if (matcher.type === 'client_ip' && !isNet(cidr)) errors.cidr = '只能写一个带前缀的网段，比如 192.168.1.0/24；几个网段写成几个条件'
+    else if (matcher.type !== 'client_ip' && !cidr.split(',').map((c) => c.trim()).filter(Boolean).every(isNet)) errors.cidr = '网段写成 0.0.0.0/32 这样，几个用逗号隔开'
+  }
   return errors
 }
 
@@ -68,13 +88,21 @@ export function actionFieldErrors(
   if (requiredField && !action[requiredField]?.trim()) errors[requiredField] = ACTION_REQUIRED[requiredField]
   if (action.type === 'static_txt_response' || action.type === 'replace_txt_response') {
     const values = Array.isArray(action.text) ? action.text : [action.text ?? '']
+    const long = values.find((value) => byteLength(value) > TXT_SEGMENT_BYTES)
     if (!values.some((value) => value.trim())) errors.text = requiredFieldError('文本')
+    else if (long !== undefined) errors.text = `每段 TXT 最长 ${TXT_SEGMENT_BYTES} 字节，有一段 ${byteLength(long)} 字节`
+  }
+  // 固定 IP 照内核读：逗号隔开，每一项都是 IP / Fixed IPs as the kernel reads them: comma-separated, each one an IP
+  if (action.type === 'static_ip_response' && !errors.ip && !(action.ip ?? '').split(',').every((ip) => isIp(ip.trim()))) errors.ip = 'IP 写得不对，几个 IP 用逗号隔开'
+  // 转发的每个上游照 upstream_problem 读，没写前缀的按这个动作的 transport / Each upstream of a forward read as upstream_problem does, one without
+  // a prefix by this action's transport
+  if (action.type === 'forward' && !errors.upstream && action.upstream) {
+    const bad = action.upstream.split(',').map((u) => u.trim()).filter(Boolean).map((u) => [u, upstreamProblem(u, action.transport ?? 'udp')] as const).find(([, p]) => p)
+    if (bad) errors.upstream = `上游 ${bad[0]}${bad[1]}`
   }
   if (action.type === 'static_cname_response') {
     if (!errors.target && !validDnsName(action.target ?? '')) errors.target = 'CNAME 目标域名写得不对'
-    if (action.ttl !== undefined && (!Number.isInteger(action.ttl) || action.ttl < 0 || action.ttl > 4_294_967_295)) {
-      errors.ttl = 'TTL 填 0 到 4294967295 之间的整数'
-    }
+    if (action.ttl !== undefined && !isTtl(action.ttl)) errors.ttl = TTL_PROBLEM
   }
   if (action.type === 'jump_to_pipeline' && !errors.pipeline) {
     if (action.pipeline === currentPipelineId) errors.pipeline = '不能转到自己所在的这一组'

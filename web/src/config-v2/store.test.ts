@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { diffModels, differences } from '../config-model/diff'
-import { blocklistKey, compile, ruleTitle, type Model } from '../config-model/model'
+import { blocklistKey, compile, ruleTitle, type Model, type Rule } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
 import { appliedModel, changeCount, changesBesidesFile, newId, placeBack, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
@@ -36,6 +36,73 @@ describe('保存条的计数和「改了哪些」说的是同一件事', () => {
   it('没改就两边都是 0', () => {
     expect(changeCount.value).toBe(0)
     expect(diffModels(appliedModel.value, model)).toEqual([])
+  })
+})
+
+// 一条规则改了哪里，「改了哪些」就写哪里：以前 TXT、CNAME 回答的 TTL、回答后检查的「同时记一条日志」改了，保存条说已修改 1 处，「改了哪些」
+// 却说和上次保存的一样。保存条按规则数，「改了哪些」按规则写块，只改规则时两个数一样
+// Whatever part of a rule changed, the review says so: the TTL of a TXT or CNAME answer and the answer check's 「同时记一条日志」 used to read
+// 「已修改 1 处」 on the save bar while the review said nothing changed. The bar counts rules and the review writes a block per rule, so with
+// rule edits only the two numbers agree
+describe('规则改了哪里，「改了哪些」就写哪里', () => {
+  beforeEach(() => {
+    const start = demoModel()
+    const company = start.rules.find((r) => r.name === '公司内网')!
+    company.conditions[0]![0]!.values = ['a.corp', 'b.corp', 'c.corp', 'd.corp', 'e.corp']
+    start.rules.push({ ...start.rules[1]!, id: 9100, name: 'CNAME 回答', outcome: { type: 'answer', kind: 'cname', value: 'nas.home.arpa', ttl: null } })
+    start.rules.push({ ...start.rules[1]!, id: 9101, name: 'IP 回答', outcome: { type: 'answer', kind: 'ip', value: '192.168.1.10, fd00::10', ttl: null } })
+    const rebind = start.rules.find((r) => r.name === '防 DNS 重绑定')!
+    rebind.response = { ...rebind.response, then: { type: 'answer', kind: 'txt', value: 'blocked', ttl: null }, otherwise: { type: 'answer', kind: 'cname', value: 'safe.example', ttl: null } }
+    start.rules.push({ ...rebind, id: 9102, name: '否则照常', response: { ...rebind.response, otherwise: { type: 'none' } } })
+    resetTo(start)
+  })
+  const rule = (name: string) => model.rules.find((r) => r.name === name)!
+  const answerOf = (o: Rule['outcome'] | Rule['response']['then']) => o as Extract<Rule['outcome'], { type: 'answer' }>
+  // 第三项是「改了哪些」里看得到的那句：改的东西本身要写出来，不是只落到「写法有改动」那句兜底上
+  // The third item is what the review must show: the change itself is written out, not left to the 「写法有改动」 fallback
+  const edits: [string, () => void, string][] = [
+    ['TXT 回答的 TTL', () => { answerOf(model.rules.find((r) => r.outcome.type === 'answer' && r.outcome.kind === 'txt')!.outcome).ttl = 60 }, '+ 结果：直接回答 TXT「kixdns」，TTL 60 秒'],
+    ['CNAME 回答的 TTL', () => { answerOf(rule('CNAME 回答').outcome).ttl = 600 }, '+ 结果：直接回答 CNAME nas.home.arpa，TTL 600 秒'],
+    ['回答后检查「然后」回答的 TTL', () => { answerOf(rule('防 DNS 重绑定').response.then).ttl = 30 }, '直接回答 TXT「blocked」，TTL 30 秒，否则'],
+    ['回答后检查「否则」回答的 TTL', () => { answerOf(rule('防 DNS 重绑定').response.otherwise).ttl = 30 }, '否则直接回答 CNAME safe.example，TTL 30 秒'],
+    ['回答后检查同时记一条日志', () => { rule('防 DNS 重绑定').response.thenLog = 'warn' }, '直接回答 TXT「blocked」，同时记一条警告日志，否则'],
+    ['回答后检查「否则」记日志', () => { rule('防 DNS 重绑定').response.otherwiseLog = 'info' }, 'safe.example，同时记一条信息日志'],
+    ['「否则」照常返回、只记日志', () => { rule('否则照常').response.otherwiseLog = 'info' }, '，否则照常返回，同时记一条信息日志'],
+    ['多值条件里排在后面的值', () => { rule('公司内网').conditions[0]![0]!.values[3] = 'x.corp' }, '+ 条件：域名属于 a.corp、b.corp、c.corp、x.corp、e.corp'],
+    ['回答的几个 IP 之间换了写法', () => { answerOf(rule('IP 回答').outcome).value = '192.168.1.10,fd00::10' }, '写法有改动，读出来和原来一样'],
+  ]
+  it.each(edits)('%s', (_, edit, shown) => {
+    edit()
+    expect(changeCount.value).toBe(1)
+    const blocks = diffModels(appliedModel.value, model)
+    expect(differences(blocks)).toBe(1)
+    expect([...blocks[0]!.lines.map((l) => `${l.sign} ${l.text}`), blocks[0]!.note ?? ''].join('\n')).toContain(shown)
+  })
+})
+
+// 挪动规则：保存条和「改了哪些」按同一份「哪几条挪过」数（两边共有的规则里最长的一段相同顺序之外的那几条），挪过又改过的一条算一处、写成一块
+// Moving rules: the save bar and the review count the same set of moved rules (those outside the longest run kept in order), and a rule both
+// moved and edited is one place and one block
+describe('挪动规则：保存条和「改了哪些」一样数', () => {
+  beforeEach(() => resetTo(demoModel()))
+
+  it('第一条和最后一条对调：挪了两条，两处、两块', () => {
+    const first = model.rules.shift()!
+    const last = model.rules.pop()!
+    model.rules.unshift(last)
+    model.rules.push(first)
+    expect(changeCount.value).toBe(2)
+    expect(differences(diffModels(appliedModel.value, model))).toBe(2)
+  })
+
+  it('挪过又改过的一条：一处、一块，块里说从第几条挪到第几条', () => {
+    const moved = model.rules.shift()!
+    moved.note = '挪到最后'
+    model.rules.push(moved)
+    expect(changeCount.value).toBe(1)
+    const blocks = diffModels(appliedModel.value, model)
+    expect(differences(blocks)).toBe(1)
+    expect(blocks[0]!.note).toBe(`从第 1 条移到第 ${model.rules.length} 条`)
   })
 })
 

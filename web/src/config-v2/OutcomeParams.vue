@@ -2,7 +2,8 @@
 import { computed, useId } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
-import { isDomain, isIp, splitList, type Outcome, type Remedy } from '../config-model/model'
+import { TTL_PROBLEM } from '../config-model/grammar'
+import { outcomeProblem, type Outcome, type Remedy } from '../config-model/model'
 import { model } from './store'
 import { canCname } from './useConfigDocument'
 import { blockOptions, groupBrief } from './view'
@@ -19,14 +20,12 @@ const ruleGroupOptions = computed(() => model.ruleGroups.map((g) => ({ value: g.
 // 内核不支持固定 CNAME 时这一项灰掉（现在已经选了的不动） / CNAME greys out when the kernel lacks it (an existing choice stays)
 const kindItems = computed(() => [{ value: 'ip', label: 'IP' }, { value: 'cname', label: 'CNAME', disabled: !canCname.value && !(props.modelValue.type === 'answer' && props.modelValue.kind === 'cname') }, { value: 'txt', label: 'TXT' }])
 const group = computed(() => (props.modelValue.type === 'upstream' ? model.groups.find((g) => g.id === (props.modelValue as { group: string }).group) : undefined))
-const answerProblem = computed(() => {
-  const o = props.modelValue
-  if (o.type !== 'answer') return null
-  if (!o.value.trim()) return '还没填回答的内容'
-  if (o.kind === 'ip' && !splitList(o.value).every(isIp)) return 'IP 写得不对，几个 IP 用逗号隔开'
-  if (o.kind === 'cname' && !isDomain(o.value.trim())) return '域名写得不对'
-  return null
-})
+// 回答和改写的 TXT 写没写对，和保存前的检查同一套（model.ts outcomeProblem）；选的组没了在上面另有一行，这里不重复
+// Whether an answer or rewritten TXT is written right, by the same check the save runs (model.ts outcomeProblem); a chosen group that is gone has
+// its own line above and is not repeated here
+const answerProblem = computed(() => (props.modelValue.type === 'answer' || props.modelValue.type === 'rewrite_txt' ? outcomeProblem(model, props.modelValue) : null))
+// 错的是 TTL 时标红 TTL 那一格，不标回答的内容 / When the TTL is what is wrong, the TTL box is marked rather than the answer's content
+const ttlWrong = computed(() => answerProblem.value === TTL_PROBLEM)
 </script>
 
 <template>
@@ -46,10 +45,10 @@ const answerProblem = computed(() => {
       <div class="oparams__line">
         <UiTabs :model-value="modelValue.kind" :items="kindItems" :label="`${label}：记录类型`" variant="segment" @update:model-value="set({ kind: $event, value: '', ttl: null })" />
         <label class="ui-input oparams__value">
-          <input :value="modelValue.value" :aria-label="`${label}：回答内容`" :aria-invalid="(showErrors && Boolean(answerProblem)) || undefined" :aria-describedby="showErrors && answerProblem ? answerErrId : undefined" :placeholder="modelValue.kind === 'ip' ? '192.168.1.10, fd00::10' : modelValue.kind === 'cname' ? 'target.example.com' : '要回答的文字'" autocapitalize="off" spellcheck="false" @input="set({ value: ($event.target as HTMLInputElement).value })">
+          <input :value="modelValue.value" :aria-label="`${label}：回答内容`" :aria-invalid="(showErrors && Boolean(answerProblem) && !ttlWrong) || undefined" :aria-describedby="showErrors && answerProblem ? answerErrId : undefined" :placeholder="modelValue.kind === 'ip' ? '192.168.1.10, fd00::10' : modelValue.kind === 'cname' ? 'target.example.com' : '要回答的文字'" autocapitalize="off" spellcheck="false" @input="set({ value: ($event.target as HTMLInputElement).value })">
         </label>
         <label v-if="modelValue.kind !== 'ip'" class="ui-input oparams__ttl">
-          <input type="number" min="0" :value="modelValue.ttl ?? ''" :aria-label="`${label}：TTL`" placeholder="300" @input="set({ ttl: ($event.target as HTMLInputElement).value === '' ? null : Number(($event.target as HTMLInputElement).value) })"><i>秒</i>
+          <input type="number" min="0" :value="modelValue.ttl ?? ''" :aria-label="`${label}：TTL`" :aria-invalid="(showErrors && ttlWrong) || undefined" :aria-describedby="showErrors && ttlWrong ? answerErrId : undefined" placeholder="300" @input="set({ ttl: ($event.target as HTMLInputElement).value === '' ? null : Number(($event.target as HTMLInputElement).value) })"><i>秒</i>
         </label>
       </div>
       <p v-if="showErrors && answerProblem" :id="answerErrId" class="ui-field-error">{{ answerProblem }}</p>
@@ -63,8 +62,9 @@ const answerProblem = computed(() => {
     </template>
     <template v-else-if="modelValue.type === 'rewrite_txt'">
       <label class="ui-input oparams__main">
-        <input :value="modelValue.value" :aria-label="`${label}：新的 TXT 内容`" placeholder="新的 TXT 内容" @input="set({ value: ($event.target as HTMLInputElement).value })">
+        <input :value="modelValue.value" :aria-label="`${label}：新的 TXT 内容`" :aria-invalid="(showErrors && Boolean(answerProblem)) || undefined" :aria-describedby="showErrors && answerProblem ? answerErrId : undefined" placeholder="新的 TXT 内容" @input="set({ value: ($event.target as HTMLInputElement).value })">
       </label>
+      <p v-if="showErrors && answerProblem" :id="answerErrId" class="ui-field-error">{{ answerProblem }}</p>
     </template>
   </div>
 </template>
