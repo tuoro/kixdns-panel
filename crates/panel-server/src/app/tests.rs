@@ -13,8 +13,8 @@ use tempfile::{TempDir, tempdir};
 use tower::ServiceExt;
 
 use super::{
-    AppSettings, MetricSample, TrustedProxies, build_app, build_request_trend,
-    ensure_validation_accepted, trend_bucket_seconds,
+    AppSettings, MetricSample, build_app, build_request_trend, ensure_validation_accepted,
+    trend_bucket_seconds,
 };
 use crate::control::ValidationResult;
 
@@ -76,7 +76,8 @@ fn app_settings(directory: &TempDir) -> AppSettings {
         builtin_geosite: None,
         web_root,
         secure_cookie: false,
-        trusted_proxies: TrustedProxies::default(),
+        // 面板在本机反向代理后面的部署：回环地址是可信代理 / A deployment behind a local reverse proxy: loopback is trusted
+        trusted_proxies: "127.0.0.1/32,::1/128".parse().unwrap(),
     }
 }
 
@@ -871,7 +872,8 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         blocklists,
         geosite_catalog: Arc::default(),
         secure_cookie: false,
-        trusted_proxies: TrustedProxies::default(),
+        // 面板在本机反向代理后面的部署：回环地址是可信代理 / A deployment behind a local reverse proxy: loopback is trusted
+        trusted_proxies: "127.0.0.1/32,::1/128".parse().unwrap(),
         login_limiter: Arc::new(crate::auth::LoginLimiter::default()),
         password_slots: Arc::new(tokio::sync::Semaphore::new(1)),
         config_apply_lock: Arc::new(tokio::sync::Mutex::new(())),

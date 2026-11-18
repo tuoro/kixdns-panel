@@ -33,12 +33,14 @@ const MAX_USERNAMES_PER_BUCKET: usize = 20;
 #[derive(Debug, Clone)]
 pub struct TrustedProxies(Vec<IpNet>);
 
+/// 默认谁都不信：只有写进 `KIXDNS_TRUSTED_PROXIES` 的代理带来的 `X-Forwarded-For` 才算数。以前默认信任回环地址，
+/// frp、`ssh -R` 这类不改写这个头的本机转发会让客户端自己写的地址算数，每次换一个就是新的五次尝试
+/// No proxy is trusted by default: `X-Forwarded-For` counts only from proxies written into `KIXDNS_TRUSTED_PROXIES`.
+/// Loopback used to be trusted by default, so a local forwarder that does not rewrite the header (frp, `ssh -R`) made
+/// the client's own value count, a fresh five tries with every new address
 impl Default for TrustedProxies {
     fn default() -> Self {
-        Self(vec![
-            "127.0.0.1/32".parse().expect("固定 IPv4 网段有效"),
-            "::1/128".parse().expect("固定 IPv6 网段有效"),
-        ])
+        Self(Vec::new())
     }
 }
 
@@ -57,9 +59,6 @@ impl FromStr for TrustedProxies {
                     .map_err(|error| format!("可信代理网段 {network} 无效：{error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if networks.is_empty() {
-            return Err("至少需要一个可信代理网段".to_owned());
-        }
         if networks.len() > 64 {
             return Err("可信代理网段不能超过 64 个".to_owned());
         }
@@ -90,6 +89,9 @@ impl TrustedProxies {
     pub fn client_ip(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
         let peer = peer.to_canonical();
         if !self.contains(peer) {
+            if headers.contains_key("x-forwarded-for") {
+                warn_untrusted_forwarding(peer);
+            }
             return peer;
         }
         // 从右往左走：右边是可信代理追加的，左边是客户端自己能写的。遇到第一个
@@ -129,6 +131,21 @@ impl TrustedProxies {
 
     fn contains(&self, address: IpAddr) -> bool {
         self.0.iter().any(|network| network.contains(&address))
+    }
+}
+
+/// 不可信的对端带来了 `X-Forwarded-For`：提醒一次。面板在反向代理后面却没写 `KIXDNS_TRUSTED_PROXIES` 时，所有人都算在
+/// 代理头上，几次输错就锁住所有经代理登录的人；默认改成谁都不信以后，升级上来的反向代理部署靠这一行发现
+/// `X-Forwarded-For` came from an untrusted peer: say so once. Behind a reverse proxy without `KIXDNS_TRUSTED_PROXIES`,
+/// everyone counts against the proxy and a few failures lock out all who log in through it; with no proxy trusted by
+/// default, an upgraded reverse-proxy deployment finds out from this line
+fn warn_untrusted_forwarding(peer: IpAddr) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            %peer,
+            "收到带 X-Forwarded-For 的请求，但对端不在可信代理里，登录限流按对端地址算；面板在反向代理后面时，把代理的地址写进 /etc/kixdns-panel/panel.env 的 KIXDNS_TRUSTED_PROXIES 并重启面板"
+        );
     }
 }
 
@@ -620,9 +637,32 @@ mod tests {
         assert_eq!(resolve(&[b"198.51.100.7, \xff, 10.0.0.1"]), peer);
     }
 
+    /// 默认谁都不信：没写 `KIXDNS_TRUSTED_PROXIES` 时，回环地址带来的 `X-Forwarded-For` 也不算数，按对端地址限流。
+    /// 以前默认信任回环，frp、`ssh -R` 这类不改写这个头的本机转发会让客户端自己写的地址算数，限流形同虚设
+    /// No proxy is trusted by default: without `KIXDNS_TRUSTED_PROXIES`, `X-Forwarded-For` from a loopback peer does not
+    /// count either, and the limiter keys on the peer. Loopback used to be trusted by default, so a local forwarder that
+    /// does not rewrite the header (frp, `ssh -R`) made the client's own value count and voided the limiter
+    #[test]
+    fn no_proxy_is_trusted_unless_configured() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.7"));
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert_eq!(
+            TrustedProxies::default().client_ip(loopback, &headers),
+            loopback
+        );
+        let empty: TrustedProxies = "".parse().expect("an empty list means no trusted proxy");
+        assert_eq!(empty.client_ip(loopback, &headers), loopback);
+        let configured: TrustedProxies = "127.0.0.1/32,::1/128".parse().unwrap();
+        assert_eq!(
+            configured.client_ip(loopback, &headers),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+    }
+
     #[test]
     fn an_ipv4_mapped_address_counts_as_the_ipv4_address() {
-        let proxies = TrustedProxies::default();
+        let proxies: TrustedProxies = "127.0.0.1/32,::1/128".parse().unwrap();
         let client = "198.51.100.7".parse::<IpAddr>().unwrap();
         let forwarded = |value: &'static str| {
             let mut headers = HeaderMap::new();
