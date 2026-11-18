@@ -54,6 +54,11 @@ use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// 换上新程序、换回旧程序时临时文件的前缀，写在程序旁边 / The prefixes of the temporary files next to the binary when a
+/// new one goes in and when the old one goes back
+pub(super) const CANDIDATE_PREFIX: &str = ".kixdns-candidate-";
+pub(super) const ROLLBACK_PREFIX: &str = ".kixdns-rollback-";
+
 /// 解开 fork 发布的内核包：根目录下 `SHA256SUMS` 列出的 kixdns、`KIXDNS_SOURCE.json` 和
 /// `KIXDNS_CAPABILITIES.json` 逐个核对摘要。包是谁、哪一版，由调用方拿 `KIXDNS_SOURCE.json`
 /// 和发布清单对照。
@@ -238,10 +243,16 @@ impl UpdateManager {
     /// previous one; the most recently installed other version then becomes it. A failed
     /// clean-up does not stop the start.
     pub async fn initialize_installed_version(&self) -> Result<(), UpdateError> {
-        let Some(active) = self.active_version().await? else {
+        let Some((active, replaced)) = self.locate_active().await? else {
             return Ok(());
         };
         self.adopt_active_version(&active).await?;
+        // 切换换好了程序、还没记下指针就断了：把那次切换做完，指针原来指的那个就是被换下的上一个
+        // A switch that replaced the binary and was cut short before recording the pointer: finish it, so the kernel
+        // the pointer named is the previous one it replaced
+        if let Some(replaced) = replaced.filter(|replaced| replaced != &active) {
+            self.remember_replaced(&replaced, &active).await;
+        }
         let recorded = self.previous_key(Some(&active)).await;
         let versions_path = Arc::clone(&self.versions_path);
         let worker_recorded = recorded.clone();
@@ -440,6 +451,15 @@ impl UpdateManager {
     }
 
     pub(super) async fn active_version(&self) -> Result<Option<VersionKey>, UpdateError> {
+        Ok(self.locate_active().await?.map(|(active, _)| active))
+    }
+
+    /// 正在用的内核，和它跟指针对不上时指针指的那个。指针和程序对不上，是切换换了程序、还没记下指针就断了：按程序的
+    /// 摘要在本机存的版本里找它
+    /// The kernel in use, and the one the pointer named when the two disagree. A pointer that does not match the binary
+    /// means a switch replaced the binary and was cut short before recording the pointer: the binary is looked up by its
+    /// digest among the versions stored on this host
+    async fn locate_active(&self) -> Result<Option<(VersionKey, Option<VersionKey>)>, UpdateError> {
         if !regular_file_exists(self.binary_path.as_ref())? {
             return Ok(None);
         }
@@ -447,18 +467,22 @@ impl UpdateManager {
         if let Some(initial) = initial.as_ref()
             && self.bundled_binary_matches(initial).await?
         {
-            return Ok(Some(initial.clone()));
+            return Ok(Some((initial.clone(), None)));
         }
-        let current = self
+        let pointer = self
             .database
             .get_setting(ACTIVE_VERSION_KEY)
             .await
-            .map_err(|error| UpdateError::Install(error.to_string()))?;
-        if let Some(current) = current {
-            let key = VersionKey::parse(&current)?;
-            if self.stored_binary_matches(&key).await? {
-                return Ok(Some(key));
-            }
+            .map_err(|error| UpdateError::Install(error.to_string()))?
+            .map(|current| VersionKey::parse(&current))
+            .transpose()?;
+        if let Some(key) = pointer.as_ref()
+            && self.stored_binary_matches(key).await?
+        {
+            return Ok(pointer.map(|key| (key, None)));
+        }
+        if let Some(stored) = self.stored_version_of_binary().await? {
+            return Ok(Some((stored, pointer)));
         }
         let legacy = self
             .database
@@ -472,8 +496,26 @@ impl UpdateManager {
         };
         legacy
             .or(initial_legacy)
-            .map(|commit| VersionKey::new(VersionSource::Action, commit))
+            .map(|commit| VersionKey::new(VersionSource::Action, commit).map(|key| (key, None)))
             .transpose()
+    }
+
+    /// 本机存的版本里，程序和当前程序一模一样的那个；有几个时取装得最晚的
+    /// The stored version whose binary is exactly the current one; the most recently installed when several are
+    async fn stored_version_of_binary(&self) -> Result<Option<VersionKey>, UpdateError> {
+        let binary_path = Arc::clone(&self.binary_path);
+        let versions_path = Arc::clone(&self.versions_path);
+        tokio::task::spawn_blocking(move || {
+            let current = sha256(&read_regular_file(&binary_path, "当前 KixDNS 二进制")?);
+            list_installed(&versions_path, None)?
+                .into_iter()
+                .filter(|version| version.binary_sha256 == current)
+                .max_by_key(|version| version.installed_at)
+                .map(|version| VersionKey::installed(&version))
+                .transpose()
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
     pub(super) fn initial_version_key(&self) -> Result<Option<VersionKey>, UpdateError> {
@@ -931,7 +973,7 @@ impl UpdateManager {
         // DNS never starts listening on port 53 unexpectedly (on stock Ubuntu
         // systemd-resolved may still hold that port).
         let running = host.service_running().await?;
-        let candidate = write_executable(parent, ".kixdns-candidate-", &binary)?;
+        let candidate = write_executable(parent, CANDIDATE_PREFIX, &binary)?;
         // 旧进程运行时 rename 替换文件是安全的：进程持有的是旧 inode。
         // Renaming over the file while the old process runs is safe: the
         // process holds the old inode.
@@ -983,7 +1025,7 @@ impl UpdateManager {
             .ok_or_else(|| UpdateError::Install("目标二进制缺少父目录".to_owned()))?;
         match previous {
             Some(previous) => {
-                let temporary = write_executable(parent, ".kixdns-rollback-", previous)?;
+                let temporary = write_executable(parent, ROLLBACK_PREFIX, previous)?;
                 persist(temporary, target)?;
             }
             None => match fs::remove_file(target) {

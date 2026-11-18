@@ -78,3 +78,24 @@ test('操作审计里退回那一行：长的时候照常折行，不横向溢�
     }
   }
 })
+
+// 清空查询排行和清空缓存一样写成人话，不露出 stats.clear / Clearing the query ranking reads in words as flushing the cache does,
+// never as stats.clear
+test('操作审计里清空查询排行写成人话', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('audit-original')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?audit-original';
+      import { apiRequest as original } from '/src/api/client.ts?audit-original';
+      export async function apiRequest(path, init) {
+        const result = await original(path, init);
+        if (String(path).startsWith('/api/v1/audit')) return { ...result, events: [{ id: 99, actor: 'admin', action: 'stats.clear', detail: '', created_at: Math.floor(Date.now() / 1000) }, ...result.events] };
+        return result;
+      }
+    ` })
+  })
+  await page.goto('/logs?view=audit')
+  const action = page.locator('.audit-line .audit-action', { hasText: '清空查询排行' })
+  await expect(action).toHaveCount(1)
+  await expect(action).toHaveAttribute('title', 'stats.clear')
+})

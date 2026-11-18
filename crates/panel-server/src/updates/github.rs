@@ -18,6 +18,9 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::time::Duration;
 
+/// 写 Token 时临时文件的前缀 / The prefix of the temporary file a token write goes through
+pub(super) const TOKEN_PREFIX: &str = ".github-token-";
+
 pub(super) fn parse_rate_limit(headers: &reqwest::header::HeaderMap) -> Option<GithubRateLimit> {
     let limit = headers
         .get("x-ratelimit-limit")?
@@ -112,7 +115,7 @@ pub(super) fn write_github_token(path: &Path, token: &str) -> Result<(), UpdateE
             "GitHub Token 路径必须是普通文件".to_owned(),
         ));
     }
-    let temporary = write_private_file(parent, ".github-token-", token.as_bytes())?;
+    let temporary = write_private_file(parent, TOKEN_PREFIX, token.as_bytes())?;
     persist(temporary, path)?;
     sync_directory(parent)
 }

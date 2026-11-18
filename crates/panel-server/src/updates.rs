@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::control::ControlClient;
 use crate::db::Database;
 use crate::operations::{Operations, ServiceAction};
+use crate::temporaries::sweep;
 
 mod catalog;
 mod github;
@@ -644,6 +645,20 @@ impl UpdateManager {
             .filter(|parent| !parent.as_os_str().is_empty())
             .ok_or_else(|| UpdateError::Invalid("KixDNS 二进制缺少父目录".to_owned()))?;
         ensure_directory(binary_parent)?;
+        // 启动时、写文件以前清掉上次写到一半留下的：版本库里的暂存、程序旁边没换上的程序、没换上的 Token
+        // At start-up, before any write, clear what writes cut short left last time: staging in the version store,
+        // binaries never swapped in next to the binary, and a token never swapped in
+        storage::sweep_versions(&versions_path);
+        sweep(
+            binary_parent,
+            &[install::CANDIDATE_PREFIX, install::ROLLBACK_PREFIX],
+        );
+        if let Some(parent) = github_token_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            sweep(parent, &[github::TOKEN_PREFIX]);
+        }
         let client =
             Self::http_client(Self::API_TIMEOUT, Self::CONNECT_TIMEOUT, Self::READ_TIMEOUT)?;
         let github_token = read_github_token(&github_token_path)?;

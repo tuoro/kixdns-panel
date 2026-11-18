@@ -18,6 +18,7 @@ mod protobuf;
 mod querylog;
 mod querylog_records;
 mod recent_window;
+mod temporaries;
 mod updates;
 
 pub use app::{AppSettings, build_app, run};

@@ -10,7 +10,7 @@ use serde::Serialize;
 
 const MAX_CONFIG_VERSIONS: i64 = 100;
 const MAX_AUDIT_EVENTS: i64 = 10_000;
-const CURRENT_SCHEMA_VERSION: i64 = 5;
+const CURRENT_SCHEMA_VERSION: i64 = 6;
 /// 采样保留 25 小时：比 24 小时的展示窗口多留一格，
 /// 让窗口左端始终能找到一个更早的样本来求差。
 /// Samples are kept for 25 hours — one bucket more than the 24-hour display
@@ -283,20 +283,11 @@ impl Database {
         created_at: i64,
         apply_state: &'static str,
     ) -> anyhow::Result<i64> {
+        // 记一个已生效的版本不顶掉在等的版本（待应用、没有生效的）：那是用户的，面板自己改配置时另行带上它
+        // Recording an applied version leaves the version waiting (pending or refused) alone: it is the user's, and a
+        // change the panel makes on its own carries it along separately
         self.call(move |connection| {
             let transaction = connection.transaction()?;
-            if apply_state == CONFIG_APPLY_APPLIED {
-                transaction.execute(
-                    "UPDATE config_versions
-                     SET apply_state = ?1, apply_error = NULL
-                     WHERE apply_state IN (?2, ?3)",
-                    params![
-                        CONFIG_APPLY_SUPERSEDED,
-                        CONFIG_APPLY_PENDING,
-                        CONFIG_APPLY_FAILED
-                    ],
-                )?;
-            }
             transaction.execute(
                 "INSERT INTO config_versions(
                      sha256, content, message, actor, created_at, apply_state, apply_error
@@ -311,6 +302,10 @@ impl Database {
         .await
     }
 
+    /// 存一个在等的版本，顶掉原来在等的：`refused` 是空的时候待应用，给了原因就是没有生效的（面板自己改配置时带上
+    /// 用户那份没被接受的版本）
+    /// Stores a version waiting, replacing the one waiting before: pending when `refused` is empty, refused with the
+    /// reason when given (a change the panel makes on its own carrying the user's refused version along)
     pub async fn store_pending_config_version(
         &self,
         sha256: String,
@@ -318,7 +313,13 @@ impl Database {
         message: String,
         actor: String,
         created_at: i64,
+        refused: Option<String>,
     ) -> anyhow::Result<i64> {
+        let apply_state = if refused.is_some() {
+            CONFIG_APPLY_FAILED
+        } else {
+            CONFIG_APPLY_PENDING
+        };
         self.call(move |connection| {
             let transaction = connection.transaction()?;
             transaction.execute(
@@ -334,14 +335,15 @@ impl Database {
             transaction.execute(
                 "INSERT INTO config_versions(
                      sha256, content, message, actor, created_at, apply_state, apply_error
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     sha256,
                     content,
                     message,
                     actor,
                     created_at,
-                    CONFIG_APPLY_PENDING
+                    apply_state,
+                    refused
                 ],
             )?;
             let id = transaction.last_insert_rowid();
@@ -694,17 +696,8 @@ impl Database {
     }
 
     pub async fn get_setting(&self, key: &'static str) -> anyhow::Result<Option<String>> {
-        self.call(move |connection| {
-            connection
-                .query_row(
-                    "SELECT value FROM app_settings WHERE key = ?1",
-                    [key],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(Into::into)
-        })
-        .await
+        self.call(move |connection| read_setting(connection, key))
+            .await
     }
 
     pub async fn set_setting(
@@ -713,13 +706,30 @@ impl Database {
         value: String,
         updated_at: i64,
     ) -> anyhow::Result<()> {
+        self.call(move |connection| write_setting(connection, key, &value, updated_at))
+            .await
+    }
+
+    /// 在一个写事务里读、改、写一个设置，读和写之间插不进别的写入：`change` 拿到现在的值，给出要写的新值（`None` 是不写）
+    /// 和要交回的结果
+    /// Reads, changes and writes one setting in one write transaction, so no other write lands between the read and the
+    /// write: `change` gets the current value and gives the value to write (`None` writes nothing) and the result to hand
+    /// back
+    pub async fn update_setting<T: Send + 'static>(
+        &self,
+        key: &'static str,
+        updated_at: i64,
+        change: impl FnOnce(Option<String>) -> (Option<String>, T) + Send + 'static,
+    ) -> anyhow::Result<T> {
         self.call(move |connection| {
-            connection.execute(
-                "INSERT INTO app_settings(key, value, updated_at) VALUES(?1, ?2, ?3) \
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                params![key, value, updated_at],
-            )?;
-            Ok(())
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (next, result) = change(read_setting(&transaction, key)?);
+            if let Some(value) = next {
+                write_setting(&transaction, key, &value, updated_at)?;
+            }
+            transaction.commit()?;
+            Ok(result)
         })
         .await
     }
@@ -731,6 +741,31 @@ impl Database {
         })
         .await
     }
+}
+
+fn read_setting(connection: &Connection, key: &str) -> anyhow::Result<Option<String>> {
+    connection
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn write_setting(
+    connection: &Connection,
+    key: &str,
+    value: &str,
+    updated_at: i64,
+) -> anyhow::Result<()> {
+    connection.execute(
+        "INSERT INTO app_settings(key, value, updated_at) VALUES(?1, ?2, ?3) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![key, value, updated_at],
+    )?;
+    Ok(())
 }
 
 fn initialize_database(
@@ -759,6 +794,42 @@ fn initialize_database(
     prune_audit_events(connection)?;
     Ok(())
 }
+
+/// 版本编号不再复用：没有 `AUTOINCREMENT` 时，删掉最新的一版，下一版就拿到它的编号，还停在旧 #N 的页面会把另一份
+/// 内容当成 #N 应用，操作记录里的「版本 #N」也说不清是哪一份。`SQLite` 不能给已有的表加 `AUTOINCREMENT`，只能照原样
+/// 重建：列、默认值、索引都和原来一样；行带着原来的编号搬过去，`sqlite_sequence` 随之记下其中最大的，以后的编号
+/// 从它往上走。这张表没有外键，也没有别的表引用它。
+/// Version ids are no longer reused: without `AUTOINCREMENT`, deleting the newest version hands its id to the next
+/// one, a page still on the old #N applies other content as #N, and 「版本 #N」 in the audit cannot say which content
+/// it was. `SQLite` cannot add `AUTOINCREMENT` to an existing table, so it is rebuilt as it was: the same columns,
+/// defaults and indexes; the rows move over with their ids, `sqlite_sequence` records the largest of them, and later
+/// ids count up from there. The table has no foreign keys, and no other table refers to it.
+const CONFIG_VERSIONS_WITH_AUTOINCREMENT: &str = r"
+    CREATE TABLE config_versions_autoincrement (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        sha256      TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        message     TEXT NOT NULL,
+        actor       TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        apply_state TEXT NOT NULL DEFAULT 'applied',
+        apply_error TEXT
+    );
+    INSERT INTO config_versions_autoincrement(
+        id, sha256, content, message, actor, created_at, apply_state, apply_error
+    )
+    SELECT id, sha256, content, message, actor, created_at, apply_state, apply_error
+    FROM config_versions;
+    DROP TABLE config_versions;
+    ALTER TABLE config_versions_autoincrement RENAME TO config_versions;
+    CREATE INDEX config_versions_created_idx
+        ON config_versions(created_at DESC);
+    CREATE INDEX config_versions_sha_idx
+        ON config_versions(sha256, id DESC);
+    CREATE INDEX config_versions_apply_idx
+        ON config_versions(apply_state, id DESC);
+    PRAGMA user_version = 6;
+";
 
 /// 逐级补齐缺失的 schema 版本。每一段只负责把版本从 n-1 推到 n，
 /// 已经是最新的数据库一段都不会执行。
@@ -853,6 +924,9 @@ fn apply_migrations(transaction: &rusqlite::Transaction<'_>, version: i64) -> ru
             PRAGMA user_version = 5;
             ",
         )?;
+    }
+    if version < 6 {
+        transaction.execute_batch(CONFIG_VERSIONS_WITH_AUTOINCREMENT)?;
     }
     Ok(())
 }
@@ -975,7 +1049,7 @@ pub fn ensure_database_parent(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::{Connection, params};
+    use rusqlite::{Connection, OptionalExtension, params};
     use tempfile::tempdir;
 
     use super::{
@@ -1146,6 +1220,216 @@ mod tests {
 
         Database::open(path).await.unwrap();
         assert_eq!(database_backups(directory.path()).len(), 1);
+    }
+
+    /// 一张表的全部内容和定义：每一行、每一列的定义、每个索引的列、外键
+    /// A table's whole content and definition: every row, every column's definition, each index's columns, the foreign keys
+    fn table_snapshot(connection: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+        let rows = |sql: &str| {
+            let mut statement = connection.prepare(sql).unwrap();
+            let width = statement.column_count();
+            statement
+                .query_map([], |row| {
+                    (0..width)
+                        .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let mut snapshot = rows(&format!("SELECT * FROM {table} ORDER BY rowid"));
+        snapshot.extend(rows(&format!("PRAGMA table_info('{table}')")));
+        snapshot.extend(rows(&format!("PRAGMA foreign_key_list('{table}')")));
+        for index in rows(&format!(
+            "SELECT name, \"unique\", origin, partial FROM pragma_index_list('{table}') ORDER BY name"
+        )) {
+            let rusqlite::types::Value::Text(name) = &index[0] else {
+                panic!("索引名不是文本 / an index name that is not text");
+            };
+            snapshot.push(index.clone());
+            snapshot.extend(rows(&format!("PRAGMA index_xinfo('{name}')")));
+        }
+        snapshot
+    }
+
+    // 删掉最新的一版以后再存，新版本拿到的是新编号：还停在旧版本 #N 的页面不会把另一份内容当成 #N 应用
+    // After the newest version is deleted, the next save gets a new id: a page still on the old #N cannot apply other
+    // content as #N
+    #[tokio::test]
+    async fn a_deleted_newest_version_id_is_never_given_again() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        let store = |message: &str| {
+            database.store_pending_config_version(
+                format!("sha-{message}"),
+                "{}".to_owned(),
+                message.to_owned(),
+                "admin".to_owned(),
+                1,
+                None,
+            )
+        };
+        assert_eq!(store("first").await.unwrap(), 1);
+        assert_eq!(store("second").await.unwrap(), 2);
+        assert!(database.delete_config_versions(vec![2]).await.unwrap());
+        assert_eq!(store("third").await.unwrap(), 3);
+    }
+
+    /// 第 5 版结构（第 1 到第 5 段迁移建出来的样子），每张表放几行；版本编号 3 删过，留着空洞
+    /// Schema 5 (as migrations 1 to 5 build it) with a few rows in every table; version id 3 was deleted and left a gap
+    const SCHEMA_5_WITH_ROWS: &str = r"
+        CREATE TABLE users (
+            id            INTEGER PRIMARY KEY,
+            username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at    INTEGER NOT NULL
+        );
+        CREATE TABLE sessions (
+            id          INTEGER PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash  TEXT NOT NULL UNIQUE,
+            csrf_hash   TEXT NOT NULL,
+            expires_at  INTEGER NOT NULL,
+            created_at  INTEGER NOT NULL
+        );
+        CREATE INDEX sessions_expiry_idx ON sessions(expires_at);
+        CREATE TABLE config_versions (
+            id         INTEGER PRIMARY KEY,
+            sha256     TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            message    TEXT NOT NULL,
+            actor      TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX config_versions_created_idx
+            ON config_versions(created_at DESC);
+        CREATE TABLE audit_events (
+            id         INTEGER PRIMARY KEY,
+            actor      TEXT,
+            action     TEXT NOT NULL,
+            detail     TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE app_settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX config_versions_sha_idx
+            ON config_versions(sha256, id DESC);
+        CREATE INDEX audit_events_created_idx
+            ON audit_events(created_at DESC, id DESC);
+        ALTER TABLE config_versions
+            ADD COLUMN apply_state TEXT NOT NULL DEFAULT 'applied';
+        ALTER TABLE config_versions
+            ADD COLUMN apply_error TEXT;
+        CREATE INDEX config_versions_apply_idx
+            ON config_versions(apply_state, id DESC);
+        CREATE TABLE metric_samples (
+            captured_at       INTEGER PRIMARY KEY,
+            kernel_started_at INTEGER NOT NULL,
+            requests_total    INTEGER NOT NULL
+        );
+        INSERT INTO users(id, username, password_hash, created_at)
+            VALUES(1, 'admin', 'hash', 10);
+        INSERT INTO sessions(id, user_id, token_hash, csrf_hash, expires_at, created_at)
+            VALUES(1, 1, 'token', 'csrf', 99, 11);
+        INSERT INTO config_versions(id, sha256, content, message, actor, created_at)
+            VALUES(1, 'sha-1', '{}', '初始配置', 'system', 12);
+        INSERT INTO config_versions(id, sha256, content, message, actor, created_at, apply_state)
+            VALUES(2, 'sha-2', '[1]', '改了上游', 'admin', 13, 'superseded');
+        INSERT INTO config_versions
+            VALUES(4, 'sha-4', '[2]', '没生效', 'admin', 14, 'failed', '端口被占用');
+        INSERT INTO audit_events(id, actor, action, detail, created_at)
+            VALUES(7, 'admin', 'config.save', '版本 #4', 14);
+        INSERT INTO app_settings VALUES('statistics_enabled', 'true', 15);
+        INSERT INTO metric_samples VALUES(16, 1, 300);
+        PRAGMA user_version = 5;
+";
+
+    // 从当前的第 5 版结构迁移：每张表的行、列、索引、外键原样保留（编号有空洞也不重排），迁移前留一份备份；
+    // 迁移以后删掉最新的一版再存，编号不再复用
+    // Migrating from the current schema 5: every table's rows, columns, indexes and foreign keys stay as they were (ids
+    // with a gap are not renumbered), with a backup taken first; deleting the newest version afterwards and saving again
+    // no longer reuses its id
+    #[tokio::test]
+    async fn migrates_v5_config_versions_so_ids_are_never_reused() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("panel.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA_5_WITH_ROWS).unwrap();
+        let tables = [
+            "users",
+            "sessions",
+            "config_versions",
+            "audit_events",
+            "app_settings",
+            "metric_samples",
+        ];
+        let before = tables.map(|table| table_snapshot(&connection, table));
+        drop(connection);
+
+        let database = Database::open(path.clone()).await.unwrap();
+        let migrated = Connection::open(&path).unwrap();
+        assert_eq!(tables.map(|table| table_snapshot(&migrated, table)), before);
+        assert_eq!(
+            migrated
+                .query_row("PRAGMA foreign_key_check", [], |_| Ok(()))
+                .optional()
+                .unwrap(),
+            None
+        );
+        drop(migrated);
+
+        assert!(database.delete_config_versions(vec![4]).await.unwrap());
+        let next = database
+            .store_config_version(
+                "sha-5".to_owned(),
+                "{}".to_owned(),
+                "迁移以后".to_owned(),
+                "admin".to_owned(),
+                17,
+            )
+            .await
+            .unwrap();
+        assert_eq!(next, 5, "the deleted newest id 4 is not given again");
+
+        let migrated = Connection::open(&path).unwrap();
+        let version: i64 = migrated
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        drop(migrated);
+        let backups = database_backups(directory.path());
+        assert_eq!(backups.len(), 1);
+        let backup = Connection::open(&backups[0]).unwrap();
+        assert_eq!(
+            backup
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            5
+        );
+        assert_eq!(table_snapshot(&backup, "config_versions"), before[2]);
+        drop(backup);
+
+        // 再打开一次不再迁移、不再备份，编号照旧往上走 / Opening again neither migrates nor backs up, and ids keep rising
+        let database = Database::open(path).await.unwrap();
+        assert_eq!(database_backups(directory.path()).len(), 1);
+        assert!(database.delete_config_versions(vec![5]).await.unwrap());
+        let next = database
+            .store_config_version(
+                "sha-6".to_owned(),
+                "{}".to_owned(),
+                "再打开以后".to_owned(),
+                "admin".to_owned(),
+                18,
+            )
+            .await
+            .unwrap();
+        assert_eq!(next, 6);
     }
 
     #[tokio::test]

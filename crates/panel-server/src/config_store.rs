@@ -14,8 +14,11 @@ use tokio::sync::Mutex;
 use crate::auth::unix_timestamp;
 use crate::db::{CONFIG_APPLY_FAILED, CONFIG_APPLY_PENDING, ConfigVersionSummary, Database};
 use crate::digest::sha256_hex;
+use crate::temporaries::sweep;
 
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
+/// 写配置文件时临时文件的前缀 / The prefix of the temporary file a config write goes through
+const TEMPORARY_PREFIX: &str = ".kixdns-panel-";
 // 「4 MiB」中间是不换行空格：手机上数字和单位不分两行 / A no-break space inside 「4 MiB」, so the number and its unit stay on one line on phones
 const CONFIG_TOO_LARGE: &str = "配置文件不能超过 4\u{a0}MiB";
 
@@ -74,6 +77,12 @@ impl ConfigStore {
     }
 
     pub async fn initialize_history(&self) -> anyhow::Result<()> {
+        // 启动时、写配置以前清掉上次写到一半留下的临时文件 / At start-up, before any write, clear the temporary files a
+        // write cut short left last time
+        let directory = config_directory(&self.path).to_path_buf();
+        tokio::task::spawn_blocking(move || sweep(&directory, &[TEMPORARY_PREFIX]))
+            .await
+            .context("清理配置临时文件的任务异常结束")?;
         if self.database.pending_config_version().await?.is_some() {
             // 待应用版本优先保留；启动时的正式文件只是上一份已生效配置。
             return Ok(());
@@ -133,6 +142,8 @@ impl ConfigStore {
             .map(|version| version.summary))
     }
 
+    /// 写正式文件，记成已生效的版本；在等的版本（待应用、没有生效的）不动 / Writes the formal file and records it as an
+    /// applied version; a version waiting (pending or refused) is left alone
     pub async fn save(
         &self,
         content: Value,
@@ -161,7 +172,34 @@ impl ConfigStore {
         if current.sha256 != expected_sha256 {
             return Err(ConfigError::Conflict);
         }
-        self.save_pending_locked(content, message, actor).await
+        self.save_pending_locked(content, message, actor, None)
+            .await
+    }
+
+    /// 把在等的版本（待应用或没有生效的）换成 `content`：另存成新的一版顶替它，备注、是谁存的、没有生效的原因都照旧，
+    /// 没有生效的还是没有生效。`waiting` 已经不是在等的那一版时冲突
+    /// Replaces the version waiting (pending or refused) with `content`: stored as a new version in its place, with its
+    /// note, author and reason for refusal, a refused one staying refused. A conflict when `waiting` is no longer the
+    /// version waiting
+    pub async fn save_waiting(
+        &self,
+        content: Value,
+        waiting: &ConfigVersionSummary,
+    ) -> Result<SaveResult, ConfigError> {
+        let _guard = self.write_lock.lock().await;
+        let current = self.database.pending_config_version().await?;
+        if current.map(|version| version.summary.id) != Some(waiting.id) {
+            return Err(ConfigError::Conflict);
+        }
+        let refused = (waiting.apply_state == CONFIG_APPLY_FAILED)
+            .then(|| waiting.apply_error.clone().unwrap_or_default());
+        self.save_pending_locked(
+            content,
+            waiting.message.clone(),
+            waiting.actor.clone(),
+            refused,
+        )
+        .await
     }
 
     /// 将指定待应用版本原子写入正式文件，但暂不改变历史状态。
@@ -206,15 +244,36 @@ impl ConfigStore {
         Ok(())
     }
 
-    /// 原子恢复正式配置文件，不新增历史版本。
-    pub async fn restore_formal(&self, content: Value) -> Result<(), ConfigError> {
-        validate_config_shape(&content)?;
-        let serialized = format_json(&content)?;
-        if serialized.len() > MAX_CONFIG_BYTES {
-            return Err(ConfigError::Invalid(CONFIG_TOO_LARGE.to_owned()));
-        }
+    /// 把正式文件原子地换回 `KixDNS` 正在用的那份（散列 `running_sha256`），字节一个不改、不重新排版，不新增历史版本。
+    /// 历史里没有那份时换回 `fallback` 读到时的原样。换回的是正在用的那份、不是写入前的文件：写进文件以后、换回以前
+    /// 面板停了，下一次写入前读到的文件已经是没被接受的那份
+    /// Atomically puts the formal file back to the one `KixDNS` runs (hash `running_sha256`), byte for byte and never
+    /// laid out again, without a new history version. When history has no such version, back to `fallback` exactly as it
+    /// was read. What goes back is the config in use, not the file before the write: had the panel stopped after writing
+    /// and before putting back, the file read before the next write would already be the refused one
+    pub async fn restore_formal(
+        &self,
+        running_sha256: &str,
+        fallback: &ConfigDocument,
+    ) -> Result<(), ConfigError> {
+        let _guard = self.write_lock.lock().await;
+        let running = match self
+            .database
+            .latest_config_version_id_by_sha256(running_sha256.to_owned())
+            .await?
+        {
+            Some(id) => self
+                .database
+                .get_config_version(id)
+                .await?
+                .map(|version| version.content),
+            None => None,
+        };
+        let bytes = running
+            .filter(|content| sha256(content.as_bytes()) == running_sha256)
+            .unwrap_or_else(|| fallback.raw.clone())
+            .into_bytes();
         let path = Arc::clone(&self.path);
-        let bytes = serialized.into_bytes();
         tokio::task::spawn_blocking(move || atomic_write(&path, &bytes))
             .await
             .context("写入配置任务异常结束")??;
@@ -337,6 +396,7 @@ impl ConfigStore {
         content: Value,
         message: String,
         actor: String,
+        refused: Option<String>,
     ) -> Result<SaveResult, ConfigError> {
         validate_config_shape(&content)?;
         let serialized = format_json(&content)?;
@@ -352,6 +412,7 @@ impl ConfigStore {
                 normalize_message(&message),
                 actor,
                 unix_timestamp(),
+                refused,
             )
             .await?;
         Ok(SaveResult { version_id, sha256 })
@@ -429,20 +490,24 @@ fn format_json(content: &Value) -> anyhow::Result<String> {
     Ok(output)
 }
 
+/// 配置文件所在的目录，临时文件也写在这里 / The config file's directory, where its temporary file is written too
+fn config_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Ok(metadata) = fs::symlink_metadata(path)
         && (metadata.file_type().is_symlink() || !metadata.is_file())
     {
         bail!("配置路径必须是普通文件，不能是符号链接");
     }
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+    let parent = config_directory(path);
     fs::create_dir_all(parent)
         .with_context(|| format!("创建配置目录失败：{}", parent.display()))?;
     let mut temporary = Builder::new()
-        .prefix(".kixdns-panel-")
+        .prefix(TEMPORARY_PREFIX)
         .tempfile_in(parent)
         .context("创建配置临时文件失败")?;
     if let Ok(metadata) = fs::metadata(path) {

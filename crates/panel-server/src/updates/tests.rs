@@ -1847,6 +1847,97 @@ async fn start_up_keeps_the_current_kernel_and_one_previous() {
     assert!(!fixture.versions_path.join(newest.directory_name()).exists());
 }
 
+/// 回退换到一半面板停了：程序已经换成上一个，指针还指着原来的。启动时按程序的摘要认出正在用的是哪个，原来的那个记成
+/// 上一个、留在本机；再回退一次就换回原来的
+/// A rollback cut short when the panel stopped: the binary is already the previous one while the pointer still names
+/// the original. Start-up recognises the kernel in use by the binary's digest and records the original as the previous
+/// one, kept on this host; rolling back once more returns to it
+#[tokio::test]
+async fn a_switch_cut_short_is_recognised_at_start_up() {
+    let fixture = switch_fixture().await;
+    std::fs::write(&fixture.binary_path, &fixture.target).unwrap();
+
+    fixture
+        .manager
+        .initialize_installed_version()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        fixture.manager.active_version().await.unwrap(),
+        Some(fixture.target_key.clone())
+    );
+    assert_eq!(
+        active_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
+    );
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(fixture.current_key.encoded())
+    );
+    for key in [&fixture.current_key, &fixture.target_key] {
+        assert!(fixture.versions_path.join(key.directory_name()).is_dir());
+    }
+    let host = FakeHost::new(true);
+    let restored = fixture
+        .manager
+        .rollback(&empty_config(), &host)
+        .await
+        .unwrap();
+    assert_eq!(restored.source_id, Some(42));
+    assert_eq!(
+        std::fs::read(&fixture.binary_path).unwrap(),
+        fixture.current
+    );
+}
+
+/// 旧安装包的主机（只有 `KIXDNS_INSTALLED_COMMIT`、没有包编号）换内核换到一半停了：启动不报错，认出正在用的是新内核
+/// A host from an old package (`KIXDNS_INSTALLED_COMMIT` and no package id) stopped halfway through a kernel switch:
+/// start-up does not fail, and recognises the new kernel as the one in use
+#[tokio::test]
+async fn an_old_package_host_starts_after_a_switch_cut_short() {
+    let directory = tempdir().unwrap();
+    let database = Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let settings = test_settings(directory.path());
+    let (binary_path, versions_path) =
+        (settings.binary_path.clone(), settings.versions_path.clone());
+    let manager = UpdateManager::new(
+        database.clone(),
+        UpdateSettings {
+            installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
+            ..settings
+        },
+    )
+    .unwrap();
+    // 旧包带的内核在第一次启动时记进了库存；之后更新到了 fork 的一版 / The old package's kernel was recorded at the
+    // first start; later it was updated to a fork release
+    std::fs::write(&binary_path, test_elf()).unwrap();
+    manager.initialize_installed_version().await.unwrap();
+    let (first, _) = store_fork_build(&versions_path, 77, TEST_VERSION);
+    let host = FakeHost::new(true);
+    manager
+        .update_locked(&first, Some(77), &empty_config(), &host)
+        .await
+        .unwrap();
+    // 再换下一版：程序换好了，还没记下指针就停了 / Then the next release: the binary is in place and the panel stopped
+    // before recording the pointer
+    let (second, binary) = store_fork_build(&versions_path, 78, "2026.10.14");
+    std::fs::write(&binary_path, &binary).unwrap();
+
+    manager.initialize_installed_version().await.unwrap();
+
+    assert_eq!(
+        manager.active_version().await.unwrap(),
+        Some(VersionKey::remote(&second).unwrap())
+    );
+    assert_eq!(
+        previous_setting(&database).await,
+        Some(VersionKey::remote(&first).unwrap().encoded())
+    );
+}
+
 #[tokio::test]
 async fn an_old_track_kernel_is_replaced_once_and_left_alone_after_a_rollback() {
     let fixture = switch_fixture().await;
