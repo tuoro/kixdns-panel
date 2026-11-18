@@ -156,6 +156,38 @@ choose_config_action
   ! external_backup_present || { printf '断言失败：没有备份时不能当成有\n' >&2; exit 1; }
 )
 
+# panel.env 说 KixDNS 归面板管，可它的 unit 已经换成跑别的程序（保留配置卸载后用户换上了自己的 KixDNS）：不再算面板的，
+# 整个保留。迁移来的主机恢复到一半（还有外部备份、unit 是放回去的原 unit）照旧算面板的，好把恢复做完。
+# panel.env says the KixDNS is the panel's, but its unit now runs another program (after a keep-config uninstall the user
+# put their own KixDNS in): it no longer counts as the panel's and is kept whole. A migrated host part way through a restore
+# (external backup still there, the unit is the original put back) still counts as the panel's, so the restore can finish.
+managed_by_unit() {
+  local exec_start=$1
+  local with_backup=$2
+  (
+    work="$(mktemp -d)"
+    trap 'rm -rf -- "${work}"' EXIT
+    PANEL_ENV="${work}/panel.env"
+    SYSTEMD_UNIT_DIRECTORY="${work}/units"
+    EXTERNAL_BACKUP="${work}/external-backup"
+    mkdir -p "${SYSTEMD_UNIT_DIRECTORY}"
+    printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_CONFIG=/etc/kixdns/pipeline.json\n' > "${PANEL_ENV}"
+    printf '[Service]\nExecStart=%s run --config /etc/kixdns/pipeline.json\n' "${exec_start}" > "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service"
+    if [[ ${with_backup} == true ]]; then
+      mkdir -p "${EXTERNAL_BACKUP}"
+      printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_BINARY=/usr/local/bin/kixdns\nKIXDNS_WAS_ACTIVE=true\nKIXDNS_WAS_ENABLED=true\n' > "${EXTERNAL_BACKUP}/install.env"
+    fi
+    KIXDNS_MANAGED=false
+    KIXDNS_SERVICE_UNIT=kixdns.service
+    HAS_EXTERNAL_BACKUP=false
+    load_settings
+    printf '%s\n' "${KIXDNS_MANAGED}"
+  )
+}
+assert_equals "$(managed_by_unit /usr/local/bin/kixdns false)" false "unit 换成跑别的程序以后，KixDNS 不能再当面板的删掉"
+assert_equals "$(managed_by_unit "${PANEL_STATE_DIRECTORY}/bin/kixdns" false)" true "unit 跑的还是面板的程序时照旧归面板管"
+assert_equals "$(managed_by_unit /usr/local/bin/kixdns true)" true "恢复到一半、还有外部备份时照旧归面板管，好把恢复做完"
+
 HAS_EXTERNAL_BACKUP=false
 CONFIG_ACTION=keep
 KIXDNS_MANAGED=false

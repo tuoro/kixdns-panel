@@ -231,6 +231,18 @@ load_settings() {
   if external_backup_present; then
     HAS_EXTERNAL_BACKUP=true
   fi
+  # panel.env 说归面板管，可它的 unit 已经换成跑别的程序（保留配置卸载后，用户换上了自己的 KixDNS）：它不再是面板的，
+  # 和不归面板管一样整个保留，不停、不删 unit、不删 /etc/kixdns 和 kixdns 账号。还有外部备份时不这样认：那是迁移来的主机
+  # 恢复到一半，unit 是放回去的原 unit，要照旧把恢复做完。
+  # panel.env says the panel's, but its unit now runs another program (after a keep-config uninstall the user put their own
+  # KixDNS in): it is no longer the panel's and is kept whole, as an unmanaged one is: not stopped, its unit, /etc/kixdns
+  # and the kixdns account not removed. Not so with an external backup still there: that is a migrated host part way
+  # through a restore, the unit is the original put back, and the restore must finish as before.
+  local unit_file="${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}"
+  if [[ ${KIXDNS_MANAGED} == true && ${HAS_EXTERNAL_BACKUP} == false && -f ${unit_file} ]] &&
+    ! unit_runs_managed_binary "${unit_file}"; then
+    KIXDNS_MANAGED=false
+  fi
 }
 
 # 迁移前原来的 KixDNS 的备份。以前重装会把卸载时留下的面板自带 KixDNS 也备份成「原来的」：它跑的是面板状态目录里的程序，

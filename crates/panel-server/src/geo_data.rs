@@ -510,7 +510,9 @@ impl GeoDataSchedule {
         match (self.interval_hours, self.last_attempt_at) {
             (None, _) => false,
             (Some(_), None) => true,
-            (Some(hours), Some(attempt)) => run_after(attempt, hours) <= now,
+            (Some(hours), Some(attempt)) => {
+                run_after(attempt, hours) <= now.saturating_add(DUE_SLACK_SECONDS)
+            }
         }
     }
 
@@ -526,6 +528,14 @@ impl GeoDataSchedule {
 }
 
 /// 上次试的时间加上间隔 / The last attempt plus the interval
+/// 到期时间比这一轮读到的钟晚不超过这么多秒，也算这一轮到期。一轮 15 分钟才看一次，每天的同一轮读钟的时刻差几毫秒，
+/// 碰上秒的边界就会差一秒；不留这点余地，这一秒会让它推迟整整一轮。提前一分钟跑对每天、每周的更新没有影响
+/// A run falling due at most this many seconds after the round's reading counts as due in this round. A round looks only
+/// every 15 minutes, and the same round on another day reads the clock a few milliseconds apart, which across a second
+/// boundary is one second; without this slack that second puts the run off a whole round. Running up to a minute early
+/// makes no difference to daily or weekly updates
+const DUE_SLACK_SECONDS: i64 = 60;
+
 fn run_after(attempt: i64, hours: u64) -> i64 {
     attempt.saturating_add(i64::try_from(hours.saturating_mul(3600)).unwrap_or(i64::MAX))
 }
@@ -1726,8 +1736,9 @@ mod tests {
         assert_eq!(unchanged.last_attempt_at, Some(1_000));
         assert_eq!(unchanged.last_success_at, Some(1_001));
         assert_eq!(unchanged.next_run_at, Some(87_400));
-        assert!(!unchanged.is_due(87_399));
-        assert!(unchanged.is_due(87_400));
+        // 到期前一分钟以内的那一轮就跑（DUE_SLACK_SECONDS） / The round within a minute before it falls due runs it (DUE_SLACK_SECONDS)
+        assert!(!unchanged.is_due(87_339));
+        assert!(unchanged.is_due(87_340));
 
         let disabled = manager.schedule().set_interval(None, 1_003).await.unwrap();
         assert_eq!(disabled.interval_hours, None);
@@ -1816,8 +1827,22 @@ mod tests {
         manager.schedule().mark_attempt(1_000).await.unwrap();
         let tried = manager.schedule().get(2_000).await.unwrap();
         assert_eq!(tried.next_run_at, Some(87_400));
-        assert!(!tried.is_due(87_399));
-        assert!(tried.is_due(87_400));
+        assert!(!tried.is_due(87_339));
+        assert!(tried.is_due(87_340));
+    }
+
+    /// 一轮 15 分钟才看一次：到期时间只比这一轮读到的钟晚一秒（读钟正好跨过秒的边界），这一轮照样跑，不推迟一整轮
+    /// A round looks only every 15 minutes: a run falling due a second after the round's reading (the reading just crossed
+    /// a second boundary) runs this round instead of waiting a whole round
+    #[test]
+    fn a_run_falling_due_a_second_after_the_rounds_reading_is_not_put_off() {
+        let schedule = super::GeoDataSchedule {
+            interval_hours: Some(24),
+            last_attempt_at: Some(1_000),
+            ..super::GeoDataSchedule::default()
+        };
+        assert!(schedule.is_due(87_399));
+        assert!(!schedule.is_due(80_000));
     }
 
     const BUILTIN_URL: &str =
