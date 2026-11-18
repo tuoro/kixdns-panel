@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { actionFieldErrors, GEOSITE_PREFIX_ERROR, isRequiredFieldError, matcherFieldErrors, validDnsName } from './field-validation'
+import { matcherHint } from './matcher-hints'
+import { MATCHER_DEFINITIONS } from './schema'
+import type { ActionConfig, MatcherConfig } from './types'
 
 describe('配置字段共享校验', () => {
   it('按条件的实际字段检查必填值，错误说出字段名，并保留未知类型', () => {
@@ -82,4 +85,61 @@ describe('配置字段共享校验', () => {
     expect(actionFieldErrors({ type: 'future_action', future_field: 'keep' }, 'default')).toEqual({})
   })
 
+})
+
+// 高级规则、高级入口里直接写内核的字段：内核整份配置不收的写法，这里当场标出来，读法和条件表单一样（config-model/grammar.ts）
+// Advanced rules and entries write kernel fields directly: what makes the kernel refuse the whole config is marked at once, by the same reading
+// as the condition form (config-model/grammar.ts)
+describe('高级规则的字段照内核的读法查', () => {
+  it.each([
+    ['client_ip 写了两个网段', { type: 'client_ip', operator: 'and', cidr: '10.0.0.0/8,192.168.0.0/16' }, 'request', 'cidr'],
+    ['入口的 client_ip 没写前缀', { type: 'client_ip', operator: 'and', cidr: '10.0.0.1' }, 'selector', 'cidr'],
+    ['回答的网段前缀 33', { type: 'response_answer_ip', operator: 'and', cidr: '0.0.0.0/32, 10.0.0.0/33' }, 'response', 'cidr'],
+    ['查询类型 HTTPS', { type: 'qtype', operator: 'and', value: 'HTTPS' }, 'request', 'value'],
+    ['回答的记录类型 ANY', { type: 'response_type', operator: 'and', value: 'ANY' }, 'response', 'value'],
+    ['查询类别 ANY', { type: 'qclass', operator: 'and', value: 'ANY' }, 'selector', 'value'],
+    ['响应码 NOTAUTH', { type: 'response_rcode', operator: 'and', value: 'NOTAUTH' }, 'response', 'value'],
+    ['域名正则带断言', { type: 'domain_regex', operator: 'and', value: '(?=ads)' }, 'request', 'value'],
+    ['TXT 正则超过 1000 字节', { type: 'response_txt_content', operator: 'and', mode: 'regex', value: 'a'.repeat(1001) }, 'response', 'value'],
+  ] as const)('条件：%s', (_, matcher, scope, field) => {
+    expect(Object.keys(matcherFieldErrors({ ...matcher }, scope))).toEqual([field])
+  })
+
+  it('内核认的条件照样不报', () => {
+    for (const [matcher, scope] of [
+      [{ type: 'client_ip', operator: 'and', cidr: '10.0.0.0/8' }, 'request'], [{ type: 'response_answer_ip', operator: 'and', cidr: '0.0.0.0/32, 240.0.0.0/4' }, 'response'],
+      [{ type: 'qtype', operator: 'and', value: 'aaaa' }, 'request'], [{ type: 'response_rcode', operator: 'and', value: 'OTHER' }, 'response'],
+      [{ type: 'response_txt_content', operator: 'and', mode: 'exact', value: 'a'.repeat(1001) }, 'response'], [{ type: 'domain_regex', operator: 'and', value: '(?P<x>ads)\\.' }, 'request'],
+    ] as const) expect(matcherFieldErrors({ ...matcher }, scope)).toEqual({})
+  })
+
+  it.each([
+    ['固定 IP 有前导零', { type: 'static_ip_response', ip: '01.2.3.4' }, 'ip'],
+    ['固定 IP 末尾多一个逗号', { type: 'static_ip_response', ip: '1.2.3.4,' }, 'ip'],
+    ['TXT 一段超过 255 字节', { type: 'static_txt_response', text: ['ok', 'a'.repeat(256)] }, 'text'],
+    ['改写的 TXT 超过 255 字节', { type: 'replace_txt_response', text: '中'.repeat(86) }, 'text'],
+    ['UDP 上游没写端口', { type: 'forward', upstream: 'https://dns.example/dns-query, 223.5.5.5' }, 'upstream'],
+    ['TCP 转发的上游没写端口', { type: 'forward', upstream: 'dns.example', transport: 'tcp' }, 'upstream'],
+    ['DoQ 用 IP 没写 sni', { type: 'forward', upstream: 'quic://223.5.5.5' }, 'upstream'],
+  ] as [string, ActionConfig, string][])('动作：%s', (_, action, field) => {
+    expect(Object.keys(actionFieldErrors({ ...action }, 'default'))).toEqual([field])
+  })
+
+  it('字段旁边的例子照抄进去，内核也认', () => {
+    for (const scope of ['selector', 'request', 'response'] as const) {
+      for (const def of MATCHER_DEFINITIONS[scope]) {
+        const { example } = matcherHint({ type: def.value, operator: 'and' })
+        const matcher: MatcherConfig = { type: def.value, operator: 'and', ...(def.fields.includes('cidr') ? { cidr: example } : {}), ...(def.fields.includes('value') ? { value: example } : {}), ...(def.fields.includes('country_codes') ? { country_codes: example.split(',').map((c) => c.trim()) } : {}) }
+        expect(matcherFieldErrors(matcher, scope), `${scope} ${def.value}`).toEqual({})
+      }
+    }
+  })
+
+  it('内核认的动作照样不报，上游的说法带上是哪个地址', () => {
+    for (const action of [
+      { type: 'static_ip_response', ip: '1.2.3.4, ::1' }, { type: 'static_txt_response', text: ['中'.repeat(85)] }, { type: 'forward', upstream: '223.5.5.5:53, https://dns.example/dns-query' },
+      { type: 'forward', upstream: 'dns.example:53', transport: 'tcp' }, { type: 'forward', upstream: 'quic://223.5.5.5?sni=dns.alidns.com' },
+    ]) expect(actionFieldErrors({ ...action }, 'default')).toEqual({})
+    expect(actionFieldErrors({ type: 'forward', upstream: '223.5.5.5' }, 'default').upstream).toBe('上游 223.5.5.5：UDP 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ')
+  })
 })

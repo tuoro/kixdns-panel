@@ -162,7 +162,16 @@ sudo sed -i 's/^KIXDNS_PANEL_SECURE_COOKIE=.*/KIXDNS_PANEL_SECURE_COOKIE=true/' 
 sudo systemctl restart kixdns-panel.service
 ```
 
-默认只信任回环地址（`127.0.0.1/32,::1/128`）传来的 `X-Forwarded-For`。代理在容器或其他主机上时，把它的精确 CIDR 写入 `KIXDNS_TRUSTED_PROXIES`，否则限流会把所有请求算到代理地址上。
+面板默认不信任任何代理传来的 `X-Forwarded-For`：没有反向代理时，别人自己写的这个头不能绕过登录限流。放在反向代理后面时，要把代理的地址写进 `KIXDNS_TRUSTED_PROXIES`，否则登录限流会把所有人算在代理一个地址上，几次输错就锁住所有经代理登录的人。代理就在本机时：
+
+```bash
+sudo sed -i 's|^KIXDNS_TRUSTED_PROXIES=.*|KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128|' /etc/kixdns-panel/panel.env
+grep -q '^KIXDNS_TRUSTED_PROXIES=' /etc/kixdns-panel/panel.env || \
+  echo 'KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' | sudo tee -a /etc/kixdns-panel/panel.env
+sudo systemctl restart kixdns-panel.service
+```
+
+代理在容器或其他主机上时，写它的精确 CIDR。v4.3.4 及更早的面板默认信任回环地址；升级以后没写这一项、又在反向代理后面的，面板会在运行日志里提醒一次。
 
 ## 权限模型
 

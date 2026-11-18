@@ -4,7 +4,7 @@ import { Info, Plus, Trash2, X } from '@lucide/vue'
 import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
-import { detectProtocol, PROTOCOL_LABEL, POLLUTED_CIDRS, type Ecs, type Protocol, type UpstreamGroup } from '../config-model/model'
+import { addressProblem, detectProtocol, ecsProblem, PROTOCOL_LABEL, POLLUTED_CIDRS, withDefaultPort, type Ecs, type Protocol, type UpstreamGroup } from '../config-model/model'
 import { useConfirm } from '../composables/useConfirm'
 import { draftGeneration, groupUsers, model, trackDialogEdits } from './store'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
@@ -19,13 +19,17 @@ const emit = defineEmits<{ close: []; saved: [group: UpstreamGroup, isNew: boole
 const original = props.groupId ? model.groups.find((g) => g.id === props.groupId) ?? null : null
 const draft = reactive<UpstreamGroup>(original ? JSON.parse(JSON.stringify(original)) as UpstreamGroup : { id: `u${Date.now().toString(36)}`, name: '', addresses: [{ address: '', protocol: 'auto' }], ecs: null, fallback: { group: '', onError: false, onPolluted: false } })
 // Esc、点遮罩、关闭、取消都先对照一下：改过就问一句，和规则编辑一样 / Esc, a scrim tap, × and 取消 compare first: ask if anything changed, as the rule editor does
-// 按「完成」会写进去的样子比较：空地址、首尾空格、关着的备用组里留的值都不算改过 / Compared as 完成 would write it: empty addresses, surrounding spaces and values left in a switched-off fallback do not count as edits
-const shape = (g: UpstreamGroup): string => JSON.stringify({
+// 按「完成」会写进去的样子：去掉空地址和首尾空格，没写端口的 UDP、TCP 地址补上 53，关着的备用组里留的值清掉
+// As 完成 writes it: empty addresses and surrounding spaces gone, a UDP or TCP address without a port given 53, values left in a switched-off
+// fallback cleared
+const written = (g: UpstreamGroup): UpstreamGroup => ({
   ...g,
   name: g.name.trim(),
-  addresses: g.addresses.filter((a) => a.address.trim()).map((a) => ({ ...a, address: a.address.trim() })),
+  addresses: g.addresses.filter((a) => a.address.trim()).map((a) => withDefaultPort({ ...a, address: a.address.trim() })),
   fallback: g.fallback.onError || g.fallback.onPolluted ? g.fallback : { group: '', onError: false, onPolluted: false },
 })
+// 按写进去的样子比较：上面这些差别都不算改过 / Compared as written: none of the differences above count as edits
+const shape = (g: UpstreamGroup): string => JSON.stringify(written(g))
 let initial = shape(draft)
 const edited = (): boolean => shape(draft) !== initial
 // 抽屉开着、改过时离开页面或刷新也先问 / With the drawer open and edited, leaving the page or reloading asks first too
@@ -80,19 +84,21 @@ const problems = computed(() => {
   if (!draft.name.trim()) out.push('组要有名字')
   else if (model.groups.some((g) => g.id !== draft.id && g.name === draft.name.trim())) out.push('已经有同名的组')
   if (!draft.addresses.some((a) => a.address.trim())) out.push('至少填一个地址')
-  if (draft.ecs?.mode === 'static' && !/^[\d.:a-f]+\/\d{1,3}$/i.test(draft.ecs.subnet.trim())) out.push('固定子网写成 203.0.113.0/24 这样')
+  // 每个地址照内核读一遍：前缀、UDP 要 IP、端口、DoQ 的 sni…… / Each address read as the kernel reads it: the prefix, UDP's IP, the port, DoQ's sni…
+  draft.addresses.forEach((a, i) => { const p = a.address.trim() ? addressProblem(a) : null; if (p) out.push(`第 ${i + 1} 个地址${p}`) })
+  const ecs = ecsProblem(draft.ecs)
+  if (ecs) out.push(ecs)
   if (fallbackOn.value && !draft.fallback.group) out.push('选一个备用组')
   return out
 })
 
 function done(): void {
   if (problems.value.length) { showErrors.value = true; return }
-  // 没改过就只是关上，不提示「已更新」 / Unchanged: just close, no 已更新 toast
-  if (original && !edited()) { emit('close'); return }
-  draft.name = draft.name.trim()
-  draft.addresses = draft.addresses.filter((a) => a.address.trim()).map((a) => ({ ...a, address: a.address.trim() }))
-  if (!fallbackOn.value) draft.fallback = { group: '', onError: false, onPolluted: false }
-  const saved = JSON.parse(JSON.stringify(draft)) as UpstreamGroup
+  // 写进去和原来一样就只是关上，不提示「已更新」。按写进去的样子比：旧配置里没写端口的地址，这里没动也要补上 53 写回去
+  // When what would be written equals the original, just close with no 已更新 toast. Compared as written: an address an older config left
+  // without a port is given 53 and written back even when nothing was touched here
+  if (original && shape(draft) === JSON.stringify(original)) { emit('close'); return }
+  const saved = JSON.parse(JSON.stringify(written(draft))) as UpstreamGroup
   // 按 id 找回这个组再写：草稿被整份换过时手里的对象已经不在列表里，按对象找会写到别的组上 / Find the group by id before writing: if the draft was replaced the held object is no longer in the list, and finding it by object would write over another group
   const at = original ? model.groups.findIndex((g) => g.id === original.id) : -1
   if (original && at < 0) { emit('close'); return }
@@ -125,13 +131,13 @@ function remove(): void {
             <li v-for="(a, i) in draft.addresses" :key="i" class="addr">
               <!-- 手机上每个地址一行小标题，删除放在标题右端，输入框都占满整宽 / On phones each address gets a small header with remove at its right end, so every field is full width -->
               <div class="addr__head"><span>地址 {{ i + 1 }}</span><button class="ui-icon-btn ui-icon-btn--sm" type="button" :aria-label="`删除第 ${i + 1} 个地址`" title="删除地址" :disabled="draft.addresses.length === 1" @click="draft.addresses.splice(i, 1)"><Trash2 :size="16" /></button></div>
-              <label class="ui-input addr__value"><input v-model="a.address" :aria-label="`第 ${i + 1} 个地址`" placeholder="https://dns.example/dns-query 或 223.5.5.5" autocapitalize="off" spellcheck="false"></label>
+              <label class="ui-input addr__value"><input v-model="a.address" :aria-label="`第 ${i + 1} 个地址`" :aria-invalid="(showErrors && Boolean(a.address.trim() && addressProblem(a))) || undefined" placeholder="https://dns.example/dns-query 或 223.5.5.5" autocapitalize="off" spellcheck="false"></label>
               <UiSelect v-model="a.protocol" class="addr__proto" :options="protocolOptions(a.address)" :label="`第 ${i + 1} 个地址的协议`" />
               <button class="ui-icon-btn addr__x" type="button" :aria-label="`删除第 ${i + 1} 个地址`" title="删除地址" :disabled="draft.addresses.length === 1" @click="draft.addresses.splice(i, 1)"><Trash2 :size="16" /></button>
             </li>
           </ul>
           <button class="ui-btn ui-btn--text ui-btn--sm addrs__add" type="button" @click="draft.addresses.push({ address: '', protocol: 'auto' })"><Plus :size="14" aria-hidden="true" />添加地址</button>
-          <small class="pfield__hint">同时问组里所有地址，用最先回来的回答。协议默认按地址前缀认：https:// 是 DoH，tls:// 是 DoT，quic:// 是 DoQ，没写就是 UDP。</small>
+          <small class="pfield__hint">同时问组里所有地址，用最先回来的回答。协议默认按地址前缀认：https:// 是 DoH，tls:// 是 DoT，quic:// 是 DoQ，没写就是 UDP。UDP、TCP 没写端口时用 53。</small>
         </div>
 
         <div class="pfield">

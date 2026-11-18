@@ -1,4 +1,4 @@
-import { conditionsText, ecsText, fallbackSentence, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, rawMatchersText, remedySentence, responseConditionText, withShi, type Blocklists, type Model, type Rule, type Subscription, type UpstreamGroup, ruleTitle } from './model'
+import { checkSentence, conditionsText, ecsText, fallbackSentence, LOG_LEVEL_NAME, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, rawMatchersText, type Blocklists, type Model, type Rule, type Subscription, type UpstreamGroup, ruleTitle } from './model'
 import { SETTING_SECTIONS, settingName, type SettingField } from '../config-editor/schema'
 import { normalUrl, shortName } from './blocklist'
 
@@ -34,17 +34,37 @@ function rawSummary(r: Rule): string {
   return `${first ? rawMatchersText(first.matchers, first.matcher_operator) : '没有内核规则'}${raw.length > 1 ? `，另有 ${raw.length - 1} 条内核规则` : ''}（按内核写法保留）`
 }
 // 对比里写页面上的叫法，不写内核取值（debug、zero） / The diff uses the page's words, not kernel values (debug, zero)
-const LEVEL_NAME: Record<string, string> = { trace: '跟踪', debug: '调试', info: '信息', warn: '警告', error: '错误' }
 const BLOCK_NAME: Record<string, string> = { NXDOMAIN: 'NXDOMAIN', REFUSED: 'REFUSED', zero: '空地址' }
+/**
+ * 比较规则时只看看得见、会写进配置的部分：改动时间、条件的内部编号、关着的日志的级别、没打开的回答后检查里留着的内容都不算。保存条数改了几处、
+ * 「改了哪些」认哪条规则改过，都按它
+ * Rules compare by what is shown and written: the edit time, condition ids, the level of a log that is off and whatever an unused response check
+ * still holds do not count. The save bar's count and the review's sense of which rules changed both go by it
+ */
+export function ruleShape(rule: Rule): string {
+  const plain = <C extends { id: number }>(c: C) => ({ ...c, id: 0 })
+  // 客户端子网和回答后检查只在交给上游组时写进配置；别的结果下留着的值不算 / Client subnet and the response check are written only when the rule hands off to an upstream group; values left behind under other outcomes do not count
+  const forwards = rule.outcome.type === 'upstream'
+  return JSON.stringify({
+    ...rule,
+    edited: '',
+    conditions: rule.conditions.map((group) => group.map(plain)),
+    log: rule.log.enabled ? rule.log : { enabled: false },
+    ecs: forwards ? rule.ecs : 'inherit',
+    response: !forwards ? { mode: 'inherit' } : rule.response.mode === 'custom' ? { ...rule.response, conditions: rule.response.conditions.map(plain) } : { mode: rule.response.mode },
+  })
+}
+// 「改了哪些」把每个值都写出来：列表里「a、b 等 5 个」的写法看不出后面几个改了 / The review writes every value: the list's 「a、b 等 5 个」 hides a change
+// among the later ones
 function ruleFacts(m: Model, r: Rule): Record<string, string> {
   if (r.raw) return { 高级规则: rawSummary(r), 状态: r.enabled ? '启用' : '已停用', ...(r.note ? { 备注: r.note } : {}) }
-  const facts: Record<string, string> = { 条件: conditionsText(r.conditions), 结果: outcomeSentence(m, r.outcome), 状态: r.enabled ? '启用' : '已停用' }
-  if (r.log.enabled) facts.日志 = `记录（${LEVEL_NAME[r.log.level] ?? r.log.level}）`
+  const facts: Record<string, string> = { 条件: conditionsText(r.conditions, { full: true }), 结果: outcomeSentence(m, r.outcome), 状态: r.enabled ? '启用' : '已停用' }
+  if (r.log.enabled) facts.日志 = `记录（${LOG_LEVEL_NAME[r.log.level] ?? r.log.level}）`
   // 客户端子网和回答后检查只在交给上游组时生效，别的结果下不列 / Client subnet and the response check apply only when handing off to an upstream group, so other outcomes do not list them
   const forwards = r.outcome.type === 'upstream'
   if (forwards && r.ecs !== 'inherit') facts.客户端子网 = ecsText(r.ecs)
   if (forwards && r.response.mode === 'off') facts.回答后检查 = '不检查'
-  if (forwards && r.response.mode === 'custom') facts.回答后检查 = `${withShi(r.response.conditions.map(responseConditionText).join(r.response.match === 'all' ? ' 且 ' : '，或 '))}${remedySentence(m, r.response.then)}${r.response.otherwise.type === 'none' ? '' : `，否则${remedySentence(m, r.response.otherwise)}`}`
+  if (forwards && r.response.mode === 'custom') facts.回答后检查 = checkSentence(m, r.response, { full: true })
   if (r.note) facts.备注 = r.note
   return facts
 }
@@ -69,7 +89,7 @@ function changed(a: Record<string, string>, b: Record<string, string>): DiffLine
  * 真正挪过的那几条：两边共有的规则按先后排，最长的一段相同顺序之外的才算挪过。只挪了一条时只报那一条，不把被它顶开的都算上
  * The rules actually moved: of the rules on both sides, those outside the longest run kept in the same order. Moving one rule reports that one, not every rule it pushed along
  */
-function movedIds(a: Rule[], b: Rule[]): Set<number> {
+export function movedIds(a: Rule[], b: Rule[]): Set<number> {
   const before = a.filter((x) => b.some((y) => y.id === x.id)).map((x) => x.id)
   const after = b.filter((x) => a.some((y) => y.id === x.id)).map((x) => x.id)
   const n = before.length
@@ -92,8 +112,16 @@ function listDiff(blocks: DiffBlock[], now: Model, then: Model, a: Rule[], b: Ru
     const lines = [...(old.name !== r.name ? [{ sign: '-' as const, text: `名称：${old.name || '（没有名字）'}` }, { sign: '+' as const, text: `名称：${r.name || '（没有名字）'}` }] : []), ...changed(ruleFacts(now, old), ruleFacts(then, r))]
     // 内核写法改了、读出来的条件却一样（比如只改了动作）：照样列出来，说明是写法变了 / The kernel rules changed but read the same (say only an action changed): still listed, saying the wording changed
     if (old.raw && r.raw && JSON.stringify(old.raw) !== JSON.stringify(r.raw) && rawSummary(old) === rawSummary(r)) lines.push({ sign: '-', text: `高级规则：${rawSummary(old)}` }, { sign: '+', text: `高级规则：${rawSummary(r)}，内核写法有改动` })
-    if (lines.length) blocks.push({ kind: '改了', title: `${where}规则「${ruleTitle(r)}」`, lines })
-    if (moved.has(r.id) && !lines.length) blocks.push({ kind: '移动', title: `${where}规则「${ruleTitle(r)}」`, lines: [], note: `从第 ${a.indexOf(old) + 1} 条移到第 ${i + 1} 条` })
+    // 保存条按 ruleShape 数，这里也按它认：写进配置的样子变了、读出来却一样（几个 IP 之间换了写法、值换了先后），照样列一块说明写法变了；
+    // 挪过又改过的一条是一块，块里说从哪挪到哪。所以只改规则时，保存条的处数就是这里的块数
+    // The save bar counts by ruleShape and so does this: a written shape that changed but reads the same (the separators between IPs, values
+    // reordered) still gets a block saying the wording changed; a rule both moved and edited is one block that says where it moved. So with rule
+    // edits only, the save bar's count is this block count
+    const reworded = !lines.length && ruleShape(old) !== ruleShape(r)
+    const notes = [...(moved.has(r.id) ? [`从第 ${a.indexOf(old) + 1} 条移到第 ${i + 1} 条`] : []), ...(reworded ? ['写法有改动，读出来和原来一样'] : [])]
+    const note = notes.length ? { note: notes.join('；') } : {}
+    if (lines.length || reworded) blocks.push({ kind: '改了', title: `${where}规则「${ruleTitle(r)}」`, lines, ...note })
+    else if (moved.has(r.id)) blocks.push({ kind: '移动', title: `${where}规则「${ruleTitle(r)}」`, lines: [], ...note })
   }
 }
 

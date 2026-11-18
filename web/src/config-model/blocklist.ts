@@ -1,3 +1,4 @@
+import { kernelRegexOk } from './grammar'
 import type { KMatcher } from './kernel'
 
 // 拦截列表：AdGuard、Adblock 语法和 hosts 文件里 DNS 用得上的那部分，写法照 https://adguard-dns.io/kb/general/dns-filtering-syntax/。
@@ -167,17 +168,6 @@ function parsePattern(pattern: string): Match | Skip {
   // 带网址路径的（`||example.com/ads.js`）只对浏览器有用：DNS 查询里没有路径 / One with a URL path (`||example.com/ads.js`) is for browsers only: a DNS query carries no path
   if (regex === null) return { reason: lower.includes('/') ? 'url-path' : 'unreadable' }
   return { kind: 'regex', value: regex }
-}
-
-/** 内核按 Rust 的正则读：前后断言、反向引用这些写法它不认 / The kernel reads Rust regex syntax, which has no lookaround or backreferences */
-function kernelRegexOk(regex: string): boolean {
-  if (/\(\?<?[=!]|\\[1-9]|\\k</.test(regex)) return false
-  try {
-    new RegExp(regex.replace(/^\(\?i\)/, ''))
-    return true
-  } catch {
-    return false
-  }
 }
 
 /** AdGuard 的规则不分大小写，内核拿小写的域名去比：写了大写字母（转义里的不算）的正则加上 `(?i)` / AdGuard rules ignore case and the kernel compares lower-cased names, so a regex with a capital letter (outside escapes) gets `(?i)` */

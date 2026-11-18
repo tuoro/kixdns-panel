@@ -6,7 +6,8 @@ import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
-import { isDomain, isIp, mappingIsIp, splitList, type Mapping } from '../config-model/model'
+import { isCnameTarget, isTtl, TTL_PROBLEM } from '../config-model/grammar'
+import { isDomain, isIp, mappingDomain, mappingIsIp, splitList, type Mapping } from '../config-model/model'
 import { useNarrowDesktop, usePhone } from './phone'
 import { changedMappingIds, draftGeneration, model, newId, trackDialogEdits } from './store'
 import { canCname } from './useConfigDocument'
@@ -26,21 +27,25 @@ function targetProblem(target: string): string | null {
   const t = target.trim()
   if (!t) return '填要回答的 IP 或域名'
   if (splitList(t).every(isIp)) return null
-  if (isDomain(t)) return canCname.value ? null : '当前内核不支持 CNAME 回答，这里只能写 IP'
+  if (isCnameTarget(t)) return canCname.value ? null : '当前内核不支持 CNAME 回答，这里只能写 IP'
   return '回答写成 IP（几个用逗号隔开）或一个域名'
 }
+// 映射连同子域名，*. 写不写一样：存的是去掉 *. 的域名（写进内核的后缀不能带它），和条件里的「属于」一样
+// A mapping covers subdomains, so *. changes nothing: the domain is kept without it (the suffix written to the kernel cannot carry it), as 属于
+// in a condition
+const domainOf = (domain: string): string => mappingDomain({ domain }).toLowerCase()
 function problem(domain: string, target: string, self: number | null): string | null {
-  const d = domain.trim().toLowerCase()
+  const d = domainOf(domain)
   if (!d) return '填要映射的域名'
   if (!isDomain(d)) return '域名写得不对'
-  if (model.mappings.some((r) => r.id !== self && r.domain.toLowerCase() === d)) return `${d} 已经有映射了`
+  if (model.mappings.some((r) => r.id !== self && mappingDomain(r).toLowerCase() === d)) return `${d} 已经有映射了`
   return targetProblem(target)
 }
 function submit(): void {
   const p = problem(add.domain, add.target, null)
   if (p) { addError.value = p; return }
   // 加在最后：从上往下第一条命中的生效，后加的不抢前面的 / Appended: the first match wins, so a new row never overrides earlier ones
-  const row = { id: newId(), domain: add.domain.trim().toLowerCase(), target: add.target.trim(), ttl: null, enabled: true }
+  const row = { id: newId(), domain: domainOf(add.domain), target: add.target.trim(), ttl: null, enabled: true }
   model.mappings.push(row)
   void nextTick(() => { const el = document.querySelector<HTMLElement>(`[data-rw="${row.id}"]`); el?.scrollIntoView({ block: 'nearest' }); el?.classList.add('is-fresh'); setTimeout(() => el?.classList.remove('is-fresh'), 1600) })
   add.domain = ''
@@ -88,9 +93,11 @@ watch(draftGeneration, () => {
   Object.assign(editingFrom, fields(row))
 })
 function commit(r: Mapping): void {
-  const p = problem(editing.domain, editing.target, r.id)
+  const ttl = editing.ttl === '' ? null : Number(editing.ttl)
+  // IP 回答没有 TTL 框（内核固定 300 秒），框里留着的数不算 / An IP answer has no TTL box (the kernel fixes 300), so a number left in it does not count
+  const p = problem(editing.domain, editing.target, r.id) ?? (ttl !== null && !splitList(editing.target).every(isIp) && !isTtl(ttl) ? TTL_PROBLEM : null)
   if (p) { editing.error = p; return }
-  Object.assign(r, { domain: editing.domain.trim().toLowerCase(), target: editing.target.trim(), ttl: editing.ttl === '' ? null : Number(editing.ttl) })
+  Object.assign(r, { domain: domainOf(editing.domain), target: editing.target.trim(), ttl })
   editing.id = -1
 }
 const rowMenu = (r: Mapping) => {
@@ -136,8 +143,8 @@ const parsed = computed(() => importText.value.split('\n').map((line) => line.re
   const b = rest.join(' ')
   const [domain, target] = isIp(a) ? [b.split(/\s+/)[0] ?? '', a] : [a, b]
   const ttl = ttlText === null ? null : Number(ttlText)
-  const bad = ttl !== null && splitList(target).every(isIp) ? 'IP 回答的 TTL 固定 300 秒，去掉最后的数字' : null
-  return { domain: domain.toLowerCase(), target, ttl, problem: problem(domain, target, null) ?? bad }
+  const bad = ttl === null ? null : splitList(target).every(isIp) ? 'IP 回答的 TTL 固定 300 秒，去掉最后的数字' : isTtl(ttl) ? null : TTL_PROBLEM
+  return { domain: domainOf(domain), target, ttl, problem: problem(domain, target, null) ?? bad }
 }))
 const importable = computed(() => parsed.value.filter((p) => !p.problem))
 function runImport(): void {
