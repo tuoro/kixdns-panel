@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { importKernel } from './importer'
-import { compile } from './model'
+import { compile, type Model } from './model'
 import { behaviourCheck, type KConfigLike } from './testing/kernel-sim'
 import { demoModel, LEGACY_DEMO, LEGACY_MESSY, LEGACY_TEMPLATES, sampleModel } from './testing/samples'
 
@@ -106,5 +106,40 @@ describe('导入说明说清上游组从哪来', () => {
     const text = importKernel(cfg as never).notes.map((n) => n.text).join('\n')
     expect(text).not.toContain('从规则里的转发地址')
     expect(text).toContain('配置里没写默认上游，按 KixDNS 的默认 1.1.1.1:53 建了上游组')
+  })
+})
+
+describe('读出来的编号不让 Pipeline 撞名 / ids read back never make two pipelines of one name', () => {
+  // 自带转发的规则编出来有自己的 rule-编号 Pipeline：配置里手写了一个同名的（这里读成上游组）时，新读出来的规则拿到这个编号就编出两个同名的，
+  // 内核整份配置都不收
+  // A rule with its own forward compiles to a pipeline rule-<id>: when the config holds a hand-written one of that name (read as an upstream group
+  // here), a rule read with that id compiles to two of one name, and the kernel refuses the whole config
+  const cfg = (rules: unknown[]) => ({ version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }] as unknown[], pipelines: [{ id: 'main', rules }] as unknown[] })
+  // 读之前先读一份只有一条规则的，看下一个编号是几，接下来读的规则编号就在它后面几个之内；再往配置里手写这之后 50 个编号的 rule-编号（读成上游组）
+  // Before reading, a one-rule config learns the next id, and the rules read next take ids within a few after it; the config then gains
+  // hand-written rule-<id> pipelines for the 50 ids from there (read as upstream groups)
+  function readAmongHandWritten(read: ReturnType<typeof cfg>) {
+    const probe = importKernel(cfg([{ name: 'p', matchers: [{ type: 'domain_suffix', value: 'p.example' }], actions: [{ type: 'deny' }] }]) as never).model
+    const next = Math.max(...probe.rules.flatMap((r) => [r.id, ...r.conditions.flat().map((c) => c.id)])) + 1
+    for (let id = next; id < next + 50; id++) read.pipelines.push({ id: `rule-${id}`, rules: [{ name: `rule-${id}`, matchers: [], actions: [{ type: 'forward', upstream: '8.8.8.8:53' }] }] })
+    const { model } = importKernel(read as never)
+    expect(model.groups.filter((g) => g.pipelineId?.startsWith('rule-'))).toHaveLength(50)
+    return model
+  }
+  const repeated = (m: Model) => { const ids = compile(m).pipelines.map((p) => p.id); return ids.filter((id, i) => ids.indexOf(id) !== i) }
+
+  it('配置里手写了几个 rule-编号 的 Pipeline：读出来、自带回答检查的转发规则不用这些编号', () => {
+    const model = readAmongHandWritten(cfg([{ name: 'checked', matchers: [{ type: 'domain_suffix', value: 'c.example' }], actions: [{ type: 'forward', upstream: '9.9.9.9:53' }], response_matchers: [{ type: 'response_rcode', value: 'NXDOMAIN' }], response_actions_on_match: [{ type: 'deny' }] }]))
+    expect(repeated(model)).toEqual([])
+  })
+
+  it('配置里手写了几个 rule-编号 的 Pipeline：入口读成的规则不用这些编号，以后单独设子网也不撞名', () => {
+    // 进上游组的入口读成主列表最前面的规则 / An entry into an upstream group reads as a rule at the head of the main list
+    const read = cfg([])
+    read.pipeline_select.unshift({ pipeline: 'up', matchers: [{ type: 'domain_suffix', value: 'e.example' }] })
+    read.pipelines.push({ id: 'up', rules: [{ name: 'up', matchers: [], actions: [{ type: 'forward', upstream: '1.0.0.1:53' }] }] })
+    const model = readAmongHandWritten(read)
+    model.rules.find((r) => r.name === 'up')!.ecs = { mode: 'clear' }
+    expect(repeated(model)).toEqual([])
   })
 })

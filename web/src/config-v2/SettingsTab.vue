@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
-import { groupName } from '../config-model/model'
+import { groupName, outcomeProblem, upstreamListProblem } from '../config-model/model'
 import { changedSettingKeys, model } from './store'
 
 // 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、Geo 数据），最前面多一组「规则默认值」。
@@ -12,6 +12,13 @@ import { changedSettingKeys, model } from './store'
 // group in front. 默认上游 no longer appears on its own: 其余请求 decides it, written as that group's addresses.
 // 有高级规则时「默认上游」照原样留着、能改：高级规则里的「允许」还按它走 / With advanced rules 默认上游 stays visible and editable: their allow still uses it
 const hidden = computed(() => ([...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw) || model.rawPipelines?.length ? [] : ['default_upstream']))
+// 显示出来的「默认上游」照内核读一遍，说法和上游组的地址一样；没写这一项时内核用它的默认值，不查
+// The 默认上游 shown is read as the kernel reads it, worded as an upstream group's addresses; absent, the kernel uses its default and nothing is checked
+const problems = computed((): Record<string, string> => {
+  const value = model.settings.default_upstream
+  const problem = hidden.value.length || value === undefined ? null : upstreamListProblem(String(value))
+  return problem ? { default_upstream: problem } : {}
+})
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]
 const blockNote: Record<string, string> = {
   // 词不拆到两行：「不存在」「放弃」 / Words are not split across lines: 不存在, 放弃
@@ -19,8 +26,15 @@ const blockNote: Record<string, string> = {
   REFUSED: '告诉客户端拒绝回答，有的设备会换一台 DNS 再问',
   zero: '回答 0.0.0.0 和 ::，浏览器连不上，但能看出是被拦了',
 }
-const restOptions = computed(() => [...model.groups.map((g) => ({ value: `up:${g.id}`, label: g.name })), { value: 'block', label: '拦截' }])
 const restValue = computed(() => (model.rest.type === 'upstream' ? `up:${model.rest.group}` : 'block'))
+// 选的组没了：和规则编辑里一样，框里写已删除的组、标红，下面说怎么改（规则列表最下面那行同时标「要修改」）
+// The chosen group is gone: as in the rule editor, the box reads the deleted group in red with what to do below it (the rule list's last row
+// is marked 要修改 meanwhile)
+const restBroken = computed(() => outcomeProblem(model, model.rest) !== null)
+const restOptions = computed(() => [
+  ...(restBroken.value && model.rest.type === 'upstream' ? [{ value: restValue.value, label: '已删除的组' }] : []),
+  ...model.groups.map((g) => ({ value: `up:${g.id}`, label: g.name })), { value: 'block', label: '拦截' },
+])
 const setRest = (v: string) => { model.rest = v === 'block' ? { type: 'block', response: 'default' } : { type: 'upstream', group: v.slice(3) } }
 const restText = computed(() => (model.rest.type === 'upstream' ? `其余交给「${groupName(model, model.rest.group) ?? '已删除的组'}」` : '其余拦截'))
 const lead = computed(() => ({
@@ -34,7 +48,7 @@ const lead = computed(() => ({
 
 <template>
   <section class="ui-card sets__card" aria-label="基础设置">
-    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead">
+    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :problems="problems">
       <template #lead>
         <div class="ui-setrow">
           <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}。</small></span>
@@ -44,7 +58,10 @@ const lead = computed(() => ({
         </div>
         <div class="ui-setrow">
           <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟\u2060着它，和规则列表最\u2060下\u2060面那行是同一个设置。' : '一条规则都没命中的请求交给哪里，和规则列表最\u2060下\u2060面那行是同一个设置。有高级规则时，KixDNS 的默认上游在「基础与监听」里单独设。' }}</small></span>
-          <div class="ui-setrow__control"><UiSelect :model-value="restValue" :options="restOptions" label="其余请求" @update:model-value="setRest" /></div>
+          <div class="ui-setrow__control sets__stack">
+            <UiSelect :model-value="restValue" :options="restOptions" label="其余请求" :invalid="restBroken" @update:model-value="setRest" />
+            <p v-if="restBroken" class="ui-field-error">这个组已经删掉了，选一个现有的组</p>
+          </div>
         </div>
       </template>
     </SettingsEditor>

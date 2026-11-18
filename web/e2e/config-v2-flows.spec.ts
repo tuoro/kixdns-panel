@@ -154,6 +154,82 @@ test('导入 JSON：隐藏的文件框读入文件，提示已导入', async ({ 
   await expect(page.getByLabel('缓存容量', { exact: true })).toHaveValue('25000')
 })
 
+// 配置的一个分页：宽屏点侧栏，手机点页头下面的分类 / One section of the config: the sidebar on wide screens, the section tabs on a phone
+async function toSection(page: Page, label: string): Promise<void> {
+  const side = page.locator('.desktop-nav').getByRole('link', { name: label, exact: true })
+  if (await side.isVisible()) await side.click()
+  else await page.locator('.cfg__tabs').getByRole('tab', { name: label, exact: true }).click()
+}
+
+// 导入的文件里其余请求指向已经删掉的组（panel 里的模型没人检查过）：和规则引用删掉的组一样当场标出来，不等保存时内核拒绝
+// An imported file whose catch-alls point at a deleted group (the model in panel was never checked): flagged on the spot as a rule on a deleted
+// group is, instead of waiting for the kernel to refuse the save
+test('导入的配置里其余请求指向已经删掉的组：规则列表和基础设置里都标出来 @responsive', async ({ page }) => {
+  await open(page)
+  const file = JSON.parse(await downloadJson(page)) as { panel: { model: Record<string, unknown> } }
+  // 只改 panel 里的模型，散列照旧对得上内核部分，读进来就是这份模型 / Only the model in panel changes; the hash still matches the kernel part, so this model is read as is
+  file.panel.model.rest = { type: 'upstream', group: 'gone' }
+  file.panel.model.ruleGroups = [{ id: 'lan', name: '内网解析', note: '', rules: [], rest: { type: 'upstream', group: 'gone' } }]
+  await page.locator('input[type=file]').setInputFiles({ name: 'dangling.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(file)) })
+  await expect(page.locator('.toast', { hasText: '已导入 dangling.json' })).toBeVisible()
+  // 主列表和规则组最下面的「其余请求」：选的是已删除的组，框标红，和规则一样挂「要修改」 / The 其余请求 row of the main list and of the rule
+  // group: the deleted group is selected, the box is red, and 要修改 hangs on it as on a rule
+  const rests = page.locator('.rpin--rest')
+  await expect(rests).toHaveCount(2)
+  for (const rest of await rests.all()) {
+    const select = rest.getByRole('combobox', { name: '其余请求怎么处理' })
+    await expect(select).toHaveAttribute('aria-invalid', 'true')
+    await expect(select.locator('option:checked')).toHaveText('交给「已删除的组」')
+    await expect(rest.locator('.ui-tag--warn')).toHaveText('要修改')
+  }
+  // 基础设置里的「其余请求」就是主列表最下面那一行：同样标出来，框下面说怎么改，和规则编辑里选的组没了一样
+  // 其余请求 in the settings is the main list's last row: marked the same, with what to do under the box, as in the rule editor when the chosen group is gone
+  await toSection(page, '基础设置')
+  await page.locator('.settings-nav').getByRole('button', { name: /规则默认值/ }).click()
+  const setting = page.getByRole('combobox', { name: '其余请求', exact: true })
+  await expect(setting).toHaveAttribute('aria-invalid', 'true')
+  await expect(setting.locator('option:checked')).toHaveText('已删除的组')
+  await expect(page.getByText('这个组已经删掉了，选一个现有的组')).toBeVisible()
+  // 选回一个现有的组，标记就收起；规则组的那一行还标着 / Choosing an existing group clears the mark; the rule group's row stays marked
+  await setting.selectOption({ label: 'default' })
+  await expect(setting).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(page.getByText('这个组已经删掉了，选一个现有的组')).toHaveCount(0)
+  await toSection(page, '规则')
+  await expect(rests.first().locator('.ui-tag--warn')).toHaveCount(0)
+  await expect(rests.first().getByRole('combobox', { name: '其余请求怎么处理' })).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(rests.nth(1).locator('.ui-tag--warn')).toHaveText('要修改')
+})
+
+// 有高级规则时「默认上游」在「基础与监听」里单独设：照内核读一遍，写错了当场说哪个地址哪里不对，和上游组的地址一个说法，不等保存时内核拒绝
+// With advanced rules 默认上游 is set on its own under 基础与监听: read as the kernel reads it, a mistake says on the spot which address is wrong and
+// how, in the words of an upstream group's addresses, instead of waiting for the kernel to refuse the save
+test('有高级规则时的「默认上游」写错了当场标出来，说法和上游组的地址一样 @responsive', async ({ page }) => {
+  await open(page)
+  // 决定结果的动作后面还有一个：放不进面板的写法，导入后成为高级规则；默认上游没写端口 / An action after the deciding one fits no panel field and
+  // imports as an advanced rule; the default upstream lacks a port
+  const config = { version: '1.0', settings: { default_upstream: '1.1.1.1' }, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'ads', matchers: [{ type: 'geo_site', value: 'category-ads-all' }], actions: [{ type: 'deny' }, { type: 'static_response', rcode: 'NXDOMAIN' }] }] }] }
+  await page.locator('input[type=file]').setInputFiles({ name: 'raw.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  await expect(page.locator('.toast', { hasText: '已导入 raw.json' })).toBeVisible()
+  const report = page.getByRole('button', { name: '知道了', exact: true })
+  if (await report.count()) await report.click()
+  await toSection(page, '基础设置')
+  await page.locator('.settings-nav').getByRole('button', { name: /基础与监听/ }).click()
+  const field = page.getByLabel('默认上游', { exact: true })
+  await expect(field).toHaveValue('1.1.1.1')
+  await expect(field).toHaveAttribute('aria-invalid', 'true')
+  const error = page.locator(`#${await field.getAttribute('aria-describedby')}`)
+  await expect(error).toHaveText('第 1 个地址：UDP 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ')
+  await field.fill('1.1.1.1:53, 8.8.8.8:0')
+  await expect(error).toHaveText('第 2 个地址的端口要在 1 到 65535 之间')
+  // 清空了内核读到的是空的，一个地址都没有，整份配置不收 / Cleared, the kernel reads an empty value with no address and refuses the config
+  await field.fill('')
+  await expect(error).toHaveText('至少填一个地址')
+  await field.fill('1.1.1.1:53, https://dns.google/dns-query')
+  await expect(field).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(field).not.toHaveAttribute('aria-describedby', /./)
+  await expect(error).toHaveCount(0)
+})
+
 // 放弃修改：草稿回到运行中的配置，保存条收起，提示里能撤销 / Discard: the draft returns to the running config, the bar leaves, and the toast can undo
 test('放弃修改清掉保存条，提示里可以撤销', async ({ page }) => {
   await open(page)

@@ -6,7 +6,7 @@ import { useToast } from '../composables/useToast'
 import FitLine from './FitLine.vue'
 import RuleRow from './RuleRow.vue'
 import { parseOwnRules, shortName } from '../config-model/blocklist'
-import { blockLabel, blocklistEntries, conditionsText, outcomePill, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
+import { blockLabel, blocklistEntries, conditionsText, outcomePill, outcomeProblem, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
 import { model, newId } from './store'
 import { blocklists, loadBlocklists } from './useBlocklists'
 import { pageLocked } from './useConfigDocument'
@@ -76,8 +76,15 @@ const listLines = computed(() => {
 })
 
 // 其余请求：交给哪个上游组，或者拦截 / The catch-all: which upstream group, or block
-const restOptions = computed(() => [...model.groups.map((g) => ({ value: `up:${g.id}`, label: `交给「${g.name}」` })), { value: 'block', label: '拦截' }])
 const restValue = computed(() => (props.owner.rest.type === 'upstream' ? `up:${props.owner.rest.group}` : 'block'))
+// 选的组没了（导入的文件、旧版本里带来的）：和规则一样标「要修改」，框里写已删除的组。转到不存在的 Pipeline，内核整份配置都不收
+// The chosen group is gone (brought by an imported file or an older version): marked 要修改 as a rule is, the box reading the deleted group.
+// The kernel refuses a whole config with a jump to a missing pipeline
+const restBroken = computed(() => outcomeProblem(model, props.owner.rest) !== null)
+const restOptions = computed(() => [
+  ...(restBroken.value && props.owner.rest.type === 'upstream' ? [{ value: restValue.value, label: '交给「已删除的组」' }] : []),
+  ...model.groups.map((g) => ({ value: `up:${g.id}`, label: `交给「${g.name}」` })), { value: 'block', label: '拦截' },
+])
 function setRest(value: string): void {
   props.owner.rest = value === 'block' ? { type: 'block', response: 'default' } : { type: 'upstream', group: value.slice(3) }
 }
@@ -188,10 +195,10 @@ onBeforeUnmount(() => window.removeEventListener('pointermove', onMove))
     <div class="rpin rpin--rest" :class="{ 'is-hit': restMark }">
       <span class="rrow__num"><ArrowDownToLine :size="14" aria-hidden="true" /></span>
       <span class="rrow__main rrow__main--static">
-        <span class="rrow__name"><b>其余请求</b><span v-if="restMark" class="ui-tag ui-tag--ok">命中</span></span>
+        <span class="rrow__name"><b>其余请求</b><span v-if="restMark" class="ui-tag ui-tag--ok">命中</span><span v-if="restBroken" class="ui-tag ui-tag--warn">要修改</span></span>
         <span class="rrow__cond">{{ inGroup ? '这个组里一条都没命中的请求' : '上面一条都没命中的请求' }}</span>
       </span>
-      <span class="rrow__pill rpin__rest"><UiSelect :model-value="restValue" :options="restOptions" label="其余请求怎么处理" size="sm" @update:model-value="setRest" /></span>
+      <span class="rrow__pill rpin__rest"><UiSelect :model-value="restValue" :options="restOptions" label="其余请求怎么处理" size="sm" :invalid="restBroken" @update:model-value="setRest" /></span>
     </div>
   </div>
 </template>
