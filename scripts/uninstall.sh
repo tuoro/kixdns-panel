@@ -6,6 +6,9 @@ PANEL_STATE_DIRECTORY=/var/lib/kixdns-panel
 SYSTEMD_UNIT_DIRECTORY=/etc/systemd/system
 PANEL_ENV=/etc/kixdns-panel/panel.env
 EXTERNAL_BACKUP=/var/lib/kixdns-panel/external-backup
+# 本地的卸载命令随面板一起删掉以后，接着卸载用的是这一份（docs/deployment.md 的「卸载」）。
+# Once the local uninstall command is removed with the panel, this copy carries on (「卸载」 in docs/deployment.md).
+UNINSTALL_URL="https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/uninstall.sh"
 # 全新安装时安装器为 KixDNS 配置建的目录；panel.env 记下的配置在这里时，它才随 KixDNS 删掉。
 # The directory the installer creates for the KixDNS config on a fresh install; it goes with KixDNS only when the
 # config panel.env records is in it.
@@ -205,10 +208,12 @@ detect_kept_kixdns() {
 load_settings() {
   local value
   if [[ -f ${PANEL_ENV} ]]; then
-    # 现在的安装器不再写 KIXDNS_MANAGEMENT_ENABLED；只有已移除的「仅安装面板」模式留下的 false
-    # 表示 KixDNS 不归面板管。没有 panel.env 时无法确认归属，同样按不归面板管处理，宁可保留。
-    # Current installers no longer write KIXDNS_MANAGEMENT_ENABLED; only the false left by the removed
-    # panel-only mode means the KixDNS is not the panel's. Without panel.env ownership is unknown, so keep it.
+    # 现在的安装器不再写 KIXDNS_MANAGEMENT_ENABLED；值是 false 表示 KixDNS 不归面板管：已移除的「仅安装面板」模式留下的，
+    # 或者卸载放回了原来的 KixDNS、保留了 panel.env（mark_kixdns_unmanaged）。没有 panel.env 时无法确认归属，同样按不归面板管
+    # 处理，宁可保留。
+    # Current installers no longer write KIXDNS_MANAGEMENT_ENABLED; false means the KixDNS is not the panel's: left by the
+    # removed panel-only mode, or by an uninstall that put the original KixDNS back and kept panel.env
+    # (mark_kixdns_unmanaged). Without panel.env ownership is unknown, so keep it.
     value="$(environment_value KIXDNS_MANAGEMENT_ENABLED || true)"
     [[ -z ${value} || ${value} =~ ^(true|false)$ ]] ||
       fail "panel.env 里的 KixDNS 管理模式无效"
@@ -561,18 +566,53 @@ restore_resolved_stub() {
   printf 'systemd-resolved 的本机监听与 %s 已恢复原样。\n' "${RESOLV_CONF}"
 }
 
+# 原来的 KixDNS 没能按迁移前的状态起来：备份和 panel.env 都还在，用同样的选项重新运行卸载就从头接着恢复。本地的卸载命令已经
+# 随面板删掉，给出从网上运行的写法。
+# The original KixDNS did not come back as it was before migration: the backup and panel.env are still there, and running
+# the uninstall again with the same options carries the restore through. The local uninstall command is gone with the
+# panel, so the way to run it from the web is given.
+restore_incomplete() {
+  fail "原来的 KixDNS（${ORIGINAL_UNIT}）没能按迁移前的状态恢复，备份还在 ${EXTERNAL_BACKUP}。
+查明原因（journalctl -u ${ORIGINAL_UNIT} -n 50 --no-pager）后用同样的选项重新运行卸载，会接着恢复：
+  curl -fsSL ${UNINSTALL_URL} | sudo bash -s -- --remove-kixdns --${CONFIG_ACTION}-config --yes"
+}
+
+# 原来的 KixDNS 放回去以后，这台主机上的 KixDNS 就不归面板管了：在保留的 panel.env 里记下，再运行卸载器不会把它当成面板的
+# 去停、去删（备份已经用掉，靠它认不出来了）。用的是已移除的「仅安装面板」模式留下的同一个键：v3.1.1 起的卸载器都这样认它，
+# 安装器重新安装时会删掉它。
+# Once the original KixDNS is back, the KixDNS on this host is no longer the panel's: the kept panel.env records it, so
+# running the uninstaller again does not stop or remove it as the panel's (the backup is used up and can no longer tell).
+# It is the same key the removed panel-only mode left: uninstallers since v3.1.1 all read it this way, and the installer
+# drops it on a reinstall.
+mark_kixdns_unmanaged() {
+  local temporary
+  [[ -f ${PANEL_ENV} ]] || return 0
+  temporary="$(mktemp "${PANEL_CONFIG_DIRECTORY}/.panel.env.XXXXXX")"
+  awk '!/^KIXDNS_MANAGEMENT_ENABLED=/ { print } END { print "KIXDNS_MANAGEMENT_ENABLED=false" }' "${PANEL_ENV}" > "${temporary}"
+  chown --reference="${PANEL_ENV}" -- "${temporary}"
+  chmod --reference="${PANEL_ENV}" -- "${temporary}"
+  mv -fT -- "${temporary}" "${PANEL_ENV}"
+}
+
 restore_external_state() {
   [[ ${RESTORED_EXTERNAL} == true ]] || return 0
   if [[ ${ORIGINAL_ENABLED} == true ]]; then
-    systemctl enable "${ORIGINAL_UNIT}" --quiet
+    systemctl enable "${ORIGINAL_UNIT}" --quiet || restore_incomplete
   else
     systemctl disable "${ORIGINAL_UNIT}" 2>/dev/null || true
   fi
   if [[ ${ORIGINAL_ACTIVE} == true ]]; then
-    systemctl start "${ORIGINAL_UNIT}"
+    systemctl start "${ORIGINAL_UNIT}" || restore_incomplete
   else
     systemctl stop "${ORIGINAL_UNIT}" 2>/dev/null || true
   fi
+  # 恢复做完才用掉备份：先记下 KixDNS 已不归面板管，再删备份。中途失败时备份还在，重新运行能接着恢复；以后再迁移，安装器按那时
+  # 主机上的 KixDNS 重新备份，不会沿用这份旧的。
+  # The backup is used up only once the restore is done: first record that the KixDNS is no longer the panel's, then remove
+  # the backup. A failure part way leaves the backup, so a rerun carries the restore through; a later migration backs up
+  # the KixDNS the host has then instead of keeping this old one.
+  mark_kixdns_unmanaged
+  rm -rf -- "${EXTERNAL_BACKUP}"
   printf '原来的 KixDNS 已恢复，运行状态和迁移前一样。\n'
   if [[ -n ${ORIGINAL_CONFIG} && ${ORIGINAL_CONFIG} == "${MANAGED_CONFIG}" ]]; then
     # 旧版安装器原地迁移的主机：面板改的就是原配置，迁移前的内容没有留底，不能说成恢复了。
@@ -623,9 +663,12 @@ run_uninstall() {
   remove_dead_kixdns_units
   remove_managed_kixdns
   restore_resolved_stub
-  remove_panel_state
   systemctl daemon-reload
+  # 先把原来的 KixDNS 恢复完，再删面板数据：恢复中途失败时 panel.env 和备份都还在，重新运行能认出、接着恢复。
+  # Finish restoring the original KixDNS before the panel data goes: a restore failing part way leaves panel.env and the
+  # backup, so a rerun recognises it and carries on.
   restore_external_state
+  remove_panel_state
   print_result
 }
 

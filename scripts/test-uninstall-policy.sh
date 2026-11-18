@@ -466,6 +466,17 @@ migrated_host() {
   printf '[Service]\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${root}/etc/kixdns.json" \
     > "${root}/units/kixdns.service"
   cp -- "${root}/units/kixdns.service" "${root}/original.service"
+  migrate_scratch_host "${root}" "${root}/etc/kixdns.json" true true
+}
+
+# 把临时主机上现在这个外部 KixDNS 迁移成增强版：它的 unit 写着配置 config，运行、开机自启与否是 active、enabled（true 或 false）。
+# Migrate the external KixDNS the scratch host has now: its unit names the config config, and active and enabled (true or
+# false) say whether it runs and starts at boot.
+migrate_scratch_host() {
+  local root=$1
+  local config=$2
+  local active=$3
+  local enabled=$4
   bash -c "
     set -Eeuo pipefail
     source '${INSTALLER}'
@@ -479,8 +490,10 @@ migrated_host() {
     EXTERNAL_BACKUP=\"\${root}/state/external-backup\"
     systemctl() {
       case \$1 in
-        show) printf '{ path=/usr/local/bin/kixdns ; argv[]=/usr/local/bin/kixdns run --config %s ; }\n' \"\${root}/etc/kixdns.json\" ;;
-        cat | is-active | is-enabled) return 0 ;;
+        show) printf '{ path=/usr/local/bin/kixdns ; argv[]=/usr/local/bin/kixdns run --config %s ; }\n' '${config}' ;;
+        cat) return 0 ;;
+        is-active) ${active} ;;
+        is-enabled) ${enabled} ;;
       esac
     }
     install() {
@@ -526,7 +539,14 @@ uninstall_scratch_host() {
     RESOLVED_STATE="${PANEL_STATE_DIRECTORY}/resolved-stub"
     KIXDNS_RUNTIME_DIRECTORY="${root}/run-kixdns"
     KIXDNS_CONFIG_DIRECTORY="${root}/etc-kixdns"
-    systemctl() { [[ $1 != is-active ]]; }
+    # SYSTEMCTL_LOG 非空时记下每个 systemctl 调用；SYSTEMCTL_FAIL_START=true 时启动服务失败，像真的卸载器那样就此停下。
+    # With SYSTEMCTL_LOG set every systemctl call is recorded; with SYSTEMCTL_FAIL_START=true starting a service fails and,
+    # as in the real uninstaller, the run stops there.
+    systemctl() {
+      [[ -z ${SYSTEMCTL_LOG:-} ]] || printf '%s\n' "$*" >> "${SYSTEMCTL_LOG}"
+      [[ $1 != start || ${SYSTEMCTL_FAIL_START:-} != true ]] || return 1
+      [[ $1 != is-active ]]
+    }
     getent() { return 2; }
     groupdel() { :; }
     chown() { :; }
@@ -587,6 +607,89 @@ assert_not_contains "${output}" "RUN-FAILED" "保留数据移除增强版不应�
 [[ ! -e ${host}/panel-etc/kixdns ]] || { printf '断言失败：移除增强版时副本和它的目录应删掉\n' >&2; exit 1; }
 [[ -f ${host}/panel-etc/panel.env ]] || { printf '断言失败：保留数据时 panel.env 应留着\n' >&2; exit 1; }
 assert_equals "$(cat "${host}/etc/kixdns.json")" '{"original":true}' "保留数据移除增强版时原配置也应是迁移前的内容"
+
+# 恢复用掉备份：原来的 KixDNS 放回去以后备份就删掉，保留的 panel.env 记下这台主机的 KixDNS 已不归面板管。以后再迁移，记下的是
+# 那时主机上的 KixDNS，再恢复就回到那次迁移之前。回归：以前备份一直留着，再迁移时安装器见备份在就不再备份，第二次恢复放回的是
+# 第一次迁移前的 unit、配置和运行状态。
+# A restore uses the backup up: once the original KixDNS is back the backup is removed, and the kept panel.env records that
+# the KixDNS on this host is no longer the panel's. A later migration records the KixDNS the host has then, and restoring
+# again goes back to just before that migration. Regression: the backup used to stay, so a later migration saw it and made
+# none, and the second restore put back the unit, config and running state from before the first migration.
+systemctl_log="${scratch}/systemctl.log"
+# 最后一次 daemon-reload 之后的 systemctl 调用：恢复原来的 KixDNS 运行状态的那几个 / The systemctl calls after the last
+# daemon-reload: the ones restoring the original KixDNS's running state
+restore_calls() {
+  awk '$1 == "daemon-reload" { calls = ""; next } { calls = calls $0 ";" } END { print calls }' "${systemctl_log}"
+}
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+: > "${systemctl_log}"
+output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "保留数据恢复原来的 KixDNS 不应失败"
+assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "保留数据时也应恢复原来的 KixDNS"
+[[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：恢复成功后应删掉迁移前的备份\n' >&2; exit 1; }
+assert_equals "$(restore_calls)" "enable kixdns.service --quiet;start kixdns.service;" "第一次恢复应按迁移前的状态启用并启动"
+assert_contains "$(cat "${host}/panel-etc/panel.env")" "KIXDNS_MANAGEMENT_ENABLED=false" \
+  "恢复后保留的 panel.env 应记下 KixDNS 已不归面板管"
+# 再运行一次卸载器（比如这回想删数据）：原来的 KixDNS 已经不归面板管，不能当成面板的去停、去删。
+# Running the uninstaller once more (to delete the data this time, say): the original KixDNS is no longer the panel's and
+# must not be stopped or removed as if it were.
+: > "${systemctl_log}"
+output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "恢复以后再卸载不应失败"
+assert_contains "${output}" "这台机器的 KixDNS 不归面板管理" "恢复以后再卸载应说明 KixDNS 已不归面板管"
+assert_not_contains "$(cat "${systemctl_log}")" "kixdns.service" "恢复以后再卸载不能再动原来的 KixDNS"
+cmp -s -- "${host}/units/kixdns.service" "${host}/original.service" ||
+  { printf '断言失败：恢复以后再卸载不能删掉或换掉原来的 unit\n' >&2; exit 1; }
+# 再迁移一次之前，主机上的 KixDNS 换了配置、改成不开机自启也不运行；这次迁移记下的是它现在的样子。
+# Before migrating again, the host's KixDNS got another config and was set to neither run nor start at boot; this migration
+# records it as it is now.
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "第一次恢复不应失败"
+printf '{"second":true}\n' > "${host}/etc/second.json"
+printf '[Service]\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${host}/etc/second.json" > "${host}/units/kixdns.service"
+cp -- "${host}/units/kixdns.service" "${host}/second.service"
+migrate_scratch_host "${host}" "${host}/etc/second.json" false false > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+cmp -s -- "${host}/state/external-backup/kixdns.service" "${host}/second.service" ||
+  { printf '断言失败：再迁移时应备份主机上现在的 unit\n' >&2; exit 1; }
+backup="$(cat "${host}/state/external-backup/install.env")"
+assert_contains "${backup}" "KIXDNS_CONFIG=${host}/etc/second.json" "再迁移时应记下现在的原配置"
+assert_contains "${backup}" "KIXDNS_WAS_ACTIVE=false" "再迁移时应记下现在没在运行"
+assert_contains "${backup}" "KIXDNS_WAS_ENABLED=false" "再迁移时应记下现在不开机自启"
+: > "${systemctl_log}"
+output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "第二次恢复不应失败"
+assert_contains "${output}" "它用的是迁移前的配置 ${host}/etc/second.json，面板改过的副本已删除。" "第二次恢复应用回第二次迁移前的配置"
+cmp -s -- "${host}/units/kixdns.service" "${host}/second.service" ||
+  { printf '断言失败：第二次恢复应放回第二次迁移前的 unit\n' >&2; exit 1; }
+assert_equals "$(restore_calls)" "disable kixdns.service;stop kixdns.service;" "第二次恢复应回到第二次迁移前：不开机自启、不运行"
+[[ ! -e ${host}/panel-etc ]] || { printf '断言失败：第二次恢复删除数据时面板配置目录应删掉\n' >&2; exit 1; }
+
+# 恢复到一半失败（原来的 KixDNS 没能启动）：备份和 panel.env 都留着、说清怎么接着恢复，重新运行卸载器能把恢复做完。
+# 删除数据时也一样：备份和面板数据要等恢复做完才删。
+# A restore failing half way (the original KixDNS would not start): the backup and panel.env stay, the uninstaller says how
+# to carry on, and running it again finishes the restore. The same when deleting the data: the backup and the panel data
+# go only once the restore is done.
+for config_action in keep remove; do
+  migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+  output="$(SYSTEMCTL_FAIL_START=true uninstall_scratch_host "${host}" --remove-kixdns "--${config_action}-config" --yes)"
+  assert_contains "${output}" "RUN-FAILED" "原来的 KixDNS 没能启动时卸载应失败（${config_action}）"
+  assert_contains "${output}" "原来的 KixDNS（kixdns.service）没能按迁移前的状态恢复" "恢复失败时应说明（${config_action}）"
+  assert_contains "${output}" "| sudo bash -s -- --remove-kixdns --${config_action}-config --yes" \
+    "恢复失败时应给出接着恢复的命令（${config_action}）"
+  [[ -f ${host}/state/external-backup/install.env && -f ${host}/panel-etc/panel.env ]] ||
+    { printf '断言失败：恢复没做完时备份和 panel.env 都要留着（%s）\n' "${config_action}" >&2; exit 1; }
+  : > "${systemctl_log}"
+  output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns "--${config_action}-config" --yes)"
+  assert_not_contains "${output}" "RUN-FAILED" "重新运行卸载器应把恢复做完（${config_action}）"
+  assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "重新运行卸载器应恢复原来的 KixDNS（${config_action}）"
+  assert_equals "$(restore_calls)" "enable kixdns.service --quiet;start kixdns.service;" \
+    "重新运行卸载器应按迁移前的状态启动（${config_action}）"
+  cmp -s -- "${host}/units/kixdns.service" "${host}/original.service" ||
+    { printf '断言失败：重新运行卸载器应放回原来的 unit（%s）\n' "${config_action}" >&2; exit 1; }
+  [[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：恢复做完后应删掉备份（%s）\n' "${config_action}" >&2; exit 1; }
+done
+[[ ! -e ${host}/panel-etc ]] || { printf '断言失败：恢复做完后删除数据时面板配置目录应删掉\n' >&2; exit 1; }
 
 # 保留增强版、删除面板数据：保留的 KixDNS 还在用副本，副本和它的目录必须留下，面板配置目录里的其他东西照删；
 # 再卸载一次（这时已经没有 panel.env）也一样。

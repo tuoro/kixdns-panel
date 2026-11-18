@@ -110,11 +110,11 @@ printf '%s  %s\n' "${DIGEST#sha256:}" kixdns-panel.zip | sha256sum --check -
 
 - 把原配置一字不差地复制到 `/etc/kixdns-panel/kixdns/pipeline.json`（路径写入 `panel.env`），面板只改这份副本。原配置文件和它所在的目录不动，属主和权限也不改；面板能写的只有副本所在的目录和 `/var/lib/kixdns-panel`
 - 用增强版替换 KixDNS 程序和 systemd unit
-- 把原 unit 与运行、开机状态备份到 `/var/lib/kixdns-panel/external-backup/`
+- 把原 unit 与运行、开机状态备份到 `/var/lib/kixdns-panel/external-backup/`。卸载恢复成功后这份备份就删掉，以后再迁移按那时主机上的 KixDNS 重新备份
 - 保持原来的运行状态：运行中的迁移后继续运行，已停止的保持停止；增强版起不来时整个安装回滚到迁移前，副本和它的目录一并删掉
 - 卸载面板时选择移除增强版，放回原 unit 并恢复原来的运行状态。原来的 KixDNS 用回迁移前的配置，副本随增强版删除；在面板里改过的配置不会带回去，需要的话卸载前先备份副本
 
-迁移后的 KixDNS 以 `kixdns` 账号运行。原配置里写的文件（GeoSite、GeoIP、DoH 证书等）这个账号读不到，或者放在服务看不到的 `/home`、`/root`、`/run/user`、`/tmp`、`/var/tmp` 里时，安装器在改动主机之前拒绝迁移，列出每个文件和原因。调整权限或把文件移到别处、改好原配置后重新运行即可。原配置里的相对路径按 KixDNS 的工作目录 `/` 解析，原 unit 设了 `WorkingDirectory=` 的，先改成绝对路径。
+迁移后的 KixDNS 以 `kixdns` 账号运行。原配置里写的文件（GeoSite、GeoIP、DoH 证书等）这个账号读不到，或者放在服务看不到的 `/home`、`/root`、`/run/user`、`/tmp`、`/var/tmp` 里时，安装器在改动主机之前拒绝迁移，列出每个文件和原因。调整权限或把文件移到别处、改好原配置后重新运行即可。面板自己（`kixdns-panel` 账号）也读原配置里的 GeoSite、GeoIP 文件，用来挑 GeoSite 分类、给 IP 标地区；它读不到时迁移照常进行，DNS 不受影响，安装结果会列出这些文件，放宽权限后刷新面板页面即可。原配置里的相对路径按 KixDNS 的工作目录 `/` 解析，原 unit 设了 `WorkingDirectory=` 的，先改成绝对路径。
 
 v4.3.4 及更早的安装器迁移时直接接管原配置：原位置不变，所在目录改归面板。这样的主机升级后照旧，卸载恢复时原来的 KixDNS 用的是面板最后保存的配置，卸载器会说明。
 
@@ -315,6 +315,7 @@ sudo kixdns-panel-uninstall
 卸载器会问两件事：是否保留 KixDNS，是否保留面板配置、数据库、版本库和 Geo 数据。删除配置不可恢复，先备份 `pipeline.json` 和 `panel.db`。
 
 - 迁移安装的主机选择移除增强版，会恢复迁移前的 unit 和启停状态；原来的 KixDNS 用的是没动过的原配置，面板管理的副本随增强版删除。选择保留增强版时副本留在 `/etc/kixdns-panel/kixdns/`，删除面板配置也不删它
+- 恢复完成后迁移前的备份随之删掉；保留面板配置时，`panel.env` 记下这台主机的 KixDNS 已不归面板管，以后再运行卸载器不会动它。恢复中途失败（比如原来的 KixDNS 起不来）时，备份和面板数据都留着，查明原因后按提示用同样的选项重新运行卸载，就接着恢复
 - 选择移除 KixDNS 时，安装器关闭过的 systemd-resolved 本机监听和 `/etc/resolv.conf` 一并恢复
 - 早期「仅安装面板」模式的主机，卸载器始终保留原来的 KixDNS
 - 上次卸载保留了 KixDNS 并删除了配置，再次运行卸载器时 KixDNS 仍然保留，即使指定 `--remove-kixdns`

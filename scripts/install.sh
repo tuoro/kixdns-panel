@@ -36,6 +36,10 @@ ORIGINAL_KIXDNS_CONFIG_PATH=""
 # 受管 KixDNS 的服务沙箱看不到的目录：deploy/systemd/kixdns.service 的 ProtectHome 和 PrivateTmp。
 # Directories the managed KixDNS's service sandbox cannot see: ProtectHome and PrivateTmp in deploy/systemd/kixdns.service.
 KIXDNS_HIDDEN_DIRECTORIES=(/home /root /run/user /tmp /var/tmp)
+# 原配置里写的 Geo 文件里面板读不到的那些，每行「  文件：原因」；迁移照常，安装结果里点名。
+# The Geo files the original config names that the panel cannot read, one "  file：reason" per line; migration goes ahead and
+# the install result names them.
+PANEL_UNREADABLE_FILES=""
 PANEL_SERVER_BINARY=/usr/local/bin/kixdns-panel-server
 GITHUB_TOKEN_FILE=/var/lib/kixdns-panel/github-token
 # 与 uninstall.sh 相同的固定位置：面板 unit 只允许写 /var/lib/kixdns-panel。
@@ -541,19 +545,51 @@ original_config_files() {
     done
 }
 
-# 以受管 KixDNS 的身份（kixdns 账号、kixdns 组）试读一个文件。账号还没建时用 nobody 的 UID 代替：新建的账号同样
-# 不拥有任何文件。组还没建时用 nogroup 的 GID，同理。
-# Try reading a file as the managed KixDNS would (the kixdns account, the kixdns group). Before the account exists,
-# nobody's UID stands in for it: a new account owns no files either. Likewise nogroup's GID before the group exists.
-kixdns_can_read() {
-  local file=$1
+# 原配置里写的、面板自己也读的 Geo 文件：settings 里 geosite_data_paths 的每一项，和 geoip_db_path、geoip_dat_path（面板挑
+# GeoSite 分类、给 IP 标地区时读，见 panel-server 的 app/geo.rs）。和 original_config_files 一样只算存在又不是目录的绝对路径。
+# The Geo files the original config names that the panel reads too: each entry of geosite_data_paths in settings, and
+# geoip_db_path and geoip_dat_path (read when picking GeoSite categories and labelling IP regions, see panel-server's
+# app/geo.rs). As in original_config_files, only absolute paths that exist and are not directories count.
+original_config_geo_files() {
+  local flattened
+  local path
+  flattened="$(tr '\n' ' ' < "${ORIGINAL_KIXDNS_CONFIG_PATH}" 2>/dev/null || true)"
+  {
+    grep -oE '"geosite_data_paths"[[:space:]]*:[[:space:]]*\[[^]]*\]' <<< "${flattened}" || true
+    grep -oE '"geoip_(db|dat)_path"[[:space:]]*:[[:space:]]*"[^"\\]*"' <<< "${flattened}" || true
+  } | { grep -oE '"/[^"\\]*"' || true; } | sed -e 's/^"//' -e 's/"$//' | sort -u |
+    while IFS= read -r path; do
+      if [[ -e ${path} && ! -d ${path} ]]; then
+        printf '%s\n' "${path}"
+      fi
+    done
+}
+
+# 以一个服务账号的身份（主组 kixdns）试读一个文件。账号还没建时用 nobody 的 UID 代替：新建的账号同样不拥有任何文件。
+# 组还没建时用 nogroup 的 GID，同理。
+# Try reading a file as a service account would (its primary group kixdns). Before the account exists, nobody's UID stands
+# in for it: a new account owns no files either. Likewise nogroup's GID before the group exists.
+account_can_read() {
+  local account=$1
+  local file=$2
   local group
   group="$(getent group "${KIXDNS_GROUP}" | cut -d: -f3 || true)"
-  if id -u "${KIXDNS_USER}" >/dev/null 2>&1; then
-    setpriv --reuid="${KIXDNS_USER}" --regid="${group:-65534}" --init-groups -- test -r "${file}"
+  if id -u "${account}" >/dev/null 2>&1; then
+    setpriv --reuid="${account}" --regid="${group:-65534}" --init-groups -- test -r "${file}"
   else
     setpriv --reuid=65534 --regid="${group:-65534}" --clear-groups -- test -r "${file}"
   fi
+}
+
+# 受管 KixDNS（kixdns 账号）读不读得到 / Whether the managed KixDNS (the kixdns account) can read it
+kixdns_can_read() {
+  account_can_read "${KIXDNS_USER}" "$1"
+}
+
+# 面板（kixdns-panel 账号，主组同样是 kixdns）读不读得到 / Whether the panel (the kixdns-panel account, whose primary group
+# is kixdns too) can read it
+panel_can_read() {
+  account_can_read "${PANEL_USER}" "$1"
 }
 
 # 迁移后 KixDNS 读的是副本，原配置所在的目录不再为它放开（以前原地接管时会归到 kixdns 组）。原配置里写的文件它读不到时，
@@ -585,9 +621,25 @@ require_original_files_readable() {
     fi
     [[ -z ${reason} ]] || unreadable+="  ${file}：${reason}"$'\n'
   done <<< "${files}"
-  [[ -n ${unreadable} ]] || return 0
-  fail "迁移后的 KixDNS 以 kixdns 账号运行，读不到原配置 ${ORIGINAL_KIXDNS_CONFIG_PATH} 里写的这些文件：
+  [[ -z ${unreadable} ]] || fail "迁移后的 KixDNS 以 kixdns 账号运行，读不到原配置 ${ORIGINAL_KIXDNS_CONFIG_PATH} 里写的这些文件：
 ${unreadable}迁移不会改动原来的文件和目录。让 kixdns 账号能读到它们（放宽权限，或移到别处并改原配置）后重新运行；现有 KixDNS 未作修改。"
+  note_panel_unreadable_files
+}
+
+# 面板（kixdns-panel 账号）自己也读原配置里写的 Geo 文件。读不到只是面板上挑 GeoSite 分类、给 IP 标地区时缺了它们，DNS 照常，
+# 所以不拒绝迁移，记下来在安装结果里点名，好让人去改权限。面板 unit 和 KixDNS 的 unit 藏起同样的目录，上面已经确认这些文件不在
+# 里面，面板读不到就只会是权限。
+# The panel (the kixdns-panel account) reads the Geo files the original config names too. When it cannot, the panel only
+# lacks them for picking GeoSite categories and labelling IP regions while DNS works as before, so migration is not refused:
+# the files are noted and named in the install result so the permissions can be fixed. The panel unit hides the same
+# directories as the KixDNS unit, and the files were found above to lie outside them, so permissions are the only reason.
+note_panel_unreadable_files() {
+  local file
+  PANEL_UNREADABLE_FILES=""
+  while IFS= read -r file; do
+    [[ -n ${file} ]] || continue
+    panel_can_read "${file}" || PANEL_UNREADABLE_FILES+="  ${file}：kixdns-panel 账号没有读取权限"$'\n'
+  done < <(original_config_geo_files || true)
 }
 
 render_kixdns_unit() {
@@ -1068,6 +1120,11 @@ rollback_install() {
       systemctl stop "${KIXDNS_SERVICE_UNIT}" 2>/dev/null
     fi
     rm -rf -- "${EXTERNAL_BACKUP}"
+    # 这次迁移换下来的旧备份放回去，主机和安装前一样 / The old backup this migration replaced goes back, leaving the host as
+    # it was before the install
+    if [[ -e ${BACKUP_ROOT}/external-backup || -L ${BACKUP_ROOT}/external-backup ]]; then
+      mv -- "${BACKUP_ROOT}/external-backup" "${EXTERNAL_BACKUP}"
+    fi
   elif kixdns_replaced; then
     restore_managed_service_state
   fi
@@ -1131,9 +1188,17 @@ preserve_external_install() {
   # external install: the reinstall manages it on, and it is not backed up as the original KixDNS. Otherwise uninstall
   # would put this unit back and start it, with its program already deleted along with the panel's state directory
   [[ ${EXISTING_KIXDNS_BINARY_PATH} != "${MANAGED_KIXDNS_BINARY}" ]] || return 0
-  [[ ! -e ${EXTERNAL_BACKUP} ]] || return 0
-  install -d -o root -g root -m 0700 "${EXTERNAL_BACKUP}"
+  # 这时已经有的备份，是以前的卸载恢复了原来的 KixDNS 却没删的（现在的卸载恢复完就删），记的是更早那次迁移前的样子；要恢复的是
+  # 主机上现在这个外部 KixDNS，所以换掉。旧的先挪进回滚备份，迁移失败时原样放回。
+  # A backup already here was left by an earlier uninstall that restored the original KixDNS without removing it (current
+  # ones remove it once restored), and describes the host before an older migration; the one to restore is the external
+  # KixDNS on the host now, so it is replaced. The old one moves into the rollback backup first and goes back as it was if
+  # the migration fails.
+  if [[ -e ${EXTERNAL_BACKUP} || -L ${EXTERNAL_BACKUP} ]]; then
+    mv -- "${EXTERNAL_BACKUP}" "${BACKUP_ROOT}/external-backup"
+  fi
   CREATED_EXTERNAL_BACKUP=true
+  install -d -o root -g root -m 0700 "${EXTERNAL_BACKUP}"
   if [[ -e ${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT} ]]; then
     cp -a -- "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}" "${EXTERNAL_BACKUP}/kixdns.service"
   else
@@ -1543,6 +1608,11 @@ print_summary() {
         printf '配置：已复制到 %s 由面板管理，原来的 %s 不动\n' "${KIXDNS_CONFIG_PATH}" "${ORIGINAL_KIXDNS_CONFIG_PATH}"
       else
         printf '配置：%s 不存在，面板在 %s 写入了默认配置\n' "${ORIGINAL_KIXDNS_CONFIG_PATH}" "${KIXDNS_CONFIG_PATH}"
+      fi
+      if [[ -n ${PANEL_UNREADABLE_FILES} ]]; then
+        printf 'Geo 文件：面板读不到原配置里写的这些，GeoSite 分类和 IP 地区标注会缺它们，DNS 不受影响：\n%s' \
+          "${PANEL_UNREADABLE_FILES}"
+        printf '让 kixdns-panel 账号能读到它们，刷新面板页面就有了。\n'
       fi
       ;;
     upgrade)

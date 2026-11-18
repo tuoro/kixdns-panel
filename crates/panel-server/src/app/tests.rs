@@ -1306,15 +1306,19 @@ async fn a_scheduled_geo_update_says_when_the_config_uses_none_of_its_files() {
     state
         .geo_data
         .schedule()
-        .set_interval(Some(24))
+        .set_interval(Some(24), 900)
         .await
         .unwrap();
-    // 上次试过是 1970 年：这次一定到点，不看现在几秒 / Last tried in 1970: due now for sure, whatever the second
+    // 上次试过是第 1 000 秒，一天以后的这一轮正好到点 / Last tried at second 1 000: the round a day later is due
     state.geo_data.schedule().mark_attempt(1_000).await.unwrap();
 
-    assert!(super::geo::run_due_geo_schedule(&state).await.is_err());
+    assert!(
+        super::geo::run_due_geo_schedule(&state, 87_400)
+            .await
+            .is_err()
+    );
 
-    let schedule = state.geo_data.schedule().get().await.unwrap();
+    let schedule = state.geo_data.schedule().get(87_400).await.unwrap();
     assert_eq!(
         schedule.last_error.as_deref(),
         Some("配置里没有用这些链接下载的文件，自动更新用不上")
@@ -1323,6 +1327,84 @@ async fn a_scheduled_geo_update_says_when_the_config_uses_none_of_its_files() {
         state.config.desired().await.unwrap().content["settings"],
         own
     );
+}
+
+/// 一轮同时到点的 Geo 数据和拦截列表：两样都按这一轮读到的时间判断、记下试过的时间。回归：刚打开、还没试过的自动更新
+/// 在读设置那一刻现算「下次」，比这一轮读的钟晚一秒就整轮跳过；拦截列表还在 Geo 更新跑完以后自己再读一次钟，记下的
+/// 时间比这一轮晚了 Geo 下载花的工夫，第二天同一轮就差这几十秒不到点，又晚 15 分钟
+/// Geo data and blocklists both due in one round: both are checked against the round's reading and record it as their
+/// attempt. Regression: a schedule just turned on and never tried worked its next run out at the moment the setting was
+/// read, so a second past the round's reading skipped the whole round; and the blocklists read the clock again after the
+/// Geo update finished, recording a time later than the round by however long the Geo download took, so the same round
+/// the next day fell those seconds short and the update came 15 minutes late
+#[tokio::test]
+async fn one_round_checks_and_records_both_schedules_by_its_own_reading() {
+    use crate::blocklist_data::{BuildRequest, Subscription};
+
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    write_settings(&directory, &serde_json::json!({}));
+    let state = test_state(&directory).await;
+    // 指向本机的链接下载前就被拒，正好当作下载失败 / A link to this machine is refused before downloading, which stands
+    // in for a failed download
+    let url = "https://127.0.0.1/a.txt";
+    state
+        .blocklists
+        .hold_for_tests(url, "||ads.example^\n")
+        .await;
+    let built = state
+        .blocklists
+        .build(BuildRequest {
+            subscriptions: vec![Subscription {
+                url: url.to_owned(),
+                enabled: true,
+            }],
+            refresh: Vec::new(),
+        })
+        .await
+        .unwrap()
+        .path
+        .unwrap();
+    // 配置用着拦截列表；Geo 用的是自己的文件，更新到点就说用不上，不联网
+    // The config uses the blocklists; Geo uses a file of its own, so a due update says it is of no use, offline
+    write_settings(
+        &directory,
+        &serde_json::json!({ "geoip_db_path": "/srv/geo/my.mmdb", "geosite_data_paths": [built] }),
+    );
+    state
+        .database
+        .set_setting(
+            "geo_data_manifest",
+            serde_json::to_string(&geo_manifest(Some(d.old_mmdb), None, &[])).unwrap(),
+            1,
+        )
+        .await
+        .unwrap();
+    state
+        .geo_data
+        .schedule()
+        .set_interval(Some(24), 1_000)
+        .await
+        .unwrap();
+    state
+        .blocklists
+        .schedule()
+        .set_interval(Some(24), 1_000)
+        .await
+        .unwrap();
+
+    super::run_due_schedules(&state, 1_000).await;
+
+    let geo = state.geo_data.schedule().get(1_000).await.unwrap();
+    assert_eq!(geo.last_attempt_at, Some(1_000), "Geo 这一轮应当跑了");
+    let blocklists = state.blocklists.schedule().get(1_000).await.unwrap();
+    assert_eq!(
+        blocklists.last_attempt_at,
+        Some(1_000),
+        "拦截列表这一轮应当跑了，记下的是这一轮读到的时间"
+    );
+    // 第二天同一轮两样都到点 / The same round the next day finds both due
+    assert!(geo.is_due(87_400) && blocklists.is_due(87_400));
 }
 
 /// 存一份用户在等的版本（给了原因就再记成没有生效），返回它的编号 / Stores a version the user is waiting on (recorded as

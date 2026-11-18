@@ -760,6 +760,58 @@ external_backup_of() {
 assert_equals "$(external_backup_of "${MANAGED_KIXDNS_BINARY}")" "false" "面板自带的 KixDNS 不应备份成外部安装"
 assert_equals "$(external_backup_of /usr/local/bin/kixdns)" "true" "外部安装的 KixDNS 应备份"
 
+# 迁移外部 KixDNS 时已经有一份备份：那是以前的卸载恢复了原来的 KixDNS 却没删的，记的是更早那次迁移前的样子。换成主机上现在
+# 这个 KixDNS 的 unit、配置和运行状态；迁移失败回滚时把那份原样放回去。回归：以前见备份在就不再备份，之后卸载恢复放回的是旧的。
+# Migrating an external KixDNS with a backup already there: an earlier uninstall restored the original KixDNS and left the
+# backup, which describes the host before an older migration. It is replaced with the unit, config and running state of the
+# KixDNS the host has now; a failed migration puts the old one back as it was. Regression: a backup already there used to
+# stop a new one being made, so a later restore put back the old state.
+stale_external_backup() {
+  local root="${WORK}/stale-external-backup"
+  rm -rf -- "${root}"
+  mkdir -p "${root}/units" "${root}/external-backup" "${root}/rollback"
+  printf 'old unit\n' > "${root}/external-backup/kixdns.service"
+  printf '%s\n' KIXDNS_SERVICE_UNIT=kixdns.service KIXDNS_CONFIG=/etc/old.json KIXDNS_BINARY=/usr/local/bin/kixdns \
+    KIXDNS_WAS_ACTIVE=true KIXDNS_WAS_ENABLED=true > "${root}/external-backup/install.env"
+  printf 'current unit\n' > "${root}/units/kixdns.service"
+  (
+    EXTERNAL_BACKUP="${root}/external-backup"
+    SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    BACKUP_ROOT="${root}/rollback"
+    install() { mkdir -p "${@: -1}"; }
+    chmod() { :; }
+    INSTALL_KIND=migrate
+    EXISTING_KIXDNS_BINARY_PATH=/usr/local/bin/kixdns
+    KIXDNS_CONFIG_PATH=/etc/kixdns-panel/kixdns/pipeline.json
+    ORIGINAL_KIXDNS_CONFIG_PATH=/etc/new.json
+    KIXDNS_WAS_ACTIVE=false
+    KIXDNS_WAS_ENABLED=false
+    preserve_external_install
+    printf 'CREATED=%s\n' "${CREATED_EXTERNAL_BACKUP}"
+    printf 'UNIT=%s\n' "$(cat "${EXTERNAL_BACKUP}/kixdns.service")"
+    printf 'BACKUP=%s\n' "$(tr '\n' ' ' < "${EXTERNAL_BACKUP}/install.env")"
+    # 迁移接着失败了 / The migration then fails
+    systemctl() { :; }
+    restore_path() { :; }
+    restore_managed_config() { :; }
+    restore_panel_database() { :; }
+    INSTALL_MODE=managed
+    EXISTING_PANEL=false
+    KIXDNS_BINARY_CHANGED=true
+    KIXDNS_UNIT_CHANGED=true
+    RESOLVED_CHANGED=false
+    rollback_install 1 > /dev/null 2>&1
+  ) || true
+  printf 'AFTER-ROLLBACK=%s %s\n' "$(cat "${root}/external-backup/kixdns.service" 2>/dev/null || printf missing)" \
+    "$(grep -c '^KIXDNS_CONFIG=/etc/old.json$' "${root}/external-backup/install.env" 2>/dev/null || true)"
+}
+output="$(stale_external_backup)"
+assert_contains "${output}" "CREATED=true" "已有的旧备份应换成这次迁移的备份"
+assert_contains "${output}" "UNIT=current unit" "再迁移时应备份主机上现在的 unit"
+assert_contains "${output}" "KIXDNS_CONFIG=/etc/new.json " "再迁移时应记下现在的原配置"
+assert_contains "${output}" "KIXDNS_WAS_ACTIVE=false KIXDNS_WAS_ENABLED=false " "再迁移时应记下现在的运行与开机状态"
+assert_contains "${output}" "AFTER-ROLLBACK=old unit 1" "迁移失败回滚应把原来那份备份原样放回"
+
 # ---------------------------------------------------------------------------
 # 迁移时的配置 / The config on migration
 # ---------------------------------------------------------------------------
@@ -994,6 +1046,94 @@ if ! grep -qx 'ProtectHome=true' "${PACKAGE_ROOT}/deploy/systemd/kixdns.service"
   exit 1
 fi
 assert_equals "${KIXDNS_HIDDEN_DIRECTORIES[*]-}" "/home /root /run/user /tmp /var/tmp" "安装器检查的不可见目录应与 unit 的沙箱一致"
+
+# 面板（kixdns-panel 账号）自己也读原配置里写的 Geo 文件，挑 GeoSite 分类、给 IP 标地区时用。它读不到时不拒绝迁移（DNS 不受
+# 影响），安装结果点名这些文件和原因，好让人去改权限。只查面板会读的 Geo 文件（GeoSite、GeoIP），DoH 证书这类面板不读的不查。
+# kixdns-panel 账号还没建时和 kixdns 账号一样，用 nobody 加 kixdns 组代替它试读。
+# The panel (the kixdns-panel account) reads the Geo files the original config names too, for picking GeoSite categories
+# and labelling IP regions. When it cannot, migration is not refused (DNS is unaffected), and the install result names
+# those files and why, so the permissions can be fixed. Only the Geo files the panel reads (GeoSite, GeoIP) are checked,
+# not ones it never reads such as a DoH certificate. Before the kixdns-panel account exists, nobody with the kixdns group
+# stands in for it, as for the kixdns account.
+panel_readability_root="${WORK}/panel-readability"
+mkdir -p "${panel_readability_root}/kernel-only" "${panel_readability_root}/shared"
+for file in kernel-only/geosite.dat kernel-only/geoip.dat kernel-only/key.pem shared/geoip.mmdb shared/geosite.dat; do
+  : > "${panel_readability_root}/${file}"
+done
+printf '{"settings":{"geosite_data_paths":[\n"%s",\n"%s"],"geoip_db_path":"%s","geoip_dat_path":"%s","doh_tls_key":"%s"}}\n' \
+  "${panel_readability_root}/kernel-only/geosite.dat" "${panel_readability_root}/shared/geosite.dat" \
+  "${panel_readability_root}/shared/geoip.mmdb" "${panel_readability_root}/kernel-only/geoip.dat" \
+  "${panel_readability_root}/kernel-only/key.pem" > "${panel_readability_root}/kixdns.json"
+printf '{"settings":{"geosite_data_paths":["%s"],"doh_tls_key":"%s"}}\n' \
+  "${panel_readability_root}/shared/geosite.dat" "${panel_readability_root}/kernel-only/key.pem" \
+  > "${panel_readability_root}/readable.json"
+# 参数：原配置，kixdns-panel 账号在不在（exists / missing）。kixdns 账号读得到所有文件，面板（kixdns-panel 或代替它的 nobody）
+# 读不到 kernel-only 里的。
+# Arguments: the original config, and whether the kixdns-panel account exists (exists / missing). The kixdns account can read
+# every file; the panel (kixdns-panel, or nobody standing in for it) cannot read those in kernel-only.
+panel_readability_of() {
+  local config=$1
+  local panel_account=$2
+  (
+    INSTALL_KIND=migrate
+    KIXDNS_BINARY_PATH=/usr/local/bin/kixdns
+    KIXDNS_CONFIG_PATH=${config}
+    PANEL_CONFIG_DIRECTORY="${WORK}/panel-readability-etc"
+    MIGRATED_KIXDNS_CONFIG_DIRECTORY="${PANEL_CONFIG_DIRECTORY}/kixdns"
+    MIGRATED_KIXDNS_CONFIG="${PANEL_CONFIG_DIRECTORY}/kixdns/pipeline.json"
+    KIXDNS_HIDDEN_DIRECTORIES=()
+    setpriv() { printf 'setpriv %s\n' "$*"; [[ $1 == --reuid=kixdns || ${*: -1} != */kernel-only/* ]]; }
+    id() { [[ $2 == kixdns || ${panel_account} == exists ]]; }
+    getent() { printf 'kixdns:x:992:\n'; }
+    validate_install_mode
+    printf 'CONTINUED\n'
+    PANEL_RELEASE=v3.1.1
+    PANEL_BUILD_COMMIT=${commit_a}
+    KIXDNS_BUILD_COMMIT=${commit_b}
+    KIXDNS_WAS_ACTIVE=true
+    KIXDNS_UNIT_CHANGED=false
+    PORT_CONFLICT=none
+    RESOLVED_CHANGED=false
+    print_summary http://192.168.1.20:5738
+  ) 2>&1 || true
+}
+for panel_account in exists missing; do
+  output="$(panel_readability_of "${panel_readability_root}/kixdns.json" "${panel_account}")"
+  assert_contains "${output}" "CONTINUED" "面板读不到 Geo 文件时不应拒绝迁移（${panel_account}）"
+  assert_contains "${output}" "Geo 文件：面板读不到原配置里写的这些，GeoSite 分类和 IP 地区标注会缺它们，DNS 不受影响：" \
+    "面板读不到 Geo 文件时安装结果应提醒（${panel_account}）"
+  assert_contains "${output}" "  ${panel_readability_root}/kernel-only/geosite.dat：kixdns-panel 账号没有读取权限" \
+    "应点名面板读不到的 GeoSite 文件（${panel_account}）"
+  assert_contains "${output}" "  ${panel_readability_root}/kernel-only/geoip.dat：kixdns-panel 账号没有读取权限" \
+    "应点名面板读不到的 GeoIP 文件（${panel_account}）"
+  assert_contains "${output}" "让 kixdns-panel 账号能读到它们，刷新面板页面就有了。" "提醒应说明怎么补上（${panel_account}）"
+  assert_not_contains "${output}" "shared/geoip.mmdb：" "面板读得到的文件不应列出（${panel_account}）"
+  assert_not_contains "${output}" "shared/geosite.dat：" "面板读得到的文件不应列出（${panel_account}）"
+  assert_not_contains "${output}" "key.pem：" "面板不读的文件不应列出（${panel_account}）"
+  assert_not_contains "${output}" "读不到原配置 ${panel_readability_root}/kixdns.json 里写的这些文件" \
+    "kixdns 账号读得到时不应拒绝（${panel_account}）"
+done
+output="$(panel_readability_of "${panel_readability_root}/kixdns.json" exists)"
+assert_contains "${output}" "setpriv --reuid=kixdns-panel --regid=992 --init-groups -- test -r ${panel_readability_root}/kernel-only/geosite.dat" \
+  "kixdns-panel 账号已存在时应以它和它的组试读"
+assert_not_contains "${output}" "setpriv --reuid=kixdns-panel --regid=992 --init-groups -- test -r ${panel_readability_root}/kernel-only/key.pem" \
+  "面板不读的文件不应以面板账号试读"
+output="$(panel_readability_of "${panel_readability_root}/kixdns.json" missing)"
+assert_contains "${output}" "setpriv --reuid=65534 --regid=992 --clear-groups -- test -r ${panel_readability_root}/kernel-only/geoip.dat" \
+  "kixdns-panel 账号不存在时应以 nobody 加 kixdns 组试读"
+output="$(panel_readability_of "${panel_readability_root}/readable.json" exists)"
+assert_contains "${output}" "CONTINUED" "面板读得到时应继续迁移"
+assert_not_contains "${output}" "Geo 文件：" "面板都读得到时不应提醒"
+# 面板 unit 和 KixDNS 的 unit 藏起的目录要一样：KixDNS 看得见（上面查过不在藏起的目录里）的文件，面板的服务也看得见，读不到
+# 就只剩权限这一个原因。哪边的沙箱改了，这里都要重新想一遍。
+# The panel unit and the KixDNS unit must hide the same directories: a file KixDNS can see (checked above to lie outside
+# them) is visible to the panel's service too, leaving permissions as the only reason it cannot be read. When either
+# sandbox changes, this needs thinking through again.
+sandbox_of() {
+  grep -E '^(ProtectHome|PrivateTmp|InaccessiblePaths|TemporaryFileSystem)=' "$1"
+}
+assert_equals "$(sandbox_of "${PACKAGE_ROOT}/deploy/systemd/kixdns-panel.service")" \
+  "$(sandbox_of "${PACKAGE_ROOT}/deploy/systemd/kixdns.service")" "面板 unit 和 KixDNS unit 藏起的目录应一样"
 
 # 迁移失败回滚：删掉副本和它的目录，原配置和它所在的目录一点不动。
 # A failed migration rolls back: the copy and its directory are removed, the original config and its directory untouched.

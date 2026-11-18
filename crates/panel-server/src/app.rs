@@ -1770,9 +1770,9 @@ fn scaled(delta: u64, position: i64, span: i64) -> u64 {
     .unwrap_or_default()
 }
 
-/// Geo 数据和拦截列表的自动更新：每 15 分钟看一次到没到时间，两样一前一后，不同时改配置
+/// Geo 数据和拦截列表的自动更新：每 15 分钟看一次到没到时间，两样一前一后，不同时改配置；每一轮只读一次钟
 /// The automatic update of Geo data and blocklists: every 15 minutes it checks whether one is due,
-/// running them one after the other so they never change the config at the same time
+/// running them one after the other so they never change the config at the same time; each round reads the clock once
 fn spawn_update_scheduler(state: AppState) {
     tokio::spawn(async move {
         let start = tokio::time::Instant::now() + std::time::Duration::from_mins(1);
@@ -1780,14 +1780,24 @@ fn spawn_update_scheduler(state: AppState) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            if let Err(error) = geo::run_due_geo_schedule(&state).await {
-                tracing::warn!(error = ?error, "Geo 定时更新失败");
-            }
-            if let Err(error) = blocklist::run_due_blocklist_schedule(&state).await {
-                tracing::warn!(error = ?error, "拦截列表定时更新失败");
-            }
+            run_due_schedules(&state, unix_timestamp()).await;
         }
     });
+}
+
+/// 一轮自动更新：Geo 数据和拦截列表都拿这一轮读到的同一个时间 `now` 判断到没到点，跑了也都记下它。拦截列表要是等 Geo
+/// 更新跑完再自己读钟，记下的时间就晚了 Geo 下载花的工夫，第二天同一轮还差这几十秒不到点，又要等下一轮
+/// One round of automatic updates: Geo data and blocklists are both checked against the one time `now` this round read,
+/// and both record it when they run. Had the blocklists read the clock themselves after the Geo update finished, the time
+/// recorded would be later by however long the Geo download took, and the same round the next day would fall those
+/// seconds short and wait for the round after
+async fn run_due_schedules(state: &AppState, now: i64) {
+    if let Err(error) = geo::run_due_geo_schedule(state, now).await {
+        tracing::warn!(error = ?error, "Geo 定时更新失败");
+    }
+    if let Err(error) = blocklist::run_due_blocklist_schedule(state, now).await {
+        tracing::warn!(error = ?error, "拦截列表定时更新失败");
+    }
 }
 
 fn spawn_config_reconciler(state: AppState) {

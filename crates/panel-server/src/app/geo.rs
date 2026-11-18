@@ -384,7 +384,7 @@ pub(super) async fn get_geo_data_schedule(
     state
         .geo_data
         .schedule()
-        .get()
+        .get(unix_timestamp())
         .await
         .map(Json)
         .map_err(map_geo_data_error)
@@ -410,7 +410,7 @@ pub(super) async fn save_geo_data_schedule(
     let schedule = state
         .geo_data
         .schedule()
-        .set_interval(request.interval_hours)
+        .set_interval(request.interval_hours, unix_timestamp())
         .await
         .map_err(map_geo_data_error)?;
     state
@@ -447,9 +447,8 @@ fn schedule_error(error: &anyhow::Error) -> String {
     }
 }
 
-pub(super) async fn run_due_geo_schedule(state: &AppState) -> anyhow::Result<()> {
-    let now = unix_timestamp();
-    let schedule = state.geo_data.schedule().get().await?;
+pub(super) async fn run_due_geo_schedule(state: &AppState, now: i64) -> anyhow::Result<()> {
+    let schedule = state.geo_data.schedule().get(now).await?;
     if !schedule.is_due(now) {
         return Ok(());
     }
