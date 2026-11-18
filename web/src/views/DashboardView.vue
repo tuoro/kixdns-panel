@@ -530,19 +530,18 @@ const trendWindow = computed(() => {
   if (!trend || trend.points.length === 0) return ''
   const bucket = trend.bucket_seconds || 3600
   const seconds = trend.points.length * bucket
-  // 采样停过（KixDNS 停了、读不到）：曲线到最后一个桶的末尾就没了，时段从那一刻往前说，不说「最近」
-  // Sampling stopped (KixDNS stopped or could not be read): the curve ends with its last bucket, so the period counts back from that
-  // moment instead of reading 最近
-  const lead = lastIsNow.value ? '最近' : `${clock((trend.points[trend.points.length - 1]!.start_unix + bucket) * 1000, false)} 前`
-  if (seconds >= 24 * 3600) return `${lead} 24 小时`
   // 不满一小时就按分钟说。四舍五入到小时会把 25 分钟说成「近 0 小时」，
   // 或者更糟，说成「近 1 小时」——把刚开机说成已经跑满一小时。
   // Below an hour the caption counts minutes: rounding to hours would render 25
   // minutes as "last 0 hours" or, worse, "last 1 hour", presenting a panel just
   // started as one that has run a full hour.
-  if (seconds < 3600) return `${lead} ${Math.max(1, Math.round(seconds / 60))} 分钟`
   const hours = Math.round(seconds / 3600)
-  return hours === 1 ? `${lead}一小时` : `${lead} ${hours} 小时`
+  const span = seconds >= 24 * 3600 ? ' 24 小时' : seconds < 3600 ? ` ${Math.max(1, Math.round(seconds / 60))} 分钟` : hours === 1 ? '一小时' : ` ${hours} 小时`
+  // 采样停过（KixDNS 停了、读不到）：曲线到最后一个桶的末尾就没了，时段写「截至那一刻的…」，不说「最近」
+  // Sampling stopped (KixDNS stopped or could not be read): the curve ends with its last bucket, so the period reads 「截至 that
+  // moment 的…」 instead of 最近
+  if (lastIsNow.value) return `最近${span}`
+  return `截至 ${clock((trend.points[trend.points.length - 1]!.start_unix + bucket) * 1000, false)} 的${span}`
 })
 
 const trendPending = computed(() => {

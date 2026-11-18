@@ -771,9 +771,9 @@ test('停了 6 小时的快照：时段从快照那一刻说起，页头不下�
   // 趋势说它自己停在哪一刻，图上的说明也一样 / The trend names the moment it stopped, as do the charts' labels
   const ended = await clockText(page, await page.evaluate(() => (globalThis as unknown as { __trendEnd: number }).__trendEnd))
   const total = (4000 + 4500 + 5000 + 5500 + 6000) * 3 + 4000 + 4500 + 5000
-  await expect(page.locator('.overview-trend-label')).toHaveText(`${ended} 前 18 小时 ${total.toLocaleString('zh-CN')} 次`)
-  await expect(page.locator('.overview-spark')).toHaveAttribute('aria-label', `${ended} 前 18 小时请求量趋势`)
-  await expect(page.locator('.overview-bars')).toHaveAttribute('aria-label', `${ended} 前 18 小时每小时查询量`)
+  await expect(page.locator('.overview-trend-label')).toHaveText(`截至 ${ended} 的 18 小时 ${total.toLocaleString('zh-CN')} 次`)
+  await expect(page.locator('.overview-spark')).toHaveAttribute('aria-label', `截至 ${ended} 的 18 小时请求量趋势`)
+  await expect(page.locator('.overview-bars')).toHaveAttribute('aria-label', `截至 ${ended} 的 18 小时每小时查询量`)
 })
 
 test('还在运行、采样照常：时段照旧写「最近」，页头照旧下判定', async ({ page }) => {
