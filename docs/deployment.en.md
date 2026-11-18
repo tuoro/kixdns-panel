@@ -162,7 +162,16 @@ sudo sed -i 's/^KIXDNS_PANEL_SECURE_COOKIE=.*/KIXDNS_PANEL_SECURE_COOKIE=true/' 
 sudo systemctl restart kixdns-panel.service
 ```
 
-By default, `X-Forwarded-For` is trusted only from loopback addresses (`127.0.0.1/32,::1/128`). When the proxy is in a container or on another host, write its exact CIDR into `KIXDNS_TRUSTED_PROXIES`. Otherwise rate limiting counts all requests against the proxy address.
+By default the panel trusts `X-Forwarded-For` from no proxy: without a reverse proxy, a header someone writes themselves cannot get around the login rate limit. Behind a reverse proxy, write the proxy's address into `KIXDNS_TRUSTED_PROXIES`; otherwise the login limit counts everyone against the proxy's one address, and a few wrong passwords lock out everyone who logs in through it. With the proxy on the same host:
+
+```bash
+sudo sed -i 's|^KIXDNS_TRUSTED_PROXIES=.*|KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128|' /etc/kixdns-panel/panel.env
+grep -q '^KIXDNS_TRUSTED_PROXIES=' /etc/kixdns-panel/panel.env || \
+  echo 'KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' | sudo tee -a /etc/kixdns-panel/panel.env
+sudo systemctl restart kixdns-panel.service
+```
+
+When the proxy is in a container or on another host, write its exact CIDR. Panels up to v4.3.4 trusted loopback by default; after upgrading, a deployment behind a reverse proxy without this setting gets one reminder in the runtime log.
 
 ## Permission model
 

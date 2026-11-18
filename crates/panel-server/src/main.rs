@@ -121,12 +121,8 @@ struct Args {
     #[arg(long, env = "KIXDNS_PANEL_SECURE_COOKIE", default_value_t = false)]
     secure_cookie: bool,
 
-    /// 允许提供 `X-Forwarded-For` 的反向代理 CIDR，逗号分隔。
-    #[arg(
-        long,
-        env = "KIXDNS_TRUSTED_PROXIES",
-        default_value = "127.0.0.1/32,::1/128"
-    )]
+    /// 允许提供 `X-Forwarded-For` 的反向代理 CIDR，逗号分隔；默认谁都不信，面板在反向代理后面时写上代理的地址。
+    #[arg(long, env = "KIXDNS_TRUSTED_PROXIES", default_value = "")]
     trusted_proxies: TrustedProxies,
 
     #[command(subcommand)]
