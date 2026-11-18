@@ -345,6 +345,8 @@ installed=true
 require_output "KixDNS：已迁移为增强版，保持原来的运行状态（运行中）" "迁移结果没有说明保持运行状态"
 require_output "配置：已复制到 /etc/kixdns-panel/kixdns/pipeline.json 由面板管理，原来的 ${CONFIG_PATH} 不动" \
   "迁移结果没有说明配置副本"
+# 这个 GeoSite 谁都读得到，面板也读得到：安装结果不该提醒 / Everyone can read this GeoSite, the panel too: no notice
+! grep -Fq 'Geo 文件：面板读不到' "${install_log}" || fail "面板读得到原配置里的 GeoSite，安装结果却提醒读不到"
 systemctl is-active --quiet kixdns.service || fail "迁移后 KixDNS 没有保持运行"
 systemctl is-enabled --quiet kixdns.service || fail "迁移后 KixDNS 没有保持开机自启"
 [[ $(unit_main_executable kixdns.service) == /var/lib/kixdns-panel/bin/kixdns ]] ||
@@ -373,8 +375,11 @@ python3 "${ACCEPTANCE_PY}" verify --dns-port "${migration_port}" --mode migrated
 [[ $(original_config_state) == "${original_before}" ]] || fail "在面板里改配置改到了原配置"
 ! cmp -s -- "${CONFIG_PATH}" /etc/kixdns-panel/kixdns/pipeline.json || fail "面板保存的配置没有写进迁移副本"
 
+# 第一次恢复保留面板数据：恢复完备份就用掉，保留的 panel.env 记下 KixDNS 已不归面板管。
+# The first restore keeps the panel data: once restored the backup is used up, and the kept panel.env records that the
+# KixDNS is no longer the panel's.
 uninstall_log="$(mktemp)"
-bash "${UNINSTALLER}" --remove-kixdns --remove-config --yes 2>&1 | tee "${uninstall_log}"
+bash "${UNINSTALLER}" --remove-kixdns --keep-config --yes 2>&1 | tee "${uninstall_log}"
 installed=false
 grep -Fq "它用的是迁移前的配置 ${CONFIG_PATH}，面板改过的副本已删除。" "${uninstall_log}" ||
   fail "卸载没有说明用回了迁移前的配置"
@@ -389,6 +394,82 @@ systemctl is-enabled --quiet kixdns.service || fail "卸载后原来的 KixDNS �
 # Answering with the pre-migration address shows the original KixDNS runs the pre-migration config, not the panel's edit.
 python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
 [[ $(original_config_state) == "${original_before}" ]] || fail "卸载恢复后原配置或它所在的目录和迁移前不一样"
+! systemctl is-active --quiet kixdns-panel.service || fail "卸载后面板服务仍在运行"
+[[ ! -e /var/lib/kixdns-panel/external-backup ]] || fail "恢复以后仍留着迁移前的备份"
+grep -Fxq 'KIXDNS_MANAGEMENT_ENABLED=false' "${PANEL_ENV}" || fail "恢复以后保留的 panel.env 没有记下 KixDNS 已不归面板管"
+
+# 再迁移之前，主机上的 KixDNS 换了一份配置，改成不开机自启、照常运行。新配置写着一个只有 kixdns 账号读得到的 GeoSite
+# （上次迁移建的账号还在）：KixDNS 读得到，面板读不到，迁移照常，安装结果点名它。
+# Before migrating again, the host's KixDNS got another config and stopped starting at boot while still running. The new
+# config names a GeoSite only the kixdns account can read (the account the last migration made is still there): KixDNS can
+# read it, the panel cannot, migration goes ahead and the install result names it.
+second_config="${MIGRATION_ROOT}/second.json"
+kernel_only_geosite="${MIGRATION_ROOT}/kernel-only/geosite.dat"
+second_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${second_config}" --geosite "${kernel_only_geosite}")"
+[[ ${second_port} =~ ^[0-9]+$ ]] || fail "没有获得再迁移验收的 DNS 端口"
+install -d -m 0755 "$(dirname -- "${kernel_only_geosite}")"
+install -o kixdns -g kixdns -m 0600 "${PACKAGE_ROOT}/geo/geosite.dat" "${kernel_only_geosite}"
+cat > "${MIGRATION_UNIT}" <<EOF
+[Unit]
+Description=验收用的外部 KixDNS（再迁移前换了配置）
+
+[Service]
+ExecStart=${MIGRATION_ROOT}/kixdns run --config ${second_config} --admin-socket /run/kixdns/admin.sock
+RuntimeDirectory=kixdns
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cp -- "${MIGRATION_UNIT}" "${MIGRATION_ROOT}/second.service"
+systemctl daemon-reload
+systemctl disable kixdns.service
+systemctl restart kixdns.service
+python3 "${ACCEPTANCE_PY}" dns --dns-port "${second_port}"
+second_config_state() {
+  stat -c '%U:%G:%a' -- "${second_config}"
+  sha256sum -- "${second_config}"
+}
+second_before="$(second_config_state)"
+
+run_installer --replace-existing
+installed=true
+require_output "KixDNS：已迁移为增强版，保持原来的运行状态（运行中）" "再迁移的结果没有说明保持运行状态"
+require_output "配置：已复制到 /etc/kixdns-panel/kixdns/pipeline.json 由面板管理，原来的 ${second_config} 不动" \
+  "再迁移的结果没有说明配置副本"
+require_output "Geo 文件：面板读不到原配置里写的这些" "面板读不到原配置里的 GeoSite 时安装结果没有提醒"
+require_output "  ${kernel_only_geosite}：kixdns-panel 账号没有读取权限" "安装结果没有点名面板读不到的 GeoSite"
+systemctl is-active --quiet kixdns.service || fail "再迁移后 KixDNS 没有保持运行"
+! systemctl is-enabled --quiet kixdns.service || fail "再迁移后 KixDNS 不该开机自启"
+[[ $(unit_main_executable kixdns.service) == /var/lib/kixdns-panel/bin/kixdns ]] ||
+  fail "再迁移后运行的不是增强版程序"
+python3 "${ACCEPTANCE_PY}" dns --dns-port "${second_port}"
+cmp -s -- /var/lib/kixdns-panel/external-backup/kixdns.service "${MIGRATION_ROOT}/second.service" ||
+  fail "再迁移没有备份主机上现在的 unit"
+grep -Fxq "KIXDNS_CONFIG=${second_config}" /var/lib/kixdns-panel/external-backup/install.env ||
+  fail "再迁移的备份没有记下现在的原配置"
+grep -Fxq 'KIXDNS_WAS_ACTIVE=true' /var/lib/kixdns-panel/external-backup/install.env ||
+  fail "再迁移的备份没有记下现在在运行"
+grep -Fxq 'KIXDNS_WAS_ENABLED=false' /var/lib/kixdns-panel/external-backup/install.env ||
+  fail "再迁移的备份没有记下现在不开机自启"
+! grep -q '^KIXDNS_MANAGEMENT_ENABLED=' "${PANEL_ENV}" || fail "重新安装后 panel.env 还说 KixDNS 不归面板管"
+
+# 第二次恢复回到第二次迁移之前：换过的 unit 和配置、不开机自启、在运行。
+# The second restore goes back to just before the second migration: the changed unit and config, not enabled, running.
+uninstall_log="$(mktemp)"
+bash "${UNINSTALLER}" --remove-kixdns --remove-config --yes 2>&1 | tee "${uninstall_log}"
+installed=false
+grep -Fq "它用的是迁移前的配置 ${second_config}，面板改过的副本已删除。" "${uninstall_log}" ||
+  fail "第二次恢复没有用回第二次迁移前的配置"
+rm -f -- "${uninstall_log}"
+systemctl daemon-reload
+cmp -s -- "${MIGRATION_UNIT}" "${MIGRATION_ROOT}/second.service" || fail "第二次恢复没有放回第二次迁移前的 unit"
+systemctl is-active --quiet kixdns.service || fail "第二次恢复后原来的 KixDNS 没有运行"
+! systemctl is-enabled --quiet kixdns.service || fail "第二次恢复把开机自启改回了第一次迁移前的样子"
+[[ $(unit_main_executable kixdns.service) == "${MIGRATION_ROOT}/kixdns" ]] ||
+  fail "第二次恢复后运行的不是原来的程序"
+python3 "${ACCEPTANCE_PY}" dns --dns-port "${second_port}"
+[[ $(second_config_state) == "${second_before}" ]] || fail "第二次恢复后原配置和第二次迁移前不一样"
 [[ ! -e /etc/kixdns-panel ]] || fail "卸载后仍残留 /etc/kixdns-panel"
 ! systemctl is-active --quiet kixdns-panel.service || fail "卸载后面板服务仍在运行"
 remove_migration_fixture
@@ -396,4 +477,4 @@ migration_fixture=false
 
 rm -f -- "${install_log}"
 trap - EXIT
-printf '完整包安装、同版本重跑、修复安装、运行联调、迁移与卸载验收通过。\n'
+printf '完整包安装、同版本重跑、修复安装、运行联调、迁移、恢复后再迁移与卸载验收通过。\n'

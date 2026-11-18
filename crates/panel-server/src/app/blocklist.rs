@@ -52,7 +52,7 @@ async fn get_blocklists(
     let schedule = state
         .blocklists
         .schedule()
-        .get()
+        .get(unix_timestamp())
         .await
         .map_err(map_blocklist_error)?;
     Ok(Json(Blocklists { sources, schedule }))
@@ -110,7 +110,7 @@ async fn save_schedule(
     let schedule = state
         .blocklists
         .schedule()
-        .set_interval(request.interval_hours)
+        .set_interval(request.interval_hours, unix_timestamp())
         .await
         .map_err(map_blocklist_error)?;
     state
@@ -131,9 +131,8 @@ async fn save_schedule(
 /// 到了时间就更新正在用的拦截列表。有列表没更新上时，其余照常换上，自动更新记下几个没更新上。
 /// Updates the blocklists in use when one is due. When some lists fail to update the rest still go in, and the
 /// schedule records how many failed.
-pub(super) async fn run_due_blocklist_schedule(state: &AppState) -> anyhow::Result<()> {
-    let now = unix_timestamp();
-    let schedule = state.blocklists.schedule().get().await?;
+pub(super) async fn run_due_blocklist_schedule(state: &AppState, now: i64) -> anyhow::Result<()> {
+    let schedule = state.blocklists.schedule().get(now).await?;
     if !schedule.is_due(now) {
         return Ok(());
     }

@@ -500,19 +500,44 @@ impl GeoDataManager {
 }
 
 impl GeoDataSchedule {
+    /// 读到 `now` 的这一轮该不该跑：开着、还没试过就跑；试过的，到了上次试的时间加上间隔才跑。只看存着的设置和 `now`，不看
+    /// `next_run_at`：那是给页面看的、按读出来那一刻算的，读设置时钟又走了一秒也不会让这一轮错过
+    /// Whether the round that read `now` should run it: on and never tried, yes; tried, once the last attempt plus the
+    /// interval is reached. Only the stored setting and `now` decide, not `next_run_at`: that one is for the page and worked
+    /// out at the moment of reading, so a second passing while the setting is read cannot make the round miss it
     #[must_use]
     pub fn is_due(&self, now: i64) -> bool {
-        self.interval_hours.is_some() && self.next_run_at.is_some_and(|next| next <= now)
+        match (self.interval_hours, self.last_attempt_at) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(hours), Some(attempt)) => {
+                run_after(attempt, hours) <= now.saturating_add(DUE_SLACK_SECONDS)
+            }
+        }
     }
 
-    fn refresh_next_run(&mut self) {
+    /// 页面上的「下次」：试过的是上次试的时间加上间隔；开着还没试过的就是读的那一刻 `now`，下一轮就跑
+    /// The page's 下次: for one tried, the last attempt plus the interval; for one on and never tried, `now`, the moment
+    /// of reading, since the next round runs it
+    fn refresh_next_run(&mut self, now: i64) {
         self.next_run_at = self.interval_hours.map(|hours| {
-            self.last_attempt_at.map_or_else(unix_timestamp, |attempt| {
-                attempt
-                    .saturating_add(i64::try_from(hours.saturating_mul(3600)).unwrap_or(i64::MAX))
-            })
+            self.last_attempt_at
+                .map_or(now, |attempt| run_after(attempt, hours))
         });
     }
+}
+
+/// 上次试的时间加上间隔 / The last attempt plus the interval
+/// 到期时间比这一轮读到的钟晚不超过这么多秒，也算这一轮到期。一轮 15 分钟才看一次，每天的同一轮读钟的时刻差几毫秒，
+/// 碰上秒的边界就会差一秒；不留这点余地，这一秒会让它推迟整整一轮。提前一分钟跑对每天、每周的更新没有影响
+/// A run falling due at most this many seconds after the round's reading counts as due in this round. A round looks only
+/// every 15 minutes, and the same round on another day reads the clock a few milliseconds apart, which across a second
+/// boundary is one second; without this slack that second puts the run off a whole round. Running up to a minute early
+/// makes no difference to daily or weekly updates
+const DUE_SLACK_SECONDS: i64 = 60;
+
+fn run_after(attempt: i64, hours: u64) -> i64 {
+    attempt.saturating_add(i64::try_from(hours.saturating_mul(3600)).unwrap_or(i64::MAX))
 }
 
 /// 存在数据库一个键下的自动更新设置：Geo 数据和拦截列表各一份 / An automatic-update setting under one database key: one for
@@ -534,14 +559,17 @@ impl ScheduleStore {
         }
     }
 
-    pub(crate) async fn get(&self) -> Result<GeoDataSchedule, GeoDataError> {
+    /// `now` 是读的这一刻：没有别的地方看钟，到没到点由调用的人拿同一个时间去问 `is_due`
+    /// `now` is the moment of reading: nothing here looks at the clock, and the caller asks `is_due` with that same time
+    pub(crate) async fn get(&self, now: i64) -> Result<GeoDataSchedule, GeoDataError> {
         let stored = self.database.get_setting(self.key).await?;
-        parse_schedule(stored.as_deref(), self.what)
+        parse_schedule(stored.as_deref(), self.what, now)
     }
 
     pub(crate) async fn set_interval(
         &self,
         interval_hours: Option<u64>,
+        now: i64,
     ) -> Result<GeoDataSchedule, GeoDataError> {
         if !matches!(interval_hours, None | Some(24 | 168)) {
             return Err(GeoDataError::Invalid(format!(
@@ -549,23 +577,23 @@ impl ScheduleStore {
                 self.what
             )));
         }
-        self.modify(move |schedule| {
+        self.modify(now, move |schedule| {
             if schedule.interval_hours == interval_hours {
                 return Ok(false);
             }
             schedule.interval_hours = interval_hours;
             schedule.last_attempt_at = None;
             schedule.last_error = None;
-            schedule.refresh_next_run();
+            schedule.refresh_next_run(now);
             Ok(true)
         })
         .await
     }
 
     pub(crate) async fn mark_attempt(&self, now: i64) -> Result<(), GeoDataError> {
-        self.modify(move |schedule| {
+        self.modify(now, move |schedule| {
             schedule.last_attempt_at = Some(now);
-            schedule.refresh_next_run();
+            schedule.refresh_next_run(now);
             Ok(true)
         })
         .await
@@ -577,12 +605,12 @@ impl ScheduleStore {
         now: i64,
         error: Option<String>,
     ) -> Result<(), GeoDataError> {
-        self.modify(move |schedule| {
+        self.modify(now, move |schedule| {
             if error.is_none() {
                 schedule.last_success_at = Some(now);
             }
             schedule.last_error = error.map(|message| message.chars().take(500).collect());
-            schedule.refresh_next_run();
+            schedule.refresh_next_run(now);
             Ok(true)
         })
         .await
@@ -596,15 +624,17 @@ impl ScheduleStore {
     /// overwritten by it, and waits for that write to finish instead
     async fn modify(
         &self,
+        now: i64,
         change: impl FnOnce(&mut GeoDataSchedule) -> Result<bool, GeoDataError> + Send + 'static,
     ) -> Result<GeoDataSchedule, GeoDataError> {
         let what = self.what;
         self.database
-            .update_setting(self.key, unix_timestamp(), move |stored| {
-                let changed = parse_schedule(stored.as_deref(), what).and_then(|mut schedule| {
-                    let changed = change(&mut schedule)?;
-                    Ok((changed, schedule))
-                });
+            .update_setting(self.key, now, move |stored| {
+                let changed =
+                    parse_schedule(stored.as_deref(), what, now).and_then(|mut schedule| {
+                        let changed = change(&mut schedule)?;
+                        Ok((changed, schedule))
+                    });
                 match changed {
                     Ok((true, schedule)) => match serde_json::to_string(&schedule) {
                         Ok(serialized) => (Some(serialized), Ok(schedule)),
@@ -620,8 +650,13 @@ impl ScheduleStore {
     }
 }
 
-/// 读存着的自动更新设置；没存过就是关着的 / Reads a stored automatic-update setting; none stored means it is off
-fn parse_schedule(stored: Option<&str>, what: &str) -> Result<GeoDataSchedule, GeoDataError> {
+/// 读存着的自动更新设置；没存过就是关着的。`now` 是读的这一刻，给页面算「下次」 / Reads a stored automatic-update setting;
+/// none stored means it is off. `now` is the moment of reading, for the page's 下次
+fn parse_schedule(
+    stored: Option<&str>,
+    what: &str,
+    now: i64,
+) -> Result<GeoDataSchedule, GeoDataError> {
     let Some(value) = stored else {
         return Ok(GeoDataSchedule::default());
     };
@@ -630,7 +665,7 @@ fn parse_schedule(stored: Option<&str>, what: &str) -> Result<GeoDataSchedule, G
             anyhow::Error::new(error).context(format!("{what}的自动更新设置已损坏")),
         )
     })?;
-    schedule.refresh_next_run();
+    schedule.refresh_next_run(now);
     Ok(schedule)
 }
 
@@ -1681,22 +1716,31 @@ mod tests {
         let manager = GeoDataManager::new(database, &directory.path().join("geo")).unwrap();
 
         assert!(matches!(
-            manager.schedule().set_interval(Some(12)).await,
+            manager.schedule().set_interval(Some(12), 900).await,
             Err(GeoDataError::Invalid(_))
         ));
-        let enabled = manager.schedule().set_interval(Some(24)).await.unwrap();
+        let enabled = manager
+            .schedule()
+            .set_interval(Some(24), 900)
+            .await
+            .unwrap();
         assert_eq!(enabled.interval_hours, Some(24));
         manager.schedule().mark_attempt(1_000).await.unwrap();
         manager.schedule().mark_result(1_001, None).await.unwrap();
 
-        let unchanged = manager.schedule().set_interval(Some(24)).await.unwrap();
+        let unchanged = manager
+            .schedule()
+            .set_interval(Some(24), 1_002)
+            .await
+            .unwrap();
         assert_eq!(unchanged.last_attempt_at, Some(1_000));
         assert_eq!(unchanged.last_success_at, Some(1_001));
         assert_eq!(unchanged.next_run_at, Some(87_400));
-        assert!(!unchanged.is_due(87_399));
-        assert!(unchanged.is_due(87_400));
+        // 到期前一分钟以内的那一轮就跑（DUE_SLACK_SECONDS） / The round within a minute before it falls due runs it (DUE_SLACK_SECONDS)
+        assert!(!unchanged.is_due(87_339));
+        assert!(unchanged.is_due(87_340));
 
-        let disabled = manager.schedule().set_interval(None).await.unwrap();
+        let disabled = manager.schedule().set_interval(None, 1_003).await.unwrap();
         assert_eq!(disabled.interval_hours, None);
         assert_eq!(disabled.next_run_at, None);
         assert!(!disabled.is_due(i64::MAX));
@@ -1714,7 +1758,11 @@ mod tests {
         let database_path = directory.path().join("panel.db");
         let database = Database::open(database_path.clone()).await.unwrap();
         let manager = GeoDataManager::new(database, &directory.path().join("geo")).unwrap();
-        manager.schedule().set_interval(Some(24)).await.unwrap();
+        manager
+            .schedule()
+            .set_interval(Some(24), 1_000)
+            .await
+            .unwrap();
         // 用户的「关闭」：等 `busy` 这么久还写不进就算没写进 / The user's 关闭: given up when it cannot get in within `busy`
         let close = move |busy: Duration| {
             let connection = rusqlite::Connection::open(&database_path).unwrap();
@@ -1736,13 +1784,65 @@ mod tests {
             }
         };
 
-        manager.schedule().modify(during).await.unwrap();
+        manager.schedule().modify(1_000, during).await.unwrap();
         // 写不进来的「关闭」等这一笔写完再写 / A 关闭 that could not get in lands once this write is done
         if !landed.load(Ordering::SeqCst) {
             assert!(close(Duration::from_secs(5)));
         }
 
-        assert_eq!(manager.schedule().get().await.unwrap().interval_hours, None);
+        assert_eq!(
+            manager.schedule().get(1_000).await.unwrap().interval_hours,
+            None
+        );
+    }
+
+    /// 开了还没试过的自动更新：下一轮一定跑。回归：没试过时「下次」按读出来那一刻现算，调度那一轮先读了钟、读设置时
+    /// 钟又走了一秒，「下次」就晚了一秒，这一轮跳过、等 15 分钟后的下一轮。现在到没到点只看存着的设置和这一轮读到的时间
+    /// A schedule turned on and never tried runs in the next round for sure. Regression: with no attempt yet, the next
+    /// run was worked out from the moment of reading, so when the clock moved on a second between the round's reading
+    /// and reading the setting, the next run lay a second ahead, the round skipped it and the next one came 15 minutes
+    /// later. Whether it is due now depends only on the stored setting and the round's reading
+    #[tokio::test]
+    async fn a_schedule_never_tried_is_due_whichever_second_it_is_read() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        let manager = GeoDataManager::new(database, &directory.path().join("geo")).unwrap();
+
+        let enabled = manager
+            .schedule()
+            .set_interval(Some(24), 1_000)
+            .await
+            .unwrap();
+        // 页面上的「下次」是读的那一刻：现在就到点 / The page's 下次 is the moment it was read: due now
+        assert_eq!(enabled.next_run_at, Some(1_000));
+        let read_later = manager.schedule().get(1_001).await.unwrap();
+        assert_eq!(read_later.next_run_at, Some(1_001));
+        // 读设置比这一轮读钟晚了一秒，这一轮照样到点 / Read a second after the round read the clock, still due
+        assert!(read_later.is_due(1_000));
+        assert!(read_later.is_due(i64::MIN));
+
+        // 试过以后按上次试的时间算，和哪一刻读的无关 / Once tried, it follows the last attempt, whenever it is read
+        manager.schedule().mark_attempt(1_000).await.unwrap();
+        let tried = manager.schedule().get(2_000).await.unwrap();
+        assert_eq!(tried.next_run_at, Some(87_400));
+        assert!(!tried.is_due(87_339));
+        assert!(tried.is_due(87_340));
+    }
+
+    /// 一轮 15 分钟才看一次：到期时间只比这一轮读到的钟晚一秒（读钟正好跨过秒的边界），这一轮照样跑，不推迟一整轮
+    /// A round looks only every 15 minutes: a run falling due a second after the round's reading (the reading just crossed
+    /// a second boundary) runs this round instead of waiting a whole round
+    #[test]
+    fn a_run_falling_due_a_second_after_the_rounds_reading_is_not_put_off() {
+        let schedule = super::GeoDataSchedule {
+            interval_hours: Some(24),
+            last_attempt_at: Some(1_000),
+            ..super::GeoDataSchedule::default()
+        };
+        assert!(schedule.is_due(87_399));
+        assert!(!schedule.is_due(80_000));
     }
 
     const BUILTIN_URL: &str =
