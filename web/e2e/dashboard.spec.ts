@@ -776,6 +776,27 @@ test('停了 6 小时的快照：时段从快照那一刻说起，页头不下�
   await expect(page.locator('.overview-bars')).toHaveAttribute('aria-label', `截至 ${ended} 的 18 小时每小时查询量`)
 })
 
+// 配置页的上游组卡片和概览的上游状态用同一个时段说法：手上是快照时两页都从快照那一刻往前说
+// The config page's group cards and the overview's upstream status name the period alike: holding a snapshot, both count back from it
+test('KixDNS 停了、手上是快照：上游组卡片和概览一样写「快照前一小时」', async ({ page }) => {
+  await wrapClient(page, 'group-snapshot-original', `
+    const now = Math.floor(Date.now() / 1000);
+    export async function apiRequest(path, init) {
+      const result = await original(path, init);
+      if (path === '/api/v1/service') return { ...result, active_state: 'inactive', sub_state: 'dead', main_pid: 0 };
+      if (path === '/api/v1/overview') return { ...result, live: false, service_active: false, captured_at_unix: now - 6 * 3600 };
+      return result;
+    }
+  `)
+  await page.goto('/')
+  await expect(page.locator('.overview-card--upstreams .overview-card-note')).toHaveText('快照前一小时')
+  await page.goto('/config?section=upstreams')
+  // 演示里「default」只有 1.1.1.1:53 一个地址 / In the demo, default has the single address 1.1.1.1:53
+  const health = page.locator('.gcard', { has: page.getByRole('button', { name: 'default', exact: true }) }).locator('.gcard__health')
+  await expect(health).toContainText('快照前一小时')
+  await expect(health).not.toContainText('最近')
+})
+
 test('还在运行、采样照常：时段照旧写「最近」，页头照旧下判定', async ({ page }) => {
   await openOverview(page)
   await expect(page.locator('.overview-card--upstreams .overview-card-note')).toHaveText('最近一小时')

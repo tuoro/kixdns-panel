@@ -246,7 +246,9 @@ export function ruleLogQuery(rule: Rule): { rule: string; in: string } | null {
 // This used lifetime counts and the old denominator, so one upstream showed two success rates on two pages
 export interface GroupHealth { success: number; latency: number | null; queries: number; period: string }
 export const groupHealth = ref<Map<string, GroupHealth>>(new Map())
-export function applyUpstreamStats(counts: UpstreamCount[], windowSeconds: number | null = null): void {
+// snapshot：手上是 KixDNS 停了、读不到时留下的快照，时段和概览一样从快照那一刻往前说（「快照前一小时」） / snapshot: what is in hand is the snapshot
+// left when KixDNS stopped or could not be read, so the period counts back from it as on the overview (快照前一小时)
+export function applyUpstreamStats(counts: UpstreamCount[], windowSeconds: number | null = null, snapshot = false): void {
   const map = new Map<string, GroupHealth>()
   const key = (address: string, transport = 'udp') => normalizeAddress(address, transport)
   for (const g of model.groups) {
@@ -260,7 +262,7 @@ export function applyUpstreamStats(counts: UpstreamCount[], windowSeconds: numbe
     const weight = timed.reduce((n, t) => n + settledAttempts(t), 0)
     const latency = weight ? Math.round(timed.reduce((n, t) => n + (t.avg_latency_ms ?? 0) * settledAttempts(t), 0) / weight) : null
     const queries = tallies.reduce((n, t) => n + settledAttempts(t), 0)
-    const period = bases.every((basis) => !basis.recent) ? '启动以来' : recentWindowLabel(windowSeconds)
+    const period = bases.every((basis) => !basis.recent) ? '启动以来' : recentWindowLabel(windowSeconds, snapshot)
     if (judged) map.set(g.id, { success: Math.round((success / judged) * 1000) / 10, latency, queries, period })
   }
   groupHealth.value = map

@@ -398,6 +398,18 @@ export function upstreamProblem(upstream: string, transport = 'udp'): string | n
 }
 /** 上游组里一个地址内核用不用得了（没写端口的先按 53 补上） / Whether the kernel can use one address of a group (a missing port taken as 53 first) */
 export const addressProblem = (item: UpstreamAddress): string | null => upstreamProblem(kernelAddress(withDefaultPort(item)))
+/**
+ * 一串逗号隔开的上游（设置里的默认上游）内核用不用得了：每一个照 UDP 读，一个都没有也不收（config.rs problems）。说法和上游组的地址一样，
+ * 用得了为 null
+ * Whether the kernel can use a comma-separated string of upstreams (the settings' default upstream): each read as UDP, and none at all
+ * refused too (config.rs problems). Worded as an upstream group's addresses; null when it can
+ */
+export function upstreamListProblem(text: string): string | null {
+  const list = text.split(',').map((u) => u.trim()).filter(Boolean)
+  if (!list.length) return '至少填一个地址'
+  for (const [i, u] of list.entries()) { const p = upstreamProblem(u); if (p) return `第 ${i + 1} 个地址${p}` }
+  return null
+}
 // 规则可以不起名字（同 Surge：一条规则就是条件和去向）；没有名字时用条件当标题
 // A rule may go unnamed (as in Surge, a rule is its condition and its target); without a name its condition is the title
 export function ruleTitle(rule: Rule): string {

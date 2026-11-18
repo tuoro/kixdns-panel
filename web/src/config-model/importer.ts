@@ -251,23 +251,37 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const groups: UpstreamGroup[] = []
   const usedGroupIds = new Set<string>()
   const pipelineIds = new Set(pipelines.map((p) => p.id))
-  const slug = (base: string) => {
+  // 组的编号要没用过；编号定下的 Pipeline 名字（upstream-编号）也不能是配置里别的 Pipeline 的，own 是这个组自己读自的那个。两个 Pipeline 同名，
+  // 内核整份配置都不收（比如 JSON 里把 upstream-x 改成了规则列表，里面的转发又按上一份认回组 x）
+  // A group id must be unused, and the pipeline name it gives (upstream-<id>) must not be another pipeline's in the config, own being the one
+  // this group was read from. Two pipelines of one name and the kernel refuses the whole config (upstream-x turned into a rule list in the JSON,
+  // say, with the forward inside matched back to the previous group x)
+  const freeGroupId = (id: string, own?: string) => !usedGroupIds.has(id) && (!pipelineIds.has(`upstream-${id}`) || `upstream-${id}` === own)
+  const slug = (base: string, own?: string) => {
     let id = base.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'group'
-    for (let n = 2; usedGroupIds.has(id) || (pipelineIds.has(`upstream-${id}`) && !groupIds.has(`upstream-${id}`)); n++) id = `${base}-${n}`
+    for (let n = 2; !freeGroupId(id, own); n++) id = `${base}-${n}`
     usedGroupIds.add(id)
     return id
   }
+  // 规则的编号也定下一个 Pipeline 名字：单独设了子网或回答检查的规则自己的转发叫 rule-编号。配置里已经有这个名字的 Pipeline 时跳过这个编号
+  // A rule's id gives a pipeline name too: a rule with its own subnet or answer check has its own forward named rule-<id>. An id whose name a
+  // pipeline in the config already has is skipped
+  const ruleId = () => { let id = cid(); while (pipelineIds.has(`rule-${id}`)) id = cid(); return id }
   const hostLabel = (addrs: UpstreamAddress[]) => {
     const host = (a: UpstreamAddress) => a.address.replace(/^[a-z+]+:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, '')
     return addrs.length > 1 ? `${host(addrs[0]!)} 等 ${addrs.length} 个` : host(addrs[0]!)
   }
   const uniqueName = (name: string) => { let n = name; for (let i = 2; groups.some((g) => g.name === n); i++) n = `${name}（${i}）`; return n }
   const groupOfPipeline = new Map<string, UpstreamGroup>()
+  const prevGroupOf = (p: KPipelineLike) => prev?.groups.find((g) => (g.pipelineId ?? `upstream-${g.id}`) === p.id)
+  // 认回上一份的组先占住编号，新组起编号时让开：两个组同编号，编出来就是两个同名的 Pipeline / Groups matched to the previous model hold their ids
+  // first and new groups step aside: two groups of one id compile to two pipelines of one name
+  for (const p of pipelines) { const g = groupIds.has(p.id) ? prevGroupOf(p) : undefined; if (g) usedGroupIds.add(g.id) }
   for (const p of pipelines) {
     if (!groupIds.has(p.id)) continue
     const f = fwd.get(p.id)!
-    const prevG = prev?.groups.find((g) => (g.pipelineId ?? `upstream-${g.id}`) === p.id)
-    const id = prevG?.id ?? slug(p.id.startsWith('upstream-') ? p.id.slice(9) : p.id)
+    const prevG = prevGroupOf(p)
+    const id = prevG?.id ?? slug(p.id.startsWith('upstream-') ? p.id.slice(9) : p.id, p.id)
     usedGroupIds.add(id)
     const g: UpstreamGroup = { id, name: uniqueName(prevG?.name ?? (p.id.startsWith('upstream-') ? p.id.slice(9) : p.id)), addresses: f.addrs, ecs: f.ecs, fallback: { group: '', onError: false, onPolluted: false } }
     if (p.id !== `upstream-${id}`) g.pipelineId = p.id
@@ -294,7 +308,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       ?? groups.find((x) => addrKey(x.addresses) === k)
     if (g) return { group: g, ecs: ecsEq(g.ecs, ecs) ? 'inherit' : ecs, off: !plain(g) }
     const prevG = prev?.groups.find((x) => addrKey(x.addresses) === k)
-    const created: UpstreamGroup = { id: prevG && !usedGroupIds.has(prevG.id) ? prevG.id : slug(name === '默认上游' ? 'default' : hostLabel(addrs).split(' ')[0]!), name: uniqueName(prevG?.name ?? name ?? hostLabel(addrs)), addresses: addrs, ecs, fallback: { group: '', onError: false, onPolluted: false } }
+    const created: UpstreamGroup = { id: prevG && freeGroupId(prevG.id) ? prevG.id : slug(name === '默认上游' ? 'default' : hostLabel(addrs).split(' ')[0]!), name: uniqueName(prevG?.name ?? name ?? hostLabel(addrs)), addresses: addrs, ecs, fallback: { group: '', onError: false, onPolluted: false } }
     usedGroupIds.add(created.id)
     groups.push(created)
     if (name === '默认上游') fromDefault.push(created.name)
@@ -491,7 +505,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const base = (name: string) => name.replace(/#\d+$/, '')
   function convertRule(kr: KRuleLike, where: string): Rule {
     // 面板给没起名字的规则编的内核名（rule-编号）读回来时还原成不带名字 / The kernel name the panel made up for an unnamed rule (rule-<id>) reads back as no name
-    const rule: Rule = { id: cid(), name: /^rule-\d+$/.test(base(kr.name)) ? '' : base(kr.name), note: '', enabled: true, conditions: [[]], outcome: { type: 'continue' }, log: { enabled: false, level: 'info' }, ecs: 'inherit', response: { mode: 'inherit', match: 'any', conditions: [], then: { type: 'none' }, otherwise: { type: 'none' } }, edited: '导入' }
+    const rule: Rule = { id: ruleId(), name: /^rule-\d+$/.test(base(kr.name)) ? '' : base(kr.name), note: '', enabled: true, conditions: [[]], outcome: { type: 'continue' }, log: { enabled: false, level: 'info' }, ecs: 'inherit', response: { mode: 'inherit', match: 'any', conditions: [], then: { type: 'none' }, otherwise: { type: 'none' } }, edited: '导入' }
     try {
       if (Object.keys(kr).some((k) => !RULE_KEYS.has(k))) raw('规则里有认不出的字段')
       rule.conditions = mergeGroups(dnf(kr.matchers, kr.matcher_operator).map((g) => g.map(requestCondition)))
@@ -591,7 +605,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   for (const s of asRules) {
     const when = entryConditions(s)!
     const t = s.pipeline
-    const plain = (outcome: Outcome): Rule => ({ id: cid(), name: t, note: '', enabled: true, conditions: when, outcome, log: { enabled: false, level: 'info' }, ecs: 'inherit', response: { mode: 'inherit', match: 'any', conditions: [], then: { type: 'none' }, otherwise: { type: 'none' } }, edited: '导入' })
+    const plain = (outcome: Outcome): Rule => ({ id: ruleId(), name: t, note: '', enabled: true, conditions: when, outcome, log: { enabled: false, level: 'info' }, ecs: 'inherit', response: { mode: 'inherit', match: 'any', conditions: [], then: { type: 'none' }, otherwise: { type: 'none' } }, edited: '导入' })
     if (groupOfPipeline.has(t)) { entryRules.push(plain({ type: 'upstream', group: groupOfPipeline.get(t)!.id })); continue }
     if (unfold.has(t)) {
       // 先试着展开；里面有放不进的规则就把这次试的痕迹全撤掉，退回成规则组 / Try unfolding; if something inside does not fit, undo every trace of the attempt and fall back to a rule group
@@ -672,7 +686,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     ...(rawPipelines.length ? { rawPipelines } : {}),
     ...(Object.keys(extra).length ? { extra } : {}),
   }
-  if (prev) model = carryOver(model, prev, kernelIds, origin)
+  if (prev) model = carryOver(model, prev, kernelIds, origin, pipelineIds)
   // compile 自己加进 settings 的（按其余请求写的默认上游、拦截列表合成的文件）不收进模型 / What compile adds to settings itself (the default
   // upstream written from 其余请求, the blocklists' merged file) is not taken into the model
   model.settings = settingsFromKernel(model, settings, prev?.settings ?? {})
@@ -693,7 +707,7 @@ function refersHere(m: Model, r: Rule): boolean {
 // that, placed in this model, compiles to the kernel part it was read from stays the previous model's object entirely: the import can read a
 // kernel form one way only, while several panel forms compile alike (拦截 · 沿用默认 and the concrete code, 不检查 and 沿用 on a group without
 // fallback…), and swapping one for another changes the meaning (whether it follows a later change of the default, the group's fallback or subnet)
-function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, origin: Origin): Model {
+function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, origin: Origin, pipelineIds: ReadonlySet<string>): Model {
   // 上游组先换：规则自己的转发里写着组的地址和备用 / Groups first: a rule's own forward holds its group's addresses and fallback
   model.groups.forEach((g, i) => {
     const p = prev.groups.find((x) => x.id === g.id)
@@ -718,9 +732,15 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, orig
   // names are left out of the comparison: they only drive counts and traces, which rule is which was settled by the matching, and a rename
   // elsewhere in the list can change this rule's kernel name too
   const unnamed = (rules: unknown[]) => (rules as Record<string, unknown>[]).map(({ name: _name, ...r }) => r)
+  // 编号定下规则自己那个转发 Pipeline 的名字（rule-编号）：这个名字在读进来的配置里是别的 Pipeline（读成了上游组、规则组或原样保留）时，不接上一份的
+  // 编号，不然这条规则现在或以后自带转发时编出两个同名的。它读自的那个自己的转发不算：并回了规则，不再单独写出去
+  // An id names the rule's own forward pipeline (rule-<id>): when that name is another pipeline of the config read in (read as an upstream group,
+  // a rule group or kept verbatim) the previous id is not taken, or this rule, with its own forward now or later, compiles to two of one name.
+  // The own forward it was read from does not count: folded into the rule, it is not written out on its own
+  const takesId = (r: Rule, id: number) => !pipelineIds.has(`rule-${id}`) || origin.rules.get(r)?.pipeline?.id === `rule-${id}`
   const keep = (list: Rule[], r: Rule, cand: Rule): Rule => {
     const from = origin.rules.get(r)
-    if (!from || !refersHere(model, cand)) return r
+    if (!from || !refersHere(model, cand) || !takesId(r, cand.id)) return r
     const k = ruleKernel(model, cand, '')
     if (!sameKernel(unnamed(k.rules), unnamed(from.rules)) || !sameKernel(k.pipeline, from.pipeline)) return r
     list[list.indexOf(r)] = cand
@@ -741,7 +761,7 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, orig
         : before.find((x) => x.enabled && !paired.has(x) && x.name === r.name && (r.name !== '' || sameShape(x, r)))
       if (!p) continue
       paired.set(p, r)
-      Object.assign(r, { id: p.id, name: id !== undefined ? p.name : r.name, note: p.note, edited: p.edited, outcome: sameBlock(p.outcome, r.outcome) ? p.outcome : r.outcome })
+      Object.assign(r, { id: takesId(r, p.id) ? p.id : r.id, name: id !== undefined ? p.name : r.name, note: p.note, edited: p.edited, outcome: sameBlock(p.outcome, r.outcome) ? p.outcome : r.outcome })
       // 条件一样只是顺序不同（内核要求多值的条件排最前）：用上一份的顺序 / Same conditions in another order (the kernel wants a multi-valued one first): keep the previous order
       if (!r.raw && !p.raw && condsKey(r.conditions) === condsKey(p.conditions)) r.conditions = p.conditions
       if (!r.raw && !p.raw && r.response.mode === 'custom' && p.response.mode === 'custom' && JSON.stringify({ ...r.response, conditions: r.response.conditions.map(fullKey).sort() }) === JSON.stringify({ ...p.response, conditions: p.response.conditions.map(fullKey).sort() })) r.response = p.response

@@ -322,6 +322,83 @@ describe('重新读入的保护：只有编出来逐项一样才留上一份 / t
     expect(ruleNamed(back, '交给路由器')!.outcome.type).toBe('group')
   })
 
+  // 编出来不止一个的 Pipeline 名字：内核遇到同名的 Pipeline 整份配置都不收 / Pipeline ids compiled more than once: the kernel refuses a config
+  // holding two pipelines of one id
+  const repeatedPipelines = (m: Model) => { const ids = compile(m).pipelines.map((p) => p.id); return ids.filter((id, i) => ids.indexOf(id) !== i) }
+
+  it('JSON 里把上游组的 Pipeline 改成了规则列表、里面照旧转发到原来的地址：为这个转发整理出的组不和这个规则列表同名', () => {
+    const m = sampleModel()
+    addRule(m, '交给路由器', { type: 'upstream', group: 'router' }, 'r.lan.example')
+    const back = editKernel(m, (k) => {
+      const router = k.pipelines.find((p) => p.id === 'upstream-router')!
+      const forward = router.rules[0]!
+      router.rules = [
+        { ...forward, name: '路由器拦一个', matchers: [{ type: 'domain_suffix', value: 'x.lan', operator: 'and' }], actions: [{ type: 'static_response', rcode: 'NXDOMAIN' }] },
+        { ...forward, name: '路由器其余' },
+      ]
+    })
+    expect(repeatedPipelines(back)).toEqual([])
+    // 规则列表的其余请求照旧交给 192.168.1.1:53 / The list's catch-all still goes to 192.168.1.1:53
+    const list = back.ruleGroups.find((g) => g.pipelineId === 'upstream-router')!
+    const rest = list.rest as Extract<Outcome, { type: 'upstream' }>
+    expect(back.groups.find((g) => g.id === rest.group)!.addresses).toEqual([{ address: '192.168.1.1:53', protocol: 'auto' }])
+  })
+
+  it('JSON 里加了一个 upstream-router、原来的路由器组的 Pipeline 另有名字：两个组编号不同，路由器还是原来的编号', () => {
+    const m = sampleModel()
+    m.groups.find((g) => g.id === 'router')!.pipelineId = 'lan-dns'
+    const back = editKernel(m, (k) => {
+      const lan = k.pipelines.find((p) => p.id === 'lan-dns')!
+      // 排在最前，比原来那个组先读到 / First in the list, read before the original group
+      k.pipelines.unshift({ id: 'upstream-router', rules: [{ ...clone(lan.rules[0]!), name: 'upstream-router', actions: [{ type: 'forward', upstream: '192.168.1.2:53' }] }] })
+    })
+    expect(repeatedPipelines(back)).toEqual([])
+    const ids = back.groups.map((g) => g.id)
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([])
+    expect(back.groups.find((g) => g.id === 'router')!.pipelineId).toBe('lan-dns')
+  })
+
+  it('上一份里国外组的 Pipeline 叫 upstream-dns-google：JSON 里新写的、只问 dns.google 的转发整理出的组不和它同名', () => {
+    const m = sampleModel()
+    m.groups.find((g) => g.id === 'abroad')!.pipelineId = 'upstream-dns-google'
+    const back = editKernel(m, (k) => {
+      const main = k.pipelines.find((p) => p.id === 'main')!
+      main.rules.unshift({ ...clone(main.rules[0]!), name: '只问谷歌', matchers: [{ type: 'domain_suffix', value: 'g.example', operator: 'and' }], actions: [{ type: 'forward', upstream: 'https://dns.google/dns-query' }] })
+    })
+    expect(repeatedPipelines(back)).toEqual([])
+    expect(back.groups.find((g) => g.id === 'abroad')!.pipelineId).toBe('upstream-dns-google')
+  })
+
+  it('JSON 里把规则自己那个转发写回规则里、原来的 rule-编号 留着：留下的那个读成上游组，规则不再用这个编号', () => {
+    const m = sampleModel()
+    const apple = ruleNamed(m, '苹果服务')!
+    const back = editKernel(m, (k) => {
+      const own = k.pipelines.find((p) => p.id === `rule-${apple.id}`)!.rules[0]!
+      for (const r of k.pipelines.find((p) => p.id === 'main')!.rules.filter((x) => x.name.replace(/#\d+$/, '') === '苹果服务')) {
+        Object.assign(r, { actions: own.actions, response_matchers: own.response_matchers, response_matcher_operator: own.response_matcher_operator, response_actions_on_match: own.response_actions_on_match, response_actions_on_miss: own.response_actions_on_miss })
+      }
+    })
+    expect(repeatedPipelines(back)).toEqual([])
+    expect(back.groups.some((g) => g.pipelineId === `rule-${apple.id}`)).toBe(true)
+    // 名字和备注照旧跟着这条规则 / Its name and note still come along
+    expect(ruleNamed(back, '苹果服务')!.note).toBe(apple.note)
+  })
+
+  it('JSON 里手写了一个和某条规则同编号的 rule-编号：这条规则不再用这个编号，以后单独设子网也不撞名', () => {
+    const m = sampleModel()
+    const corp = ruleNamed(m, '公司内网')!
+    const back = editKernel(m, (k) => {
+      const forward = { ...k.pipelines.find((p) => p.id === 'upstream-router')!.rules[0]!, name: `rule-${corp.id}`, actions: [{ type: 'forward', upstream: '192.168.1.2:53' }] }
+      k.pipelines.push({ id: `rule-${corp.id}`, rules: [forward] })
+    })
+    expect(back.groups.some((g) => g.pipelineId === `rule-${corp.id}`)).toBe(true)
+    // 读回来以后在编辑器里给它单独设子网：它自己的转发 Pipeline 和留下的那个不同名 / Given its own subnet in the editor after the read: its own
+    // forward pipeline is not named like the one kept
+    ruleNamed(back, '公司内网')!.ecs = { mode: 'client', v4: 24, v6: 56 }
+    expect(repeatedPipelines(back)).toEqual([])
+    expect(ruleNamed(back, '公司内网')!.note).toBe(corp.note)
+  })
+
   it('JSON 里删了一条、又加了一条和后面那条只差名字的：加的那条是新规则，不顶替已经认回来的那条', () => {
     const m = sampleModel()
     const a = addRule(m, '甲', { type: 'block', response: 'NXDOMAIN' }, 'a.block.example')

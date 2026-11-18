@@ -9,6 +9,7 @@ import { blocklistKey, compileNamed, type Model, type Rule } from '../config-mod
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { ROLLBACK_LABELS, configPageOpen, nameWith, noteRead, restartingKixdns, startingKixdns, versionName, type RollbackOrigin } from '../composables/useServiceStart'
+import { dashboardRuntimeState } from '../dashboard-state'
 import { serviceTone } from '../service-state'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
@@ -372,6 +373,13 @@ const shouldRefreshAfterSaveError = (error: unknown) => error instanceof ApiErro
 const isConflict = (error: unknown) => error instanceof ApiError && error.code === 'config_conflict'
 
 // ---------- 读 / load ----------
+// 概览里的命中数和上游数字记到草稿上。是不是快照和概览一个认法（dashboardRuntimeState 不是 live 的就是快照）：上游组的时段两页写的一样
+// The overview's hit counts and upstream numbers go onto the draft. Whether they are a snapshot is told as the overview tells it (anything
+// dashboardRuntimeState does not call live is a snapshot), so the group cards name the period as the overview does
+function applyStats(overview: Overview | null, service: ServiceStatus | null): void {
+  applyHits(overview?.metrics?.rules ?? [])
+  applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null, dashboardRuntimeState(overview, service) !== 'live')
+}
 function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, service: ServiceStatus | null): void {
   const declared = nextDoc.runtime.declared_capabilities ?? []
   runtimeService.value = service
@@ -437,8 +445,7 @@ export async function refreshRuntime(): Promise<void> {
   // 回应丢了的那次写入还没核对：文件变了多半就是它，只换运行状态，不进冲突，等核对来说（见 checkFirst） / A lost write still unchecked:
   // a moved file is most likely that write, so only the runtime changes, with no conflict, and the check tells (see checkFirst)
   if (moved && unsaved.value && !busy.value && !conflict.value && !unanswered) enterStaleBase()
-  applyHits(overview?.metrics?.rules ?? [])
-  applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null)
+  applyStats(overview, service)
 }
 
 let pendingLoad: Promise<void> | null = null
@@ -545,8 +552,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
         reportOpen.value = false
       }
     }
-    applyHits(overview?.metrics?.rules ?? [])
-    applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null)
+    applyStats(overview, service)
     validation.value = null
     loadError.value = ''
     loadFailedDown = false

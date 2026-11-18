@@ -16,11 +16,15 @@ const version = defineModel<string | undefined>('version')
 // lead：排在最前面的一组，内容由使用方经 #lead 插槽给出。两样都可以不给。
 // hiddenKeys: settings owned elsewhere stay out of this list (in the new config page 其余请求 decides the default upstream);
 // lead: a group listed first whose rows the caller supplies through the #lead slot. Both are optional.
+// problems：使用方查出来写得不对的设置，key 对一句说法：框标红，说法写在框下面（和别处的出错一样）
+// problems: settings the caller found written wrong, key to one sentence: the box turns red with the sentence under it (as errors do elsewhere)
 const props = defineProps<{
   changed?: ReadonlySet<string>
   hiddenKeys?: readonly string[]
   lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean; help?: string }
+  problems?: Readonly<Record<string, string>>
 }>()
+const problemId = (field: SettingField) => `settings-problem-${field.key}`
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
 const search = ref('')
 const searchInput = ref<HTMLInputElement>()
@@ -237,12 +241,14 @@ function removeListItem(field: SettingField, index: number): void {
             </div>
             <label v-else class="ui-setrow" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
-              <span class="ui-input ui-setrow__control">
-                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @input="setText(field, $event)">
-                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" @input="setNumber(field, $event)">
-                <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @input="setCsv(field, $event)">
+              <!-- 框和出错的说法在同一格里：说法紧跟在框下面，不被左边几行说明顶下去 / The box and its error share one cell, so the error follows the box
+                   directly instead of being pushed down by a several-line note on the left -->
+              <span class="ui-setrow__control settings-control"><span class="ui-input">
+                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setText(field, $event)">
+                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setNumber(field, $event)">
+                <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setCsv(field, $event)">
                 <em v-if="field.unit" class="ui-setrow__unit">{{ field.unit }}</em>
-              </span>
+              </span><span v-if="problems?.[field.key]" :id="problemId(field)" class="ui-field-error">{{ problems[field.key] }}</span></span>
             </label>
           </template>
           <label v-if="section.id === 'network' && versionMatches" class="ui-setrow"><span class="ui-setrow__label"><span>格式版本<i v-if="changed?.has('version')" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small>KixDNS 按它判断配置的写法</small><code v-if="query" class="settings-row__key">version</code></span><span class="ui-input ui-setrow__control"><input v-model="version" type="text" aria-label="配置格式版本" :aria-description="changed?.has('version') ? '已修改' : undefined" placeholder="1.0"></span></label>
@@ -322,6 +328,9 @@ function removeListItem(field: SettingField, index: number): void {
    The 12px mono key has short glyphs in a tall line box and looked centred between its name and the box: only the drawn text rises 2, as
    near its name as a note (audit round 8, T3) */
 .settings-row__key { position: relative; top: calc(var(--s-1) / -2); }
+/* 框和出错的说法上下排，间距和「其余请求」那一行一样（config-v2.css sets__stack） / The box and its error stack, spaced as on the 其余请求 row
+   (sets__stack in config-v2.css) */
+.settings-control { display: grid; gap: var(--s-2); }
 @media (max-width: 860px) {
   /* 手机：先是分组列表（像系统设置），点进一组再看它的设置，搜索时直接看结果。
      A phone: the group list first, like system settings; a tap opens one group; searching shows results directly. */

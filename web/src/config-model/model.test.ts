@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { andChains, compile, kernelAddress, ruleProblems, type Condition, type Model } from './model'
+import { andChains, compile, kernelAddress, ruleProblems, upstreamListProblem, type Condition, type Model } from './model'
 import { cond, sampleModel } from './testing/samples'
 import { foldChain } from './testing/kernel-sim'
 
@@ -177,6 +177,19 @@ describe('ruleProblems', () => {
     const model = sampleModel()
     const rule = { ...model.rules[0]!, conditions: [[cond('client_ip', ['192.168.1.300'])]] }
     expect(ruleProblems(model, rule)).toEqual(['「客户端 IP」里有写错的值（标红的那个）'])
+  })
+})
+
+// 设置里的默认上游是一串逗号隔开的上游，内核每一个都照 UDP 读，一个都没有就不收（config.rs problems）；说法和上游组的地址一样
+// The settings' default upstream is a comma-separated string of upstreams, each read by the kernel as UDP, and refused with none at all (config.rs
+// problems); worded as an upstream group's addresses
+describe('upstreamListProblem', () => {
+  it('照内核读，说哪个地址哪里不对 / read as the kernel reads it, naming which address is wrong and how', () => {
+    expect(upstreamListProblem('1.1.1.1:53, https://dns.google/dns-query')).toBeNull()
+    expect(upstreamListProblem('1.1.1.1')).toBe('第 1 个地址：UDP 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ')
+    expect(upstreamListProblem('1.1.1.1:53, 8.8.8.8:0')).toBe('第 2 个地址的端口要在 1 到 65535 之间')
+    expect(upstreamListProblem('')).toBe('至少填一个地址')
+    expect(upstreamListProblem(' , ')).toBe('至少填一个地址')
   })
 })
 
