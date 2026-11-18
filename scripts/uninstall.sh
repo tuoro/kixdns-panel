@@ -6,6 +6,16 @@ PANEL_STATE_DIRECTORY=/var/lib/kixdns-panel
 SYSTEMD_UNIT_DIRECTORY=/etc/systemd/system
 PANEL_ENV=/etc/kixdns-panel/panel.env
 EXTERNAL_BACKUP=/var/lib/kixdns-panel/external-backup
+# 全新安装时安装器为 KixDNS 配置建的目录；panel.env 记下的配置在这里时，它才随 KixDNS 删掉。
+# The directory the installer creates for the KixDNS config on a fresh install; it goes with KixDNS only when the
+# config panel.env records is in it.
+KIXDNS_CONFIG_DIRECTORY=/etc/kixdns
+KIXDNS_RUNTIME_DIRECTORY=/run/kixdns
+# panel.env 记下的、面板管理的 KixDNS 配置；迁移来的主机上是原配置的副本。备份里记的是迁移前原来的 KixDNS 的配置。
+# The KixDNS config panel.env records, the one the panel manages; on a migrated host it is a copy of the original. The
+# backup records the original KixDNS's config from before migration.
+MANAGED_CONFIG=""
+ORIGINAL_CONFIG=""
 # 安装器关闭 systemd-resolved 本机监听时留下的记录；移除 KixDNS 时据此恢复。
 # The record the installer leaves when it turns systemd-resolved's stub off; removing KixDNS restores from it.
 RESOLVED_STATE=/var/lib/kixdns-panel/resolved-stub
@@ -205,6 +215,7 @@ load_settings() {
     [[ ${value} == false ]] || KIXDNS_MANAGED=true
     value="$(environment_value KIXDNS_SERVICE_UNIT || true)"
     [[ -z ${value} ]] || KIXDNS_SERVICE_UNIT=${value}
+    MANAGED_CONFIG="$(environment_value KIXDNS_CONFIG || true)"
   else
     detect_kept_kixdns
   fi
@@ -225,6 +236,20 @@ load_settings() {
 external_backup_present() {
   [[ -f ${EXTERNAL_BACKUP}/install.env ]] || return 1
   [[ $(backup_value KIXDNS_BINARY || true) != "${PANEL_STATE_DIRECTORY}/bin/kixdns" ]]
+}
+
+# 迁移外部 KixDNS 时面板管理的配置副本所在的目录，和 install.sh 的 MIGRATED_KIXDNS_CONFIG_DIRECTORY 是同一个；只有面板会建它。
+# The directory of the config copy the panel manages after migrating an external KixDNS, the same as install.sh's
+# MIGRATED_KIXDNS_CONFIG_DIRECTORY; only the panel creates it.
+migrated_config_directory() {
+  printf '%s/kixdns\n' "${PANEL_CONFIG_DIRECTORY}"
+}
+
+# panel.env 记下的配置是迁移副本，而且不是原来的 KixDNS 自己的配置（那是配置本来就放在副本位置、原地接管的情况）。
+# panel.env names the migration copy as the config, and it is not the original KixDNS's own config (which happens when
+# the config already sat where the copy goes and was managed in place).
+managed_config_is_copy() {
+  [[ ${MANAGED_CONFIG} == "$(migrated_config_directory)/pipeline.json" && ${MANAGED_CONFIG} != "${ORIGINAL_CONFIG}" ]]
 }
 
 open_terminal() {
@@ -327,6 +352,7 @@ load_external_backup() {
   ORIGINAL_UNIT="$(backup_value KIXDNS_SERVICE_UNIT || true)"
   ORIGINAL_ENABLED="$(backup_value KIXDNS_WAS_ENABLED || true)"
   ORIGINAL_ACTIVE="$(backup_value KIXDNS_WAS_ACTIVE || true)"
+  ORIGINAL_CONFIG="$(backup_value KIXDNS_CONFIG || true)"
   # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
   # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
   [[ ${ORIGINAL_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${ORIGINAL_UNIT} != *..* ]] ||
@@ -336,6 +362,9 @@ load_external_backup() {
 }
 
 validate_removal_targets() {
+  if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove ]] && managed_config_is_copy; then
+    [[ ! -L ${PANEL_CONFIG_DIRECTORY} ]] || fail "配置目录不能是符号链接"
+  fi
   [[ ${CONFIG_ACTION} == remove ]] || return 0
   [[ ! -L ${PANEL_CONFIG_DIRECTORY} && ! -L ${PANEL_STATE_DIRECTORY} ]] ||
     fail "配置目录不能是符号链接"
@@ -424,11 +453,17 @@ remove_managed_kixdns() {
   wait_for_unit_inactive "${KIXDNS_SERVICE_UNIT}"
   rm -f -- "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}"
   rm -f -- "${PANEL_STATE_DIRECTORY}/bin/kixdns" "${PANEL_STATE_DIRECTORY}/bin/.kixdns.new"
-  rm -rf -- /run/kixdns
+  rm -rf -- "${KIXDNS_RUNTIME_DIRECTORY}"
+  # 迁移来的主机上，增强版用的是原配置的副本：随增强版一起删掉。原配置一直没动过，不用放回。
+  # On a migrated host the enhanced KixDNS ran a copy of the original config: it goes with it. The original was never
+  # touched, so there is nothing to put back.
+  if managed_config_is_copy; then
+    rm -rf -- "$(migrated_config_directory)"
+  fi
   if [[ ${HAS_EXTERNAL_BACKUP} == true ]]; then
     if [[ -f ${EXTERNAL_BACKUP}/kixdns.service ]]; then
       install -o root -g root -m 0644 "${EXTERNAL_BACKUP}/kixdns.service" \
-        "/etc/systemd/system/${ORIGINAL_UNIT}"
+        "${SYSTEMD_UNIT_DIRECTORY}/${ORIGINAL_UNIT}"
     fi
     RESTORED_EXTERNAL=true
   fi
@@ -437,10 +472,12 @@ remove_managed_kixdns() {
 remove_panel_state() {
   [[ ${CONFIG_ACTION} == remove ]] || return 0
   local state=${PANEL_STATE_DIRECTORY}
+  local kept_kixdns=false
   rm -f -- "${state}/github-token"
   # 保留的 KixDNS 就在状态目录里：只要还有 unit 指向它，就只删面板自己的数据，绝不整个删目录。
   # The kept KixDNS lives in the state directory: while any unit points at it, remove only the panel's data, never the whole directory.
   if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep ]] || managed_binary_in_use; then
+    kept_kixdns=true
     rm -f -- "${state}/panel.db" "${state}/panel.db-shm" "${state}/panel.db-wal"
     rm -rf -- "${state}/versions" "${state}/geo" "${state}/external-backup"
     if [[ -f ${state}/bin/kixdns ]]; then
@@ -454,13 +491,27 @@ remove_panel_state() {
   remove_account kixdns-panel
   if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove && \
     ${HAS_EXTERNAL_BACKUP} == false ]]; then
-    rm -rf -- /etc/kixdns
+    # 全新安装的主机：安装器为配置建的目录随 KixDNS 删掉。按 panel.env 记下的配置路径认，配置不在那里就不删别的目录；
+    # 没记路径的旧 panel.env 按安装器的默认位置。
+    # A freshly installed host: the directory the installer created for the config goes with KixDNS. It is recognised from
+    # the config path panel.env records, and no other directory is removed; an old panel.env without the path means the
+    # installer's default location.
+    if [[ $(dirname -- "${MANAGED_CONFIG:-${KIXDNS_CONFIG_DIRECTORY}/pipeline.json}") == "${KIXDNS_CONFIG_DIRECTORY}" ]]; then
+      rm -rf -- "${KIXDNS_CONFIG_DIRECTORY}"
+    fi
     remove_account kixdns
     groupdel kixdns 2>/dev/null || true
   fi
   # panel.env 是判断 KixDNS 归属的依据，最后才删：中途失败后重跑仍能认出面板管理的 KixDNS。
   # panel.env is how ownership is decided, so it goes last: a rerun after a mid-way failure still recognises the managed KixDNS.
-  rm -rf -- "${PANEL_CONFIG_DIRECTORY}"
+  if [[ ${kept_kixdns} == true && -d "$(migrated_config_directory)" ]]; then
+    # 保留的 KixDNS 还在用迁移副本：面板配置目录里只留下它。
+    # The kept KixDNS still runs the migration copy: it is all that stays in the panel's config directory.
+    find "${PANEL_CONFIG_DIRECTORY}" -mindepth 1 -maxdepth 1 ! -name kixdns ! -name panel.env -exec rm -rf -- {} +
+    rm -f -- "${PANEL_ENV}"
+  else
+    rm -rf -- "${PANEL_CONFIG_DIRECTORY}"
+  fi
 }
 
 state_value() {
@@ -523,6 +574,14 @@ restore_external_state() {
     systemctl stop "${ORIGINAL_UNIT}" 2>/dev/null || true
   fi
   printf '原来的 KixDNS 已恢复，运行状态和迁移前一样。\n'
+  if [[ -n ${ORIGINAL_CONFIG} && ${ORIGINAL_CONFIG} == "${MANAGED_CONFIG}" ]]; then
+    # 旧版安装器原地迁移的主机：面板改的就是原配置，迁移前的内容没有留底，不能说成恢复了。
+    # A host an older installer migrated in place: the panel edited the original config itself and the pre-migration
+    # content was never kept, so it must not read as restored.
+    printf '它用的配置 %s 是面板最后保存的内容：旧版安装器迁移时直接改用了这个文件，迁移前的内容没有留底。\n' "${ORIGINAL_CONFIG}"
+  elif managed_config_is_copy && [[ -f ${ORIGINAL_CONFIG} ]]; then
+    printf '它用的是迁移前的配置 %s，面板改过的副本已删除。\n' "${ORIGINAL_CONFIG}"
+  fi
 }
 
 print_result() {

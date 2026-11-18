@@ -69,11 +69,15 @@ def reserve_dns_port() -> int:
     raise AcceptanceFailure("无法分配安装验收 DNS 端口")
 
 
-def prepare_config(path: Path) -> int:
+def prepare_config(path: Path, geosite: Path | None = None) -> int:
     port = reserve_dns_port()
     content = json.loads(render_config(port, INITIAL_IP))
     content["settings"]["statistics_enabled"] = True
     content["settings"]["statistics_anonymize_client_ip"] = False
+    if geosite is not None:
+        # 迁移验收的原配置写着一个 GeoSite 文件，安装器要确认迁移后的 KixDNS 读得到它
+        # The migration check's original config names a GeoSite file the installer must find readable for the migrated KixDNS
+        content["settings"]["geosite_data_paths"] = [str(geosite)]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o644)
@@ -122,7 +126,7 @@ class PanelClient:
     def authenticate(self, mode: str) -> None:
         status = self.request("/api/v1/setup")
         setup_required = status.get("required") is True
-        if mode == "setup-stopped":
+        if mode in ("setup-stopped", "migrated"):
             require(setup_required, "首次安装没有进入初始化状态")
             path = "/api/v1/setup"
         else:
@@ -290,10 +294,34 @@ def require_builtin_geosite_applied(client: PanelClient, path: str) -> None:
     )
 
 
+def save_reloaded_config(client: PanelClient, dns_port: int) -> None:
+    """在迁移来的主机上通过面板保存一份新配置：面板要能写它管理的那份（迁移副本），KixDNS 热加载后按新配置应答。"""
+    document = client.request("/api/v1/config")
+    require(document.get("runtime", {}).get("status") == "active", "迁移后配置运行状态不是 active")
+    replacement = json.loads(render_config(dns_port, RELOADED_IP))
+    saved = client.request(
+        "/api/v1/config",
+        method="PUT",
+        csrf=True,
+        payload={
+            "content": replacement,
+            "expected_sha256": document.get("sha256"),
+            "message": "迁移验收",
+        },
+    )
+    require(saved.get("active_config", {}).get("sha256") == saved.get("sha256"),
+            "迁移后保存配置的热加载回执不一致")
+    query_a(dns_port, RELOADED_IP)
+
+
 def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
     client = PanelClient(base_url)
     wait_for_panel(client)
     client.authenticate(mode)
+    if mode == "migrated":
+        verify_runtime(client, dns_port, INITIAL_IP)
+        save_reloaded_config(client, dns_port)
+        return
     if mode == "setup-stopped":
         service = client.request("/api/v1/service")
         require(service.get("active_state") == "inactive", "首次安装后 KixDNS 没有保持停止")
@@ -348,10 +376,11 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     prepare = subparsers.add_parser("prepare", help="生成隔离的 DNS 测试配置")
     prepare.add_argument("--config", type=Path, required=True)
+    prepare.add_argument("--geosite", type=Path, help="写进配置的 GeoSite 文件")
     verify = subparsers.add_parser("verify", help="验证已安装的真实服务")
     verify.add_argument("--base-url", default="http://127.0.0.1:5738")
     verify.add_argument("--dns-port", type=int, required=True)
-    verify.add_argument("--mode", choices=("setup-stopped", "login"), required=True)
+    verify.add_argument("--mode", choices=("setup-stopped", "login", "migrated"), required=True)
     dns = subparsers.add_parser("dns", help="等待 KixDNS 按验收配置应答，不经过面板")
     dns.add_argument("--dns-port", type=int, required=True)
     arguments = parser.parse_args()
@@ -359,7 +388,7 @@ def main() -> int:
     if sys.platform != "linux":
         raise AcceptanceFailure("安装包黑盒验收仅支持 Linux")
     if arguments.command == "prepare":
-        print(prepare_config(arguments.config))
+        print(prepare_config(arguments.config, arguments.geosite))
     elif arguments.command == "dns":
         # 迁移验收里原来的 KixDNS 不归面板管，只能直接查 DNS 证明它在跑。
         # In the migration check the original KixDNS is not the panel's, so only a direct query proves it runs.

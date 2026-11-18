@@ -431,6 +431,258 @@ assert_contains "${output}" "这个服务不是面板创建的，保留不动" "
   exit 1
 }
 
+assert_not_contains() {
+  local haystack=$1
+  local needle=$2
+  local message=$3
+  [[ ${haystack} != *"${needle}"* ]] || {
+    printf '断言失败：%s\n实际输出：\n%s\n' "${message}" "${haystack}" >&2
+    exit 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 迁移来的主机：配置 / Migrated hosts: the config
+# ---------------------------------------------------------------------------
+
+INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
+
+# 在临时目录里搭一台迁移过的主机：用安装器自己的函数迁移一个外部 KixDNS（原配置 etc/kixdns.json），
+# 再像面板那样改写它管理的那份配置。改动系统的命令换成只在临时目录里生效的替身。
+# Build a migrated host in a scratch tree: migrate an external KixDNS (original config etc/kixdns.json) with the
+# installer's own functions, then rewrite the config it manages, as the panel would. Commands that change the
+# system are replaced by stand-ins that only act inside the scratch tree.
+migrated_host() {
+  local root=$1
+  rm -rf -- "${root}"
+  mkdir -p "${root}/etc" "${root}/units" "${root}/state/bin" "${root}/panel-etc" "${root}/package/deploy/systemd" \
+    "${root}/package/deploy/config"
+  cp "${PACKAGE_ROOT}/deploy/systemd/kixdns.service" "${root}/package/deploy/systemd/"
+  cp "${PACKAGE_ROOT}/deploy/config/pipeline.json" "${root}/package/deploy/config/"
+  cp "${PACKAGE_ROOT}/deploy/panel.env.example" "${root}/package/deploy/"
+  printf '{"original":true}\n' > "${root}/etc/kixdns.json"
+  chmod 0604 "${root}/etc/kixdns.json"
+  chmod 0751 "${root}/etc"
+  printf '[Service]\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${root}/etc/kixdns.json" \
+    > "${root}/units/kixdns.service"
+  cp -- "${root}/units/kixdns.service" "${root}/original.service"
+  bash -c "
+    set -Eeuo pipefail
+    source '${INSTALLER}'
+    root='${root}'
+    PACKAGE_ROOT=\"\${root}/package\"
+    PANEL_CONFIG_DIRECTORY=\"\${root}/panel-etc\"
+    MIGRATED_KIXDNS_CONFIG_DIRECTORY=\"\${root}/panel-etc/kixdns\"
+    MIGRATED_KIXDNS_CONFIG=\"\${root}/panel-etc/kixdns/pipeline.json\"
+    PANEL_ENV=\"\${root}/panel-etc/panel.env\"
+    SYSTEMD_UNIT_DIRECTORY=\"\${root}/units\"
+    EXTERNAL_BACKUP=\"\${root}/state/external-backup\"
+    systemctl() {
+      case \$1 in
+        show) printf '{ path=/usr/local/bin/kixdns ; argv[]=/usr/local/bin/kixdns run --config %s ; }\n' \"\${root}/etc/kixdns.json\" ;;
+        cat | is-active | is-enabled) return 0 ;;
+      esac
+    }
+    install() {
+      local arguments=()
+      while [[ \$# -gt 0 ]]; do
+        case \$1 in -o | -g) shift ;; *) arguments+=(\"\$1\") ;; esac
+        shift
+      done
+      [[ \${arguments[*]: -1} != \"\${root}\"/* ]] || command install \"\${arguments[@]}\"
+    }
+    chown() { :; }
+    kixdns_can_read() { return 0; }
+    update_panel_environment() { render_panel_environment /dev/null \"\${PANEL_ENV}\" commit panel '' 1 fork; }
+    INSTALL_MODE=managed
+    detect_existing_kixdns
+    determine_install_kind
+    validate_install_mode
+    preserve_external_install
+    install_configuration
+    render_kixdns_unit > \"\${SYSTEMD_UNIT_DIRECTORY}/kixdns.service\"
+  "
+  # 受管 unit 运行的是面板状态目录里的程序；换成临时主机的状态目录，卸载器才认得出它。
+  # The managed unit runs the program in the panel's state directory; point it at the scratch host's, so the
+  # uninstaller recognises it.
+  sed -i "s|/var/lib/kixdns-panel/|${root}/state/|g" "${root}/units/kixdns.service"
+  printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
+  chmod 0755 "${root}/state/bin/kixdns"
+  # 面板保存配置：改的是 panel.env 记下的那一份。/ The panel saves a config: it rewrites the one panel.env names.
+  printf '{"edited":true}\n' > "$(awk -F= '$1 == "KIXDNS_CONFIG" { print $2 }' "${root}/panel-etc/panel.env")"
+}
+
+# 在同一台临时主机上运行卸载器；参数照传给 parse_arguments。
+# Run the uninstaller on that scratch host; the arguments go to parse_arguments as given.
+uninstall_scratch_host() {
+  local root=$1
+  shift
+  (
+    PANEL_CONFIG_DIRECTORY="${root}/panel-etc"
+    PANEL_STATE_DIRECTORY="${root}/state"
+    SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    PANEL_ENV="${PANEL_CONFIG_DIRECTORY}/panel.env"
+    EXTERNAL_BACKUP="${PANEL_STATE_DIRECTORY}/external-backup"
+    RESOLVED_STATE="${PANEL_STATE_DIRECTORY}/resolved-stub"
+    KIXDNS_RUNTIME_DIRECTORY="${root}/run-kixdns"
+    KIXDNS_CONFIG_DIRECTORY="${root}/etc-kixdns"
+    systemctl() { [[ $1 != is-active ]]; }
+    getent() { return 2; }
+    groupdel() { :; }
+    chown() { :; }
+    install() {
+      local arguments=()
+      while [[ $# -gt 0 ]]; do
+        case $1 in -o | -g) shift ;; *) arguments+=("$1") ;; esac
+        shift
+      done
+      [[ ${arguments[*]: -1} != "${root}"/* ]] || command install "${arguments[@]}"
+    }
+    remove_panel_components() { :; }
+    KIXDNS_MANAGED=false
+    KIXDNS_KEPT_EARLIER=false
+    KIXDNS_SERVICE_UNIT=kixdns.service
+    KIXDNS_ACTION=auto
+    CONFIG_ACTION=auto
+    ASSUME_YES=false
+    PURGE=false
+    HAS_EXTERNAL_BACKUP=false
+    RESTORED_EXTERNAL=false
+    DEAD_PANEL_UNITS=()
+    DEAD_FOREIGN_UNITS=()
+    parse_arguments "$@"
+    run_uninstall
+  ) 2>&1 || printf 'RUN-FAILED\n'
+}
+
+# 回归：以前迁移原地接管原配置，面板改的就是它；卸载时放回原来的 unit 并说「已恢复」，原来的 KixDNS 却跑着面板改过的配置。
+# 现在面板只改副本：卸载恢复后，原配置的内容、权限和它所在目录的权限都和迁移前一样，副本随增强版一起删掉。
+# Regression: migration used to take the original config over in place, so the panel edited it; uninstall put the original
+# unit back and said "restored", yet the original KixDNS ran the config the panel had edited. Now the panel edits only the
+# copy: after the restore, the original config's content and mode and its directory's mode are as before the migration,
+# and the copy goes with the enhanced KixDNS.
+scratch="$(mktemp -d)"
+trap 'rm -rf -- "${scratch}"' EXIT
+host="${scratch}/host"
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "迁移过的主机卸载不应失败"
+assert_equals "$(cat "${host}/etc/kixdns.json")" '{"original":true}' "恢复原来的 KixDNS 后，它的配置应是迁移前的内容"
+assert_equals "$(stat -c '%a' "${host}/etc/kixdns.json")" "604" "恢复后原配置的权限应和迁移前一样"
+assert_equals "$(stat -c '%a' "${host}/etc")" "751" "恢复后原配置所在目录的权限应和迁移前一样"
+cmp -s -- "${host}/units/kixdns.service" "${host}/original.service" || {
+  printf '断言失败：卸载应放回原来的 unit\n' >&2
+  exit 1
+}
+[[ ! -e ${host}/panel-etc ]] || { printf '断言失败：删除配置时副本和面板配置目录应一起删掉\n' >&2; exit 1; }
+assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "卸载应说明原来的 KixDNS 已恢复"
+assert_contains "${output}" "它用的是迁移前的配置 ${host}/etc/kixdns.json，面板改过的副本已删除。" "卸载应说明用回了迁移前的配置"
+
+# 只移除增强版、保留面板数据：副本跟着增强版删掉（以后重新迁移会再从原配置复制一份），panel.env 和数据库留着。
+# Removing only the enhanced KixDNS and keeping the panel data: the copy goes with it (a later migration copies the
+# original again), panel.env and the database stay.
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "保留数据移除增强版不应失败"
+[[ ! -e ${host}/panel-etc/kixdns ]] || { printf '断言失败：移除增强版时副本和它的目录应删掉\n' >&2; exit 1; }
+[[ -f ${host}/panel-etc/panel.env ]] || { printf '断言失败：保留数据时 panel.env 应留着\n' >&2; exit 1; }
+assert_equals "$(cat "${host}/etc/kixdns.json")" '{"original":true}' "保留数据移除增强版时原配置也应是迁移前的内容"
+
+# 保留增强版、删除面板数据：保留的 KixDNS 还在用副本，副本和它的目录必须留下，面板配置目录里的其他东西照删；
+# 再卸载一次（这时已经没有 panel.env）也一样。
+# Keeping the enhanced KixDNS and removing the panel data: the kept KixDNS still runs the copy, so the copy and its
+# directory must stay while everything else in the panel's config directory goes; a second uninstall (with no panel.env
+# by then) does the same.
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+: > "${host}/panel-etc/leftover"
+output="$(uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "保留增强版删除数据不应失败"
+assert_equals "$(cat "${host}/panel-etc/kixdns/pipeline.json" 2>/dev/null || printf missing)" '{"edited":true}' \
+  "保留的 KixDNS 用的副本必须留下"
+[[ ! -e ${host}/panel-etc/panel.env && ! -e ${host}/panel-etc/leftover ]] ||
+  { printf '断言失败：删除数据时面板配置目录里副本以外的东西应删掉\n' >&2; exit 1; }
+[[ -x ${host}/state/bin/kixdns ]] || { printf '断言失败：保留的 KixDNS 程序必须留下\n' >&2; exit 1; }
+output="$(uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "再次卸载不应失败"
+assert_equals "$(cat "${host}/panel-etc/kixdns/pipeline.json" 2>/dev/null || printf missing)" '{"edited":true}' \
+  "再次卸载也不能删掉保留的 KixDNS 用的副本"
+
+# 旧版安装器原地迁移的主机：没有副本，卸载照旧不动它的配置，但要说明那是面板改过的内容。
+# A host an older installer migrated in place: there is no copy, uninstall leaves its config alone as before, but says
+# it holds what the panel saved.
+inplace_host() {
+  local root=$1
+  rm -rf -- "${root}"
+  mkdir -p "${root}/etc" "${root}/units" "${root}/state/bin" "${root}/state/external-backup" "${root}/panel-etc"
+  printf '{"edited":true}\n' > "${root}/etc/kixdns.json"
+  printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_CONFIG=%s\n' "${root}/etc/kixdns.json" > "${root}/panel-etc/panel.env"
+  printf '%s\n' KIXDNS_SERVICE_UNIT=kixdns.service "KIXDNS_CONFIG=${root}/etc/kixdns.json" \
+    KIXDNS_BINARY=/usr/local/bin/kixdns KIXDNS_WAS_ACTIVE=true KIXDNS_WAS_ENABLED=true \
+    > "${root}/state/external-backup/install.env"
+  printf '[Service]\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${root}/etc/kixdns.json" \
+    > "${root}/state/external-backup/kixdns.service"
+  printf '[Service]\nExecStart=%s run --config %s --admin-socket /run/kixdns/admin.sock\n' \
+    "${root}/state/bin/kixdns" "${root}/etc/kixdns.json" > "${root}/units/kixdns.service"
+  printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
+  chmod 0755 "${root}/state/bin/kixdns"
+}
+inplace_host "${host}"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "原地迁移的主机卸载不应失败"
+assert_equals "$(cat "${host}/etc/kixdns.json" 2>/dev/null || printf missing)" '{"edited":true}' "原地迁移的主机卸载时不动它的配置"
+assert_contains "${output}" "它用的配置 ${host}/etc/kixdns.json 是面板最后保存的内容：旧版安装器迁移时直接改用了这个文件，迁移前的内容没有留底。" \
+  "原地迁移的主机卸载时应说明配置是面板改过的"
+
+# 原来的 KixDNS 的配置本来就在副本的位置、被原地接管：那是它自己的配置，不是副本，移除增强版时不能删。
+# The original KixDNS's config already sat where the copy goes and was managed in place: it is its own config, not a copy,
+# and removing the enhanced KixDNS must not delete it.
+inplace_host "${host}"
+mkdir -p "${host}/panel-etc/kixdns"
+printf '{"own":true}\n' > "${host}/panel-etc/kixdns/pipeline.json"
+sed -i "s|${host}/etc/kixdns.json|${host}/panel-etc/kixdns/pipeline.json|" \
+  "${host}/panel-etc/panel.env" "${host}/state/external-backup/install.env"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "配置在副本位置的原地迁移主机卸载不应失败"
+assert_equals "$(cat "${host}/panel-etc/kixdns/pipeline.json" 2>/dev/null || printf missing)" '{"own":true}' \
+  "原来的 KixDNS 自己的配置不能当成副本删掉"
+
+# 删副本之前确认面板配置目录不是符号链接：rm -rf 会顺着它删到别处。
+# Before removing the copy, make sure the panel's config directory is no symlink: rm -rf would follow it elsewhere.
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+mv -- "${host}/panel-etc" "${host}/panel-etc-real"
+ln -s "${host}/panel-etc-real" "${host}/panel-etc"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_contains "${output}" "配置目录不能是符号链接" "面板配置目录是符号链接时应拒绝删除副本"
+[[ -f ${host}/panel-etc-real/kixdns/pipeline.json ]] || { printf '断言失败：拒绝时不能删掉符号链接另一头的文件\n' >&2; exit 1; }
+rm -f -- "${host}/panel-etc"
+
+# 全新安装的主机：配置目录按 panel.env 记下的路径认，是安装器建的 /etc/kixdns 才删，别的目录不凭猜测删。
+# A freshly installed host: the config directory is recognised from the path panel.env recorded; only the /etc/kixdns the
+# installer creates is removed, and no other directory is removed on a guess.
+fresh_host() {
+  local root=$1
+  local config=$2
+  rm -rf -- "${root}"
+  mkdir -p "${root}/etc-kixdns" "${root}/elsewhere" "${root}/units" "${root}/state/bin" "${root}/panel-etc"
+  printf '{}\n' > "${root}/etc-kixdns/pipeline.json"
+  printf '{}\n' > "${root}/elsewhere/pipeline.json"
+  printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_CONFIG=%s\n' "${config}" > "${root}/panel-etc/panel.env"
+  printf '[Service]\nExecStart=%s run --config %s --admin-socket /run/kixdns/admin.sock\n' \
+    "${root}/state/bin/kixdns" "${config}" > "${root}/units/kixdns.service"
+  printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
+  chmod 0755 "${root}/state/bin/kixdns"
+}
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "全新安装的主机卸载不应失败"
+[[ ! -e ${host}/etc-kixdns ]] || { printf '断言失败：全新安装的配置目录应随 KixDNS 删掉\n' >&2; exit 1; }
+fresh_host "${host}" "${host}/elsewhere/pipeline.json"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "配置不在默认位置的主机卸载不应失败"
+[[ -e ${host}/etc-kixdns && -e ${host}/elsewhere/pipeline.json ]] ||
+  { printf '断言失败：panel.env 没指向的目录不能删\n' >&2; exit 1; }
+rm -rf -- "${scratch}"
+
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"
 [[ ${one_click_help} == *"--version"* ]]
 [[ -f "${PACKAGE_ROOT}/scripts/panel-online-update.sh" ]]
