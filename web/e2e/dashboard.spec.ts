@@ -723,3 +723,202 @@ test('第一次启动就失败、还没有任何数据：提示说启动失败�
   await expect(page.getByRole('heading', { name: '运行配置', exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: '管理配置', exact: true })).toBeVisible()
 })
+
+// 只在测试里替换 API 模块边界：body 里定义自己的 apiRequest，original 是真的那个 / Swap the API module boundary in the test only: body
+// defines its own apiRequest, with original being the real one
+async function wrapClient(page: Page, tag: string, body: string): Promise<void> {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes(tag)) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?${tag}';
+      import { apiRequest as original } from '/src/api/client.ts?${tag}';
+      ${body}
+    ` })
+  })
+}
+// 页头上的时刻写法（今天只写时分，别的日子带上月日） / How the header writes a moment (the clock today, with month and day otherwise)
+const clockText = (page: Page, ms: number) => page.evaluate((at) => {
+  const date = new Date(at)
+  const time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  if (date.toDateString() === new Date().toDateString()) return time
+  return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${time}`
+}, ms)
+
+test('停了 6 小时的快照：时段从快照那一刻说起，页头不下判定；采样早停的趋势从它停下的那一刻说起', async ({ page }) => {
+  await wrapClient(page, 'ended-original', `
+    const now = Math.floor(Date.now() / 1000);
+    // 采样停在 6 小时前：18 个一小时的桶，最后一个在 6 小时前结束 / Sampling stopped 6 hours ago: 18 hourly buckets, the last ending 6 hours ago
+    const points = Array.from({ length: 18 }, (_, i) => ({ start_unix: now - 24 * 3600 + i * 3600, requests: 4000 + (i % 5) * 500 }));
+    globalThis.__trendEnd = (now - 6 * 3600) * 1000;
+    export async function apiRequest(path, init) {
+      const result = await original(path, init);
+      if (path === '/api/v1/service') return { ...result, active_state: 'inactive', sub_state: 'dead', main_pid: 0 };
+      if (path === '/api/v1/overview') return { ...result, live: false, service_active: false, captured_at_unix: now - 6 * 3600, trend: { bucket_seconds: 3600, points, total: points.reduce((s, p) => s + p.requests, 0) } };
+      return result;
+    }
+  `)
+  await page.goto('/')
+  await expect(page.locator('.overview-total-value')).toBeVisible()
+  const facts = page.locator('.overview-heading .ui-facts > div')
+  const fact = (label: string) => facts.filter({ has: page.locator('.ui-lbl', { hasText: label }) }).locator('b')
+  await expect(fact('状态')).toHaveText('已停止')
+  // 判定是快照那一刻的：页头只写个数 / The verdicts are the snapshot's: the header gives the count only
+  await expect(fact('上游')).toHaveText('3 个')
+  // 上游状态和平均延迟说的是快照前的那一小时 / Upstream status and the mean latency cover the hour before the snapshot
+  await expect(page.locator('.overview-card--upstreams .overview-card-note')).toHaveText('快照前一小时')
+  await expect(page.locator('.overview-subs dt').nth(2)).toContainText('快照前一小时')
+  await expect(page.locator('.overview-subs dt').nth(2)).not.toContainText('最近')
+  // 趋势说它自己停在哪一刻，图上的说明也一样 / The trend names the moment it stopped, as do the charts' labels
+  const ended = await clockText(page, await page.evaluate(() => (globalThis as unknown as { __trendEnd: number }).__trendEnd))
+  const total = (4000 + 4500 + 5000 + 5500 + 6000) * 3 + 4000 + 4500 + 5000
+  await expect(page.locator('.overview-trend-label')).toHaveText(`截至 ${ended} 的 18 小时 ${total.toLocaleString('zh-CN')} 次`)
+  await expect(page.locator('.overview-spark')).toHaveAttribute('aria-label', `截至 ${ended} 的 18 小时请求量趋势`)
+  await expect(page.locator('.overview-bars')).toHaveAttribute('aria-label', `截至 ${ended} 的 18 小时每小时查询量`)
+})
+
+test('还在运行、采样照常：时段照旧写「最近」，页头照旧下判定', async ({ page }) => {
+  await openOverview(page)
+  await expect(page.locator('.overview-card--upstreams .overview-card-note')).toHaveText('最近一小时')
+  await expect(page.locator('.overview-subs dt').nth(2)).toContainText('最近一小时')
+  await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
+  const upstreamFact = page.locator('.overview-heading .ui-facts > div').filter({ has: page.locator('.ui-lbl', { hasText: '上游' }) }).locator('b')
+  await expect(upstreamFact).toContainText('3 个')
+  await expect(upstreamFact).not.toHaveText('3 个')
+})
+
+test('面板刚启动、柱子是 5 分钟一根：卡片不叫「每小时查询」，标题和读屏说法跟着桶宽走', async ({ page }) => {
+  await wrapClient(page, 'bucket-original', `
+    export async function apiRequest(path, init) {
+      const result = await original(path, init);
+      if (path === '/api/v1/overview') {
+        const now = Math.floor(Date.now() / 1000);
+        const points = Array.from({ length: 24 }, (_, i) => ({ start_unix: now - (24 - i) * 300, requests: 400 + (i % 5) * 50 }));
+        return { ...result, trend: { bucket_seconds: 300, points, total: points.reduce((s, p) => s + p.requests, 0) } };
+      }
+      return result;
+    }
+  `)
+  await page.goto('/')
+  const card = page.locator('.overview-card--bars')
+  await expect(card.locator('.overview-bars-cols > i')).toHaveCount(24)
+  await expect(card.locator('h2')).toHaveText('各时段查询')
+  await expect(card).toHaveAttribute('aria-label', '各时段查询')
+  await expect(card.locator('.overview-card-note')).toContainText('最忙时段')
+  await expect(card.locator('.overview-bars')).toHaveAttribute('aria-label', '最近 2 小时各时段查询量')
+})
+
+test('一小时一根柱子时照旧叫「每小时查询」', async ({ page }) => {
+  await openOverview(page)
+  const card = page.locator('.overview-card--bars')
+  await expect(card.locator('h2')).toHaveText('每小时查询')
+  await expect(card).toHaveAttribute('aria-label', '每小时查询')
+  await expect(card.locator('.overview-bars')).toHaveAttribute('aria-label', '最近 24 小时每小时查询量')
+})
+
+test.describe('半小时时区', () => {
+  test.use({ timezoneId: 'Asia/Kolkata' })
+  test('柱图的「H:00」刻度落在本地的整点上，不是 UTC 的整点', async ({ page }) => {
+    await openOverview(page)
+    await expect(page.locator('.overview-bars-axis span').first()).toBeVisible()
+    const ticks = await page.evaluate(async () => {
+      const { mockRequest } = await import('/src/api/mock.ts')
+      const overview = await mockRequest('/api/v1/overview') as { trend: { bucket_seconds: number; points: { start_unix: number }[] } }
+      const { points, bucket_seconds: bucket } = overview.trend
+      return [...document.querySelectorAll<HTMLElement>('.overview-bars-axis span')].filter((el) => !el.classList.contains('is-end')).map((el) => {
+        const position = (parseFloat(el.style.left) / 100) * points.length
+        const index = Math.floor(position)
+        // 位置是百分比换算回来的，取到最近的一分钟 / The position comes back through a percentage, so it is taken to the nearest minute
+        const moment = new Date(Math.round((points[index]!.start_unix + (position - index) * bucket) / 60) * 60_000)
+        return { label: el.textContent, marks: `${moment.getHours()}:${String(moment.getMinutes()).padStart(2, '0')}` }
+      })
+    })
+    expect(ticks.length).toBeGreaterThan(0)
+    for (const tick of ticks) expect(tick.marks).toBe(tick.label)
+  })
+})
+
+// 之前发出的那次晚回来：清空以后的重读读完了才回来（不能盖掉它），或者重读还在路上时回来（不能替它收尾）
+// The read sent before lands late: after the read that follows the clear has finished (it must not overwrite it), or while that read
+// is still on its way (it must not wind it up)
+for (const landing of ['after', 'during'] as const) {
+  test(`清空缓存以后重读的是清空以后的：之前发出的定时刷新晚回来也不盖掉（${landing}）`, async ({ page }) => {
+    // 定时刷新发出时读到的是那一刻的条数；__flush.hold 打开时它停着等放行 / A timed refresh reads the count of the moment it is sent; with
+    // __flush.hold on it waits to be let go
+    await wrapClient(page, 'flush-original', `
+      const state = globalThis.__flush = { flushed: false, hold: false, held: [] };
+      export async function apiRequest(path, init) {
+        if (path === '/api/v1/cache/flush') state.flushed = true;
+        const flushed = state.flushed;
+        const result = await original(path, init);
+        if (path !== '/api/v1/overview') return result;
+        if (state.hold) await new Promise((resolve) => state.held.push(resolve));
+        return { ...result, metrics: { ...result.metrics, cache_entries: flushed ? 0 : 18642 } };
+      }
+    `)
+    type Flush = { flushed: boolean; hold: boolean; held: (() => void)[] }
+    const flush = () => page.evaluate(() => (globalThis as unknown as { __flush: Flush }).__flush)
+    // 页面时钟停着时，演示后端每次回答都要等 120 毫秒的页面时间：一点一点往前推，直到条件成立 / With the page clock stopped, each
+    // demo-backend answer waits 120 ms of page time: nudge the clock forward bit by bit until the condition holds
+    const nudgeUntil = (check: () => Promise<boolean>) => expect.poll(async () => { await page.clock.runFor(100); return check() }).toBe(true)
+    // 卡片上的那个按钮：确认框里的主按钮也叫「清空缓存」，清空的时候它自己改叫「正在清空」 / The card's button: the confirm's primary is
+    // also called 清空缓存, and while clearing it reads 正在清空
+    const flushButton = page.locator('.overview-runtime-actions .ui-btn--danger')
+    await page.clock.install()
+    await openOverview(page)
+    // 排行也读到了，15 秒一次的定时刷新才挂上；然后页面时钟停住，只有 runFor 才往前走 / The rankings have landed too, so the 15-second
+    // refresh is attached; then the page clock stands still and only runFor moves it
+    await expect(page.locator('.overview-ranking-list li').first()).toBeAttached()
+    await page.clock.pauseAt(Date.now() + 1_000)
+    await page.evaluate(() => { (globalThis as unknown as { __flush: Flush }).__flush.hold = true })
+    await page.clock.runFor(15_000)
+    await nudgeUntil(async () => (await flush()).held.length === 1)
+    await page.evaluate(() => { (globalThis as unknown as { __flush: Flush }).__flush.hold = false })
+    await flushButton.click()
+    await expect(page.getByRole('alertdialog')).toContainText('18,642 条缓存会被丢弃')
+    await acceptConfirm(page)
+    await nudgeUntil(async () => (await page.getByText('已清空 18,642 条缓存', { exact: true }).count()) === 1)
+    const letGo = () => page.evaluate(() => { const state = (globalThis as unknown as { __flush: Flush }).__flush; state.held.forEach((go) => go()); state.held = [] })
+    if (landing === 'after') {
+      // 清空以后的重读走完，按钮又能按了，之前那次才回来 / The read after the clear completes and the button is back before the earlier one lands
+      await nudgeUntil(() => flushButton.isEnabled())
+      await letGo()
+    } else {
+      // 清空以后的重读还在路上，之前那次先回来：「刷新」照旧停用，等重读读完 / The earlier read lands while the one after the clear is
+      // still on its way: 刷新 stays disabled until that read completes
+      await letGo()
+      await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeDisabled()
+      await nudgeUntil(() => flushButton.isEnabled())
+    }
+    await flushButton.click()
+    await expect(page.getByRole('alertdialog')).toContainText('0 条缓存会被丢弃')
+    await cancelConfirm(page)
+  })
+}
+
+test('请求域名排行点进查询日志：按域名本身筛，不按包含它的搜索；筛选能去掉', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-destinations', 'true'))
+  await page.clock.install()
+  await openOverview(page)
+  await page.getByRole('tab', { name: '查询排行' }).click()
+  const domains = page.locator('.overview-ranking').nth(1)
+  const name = (await domains.locator('li strong').first().textContent())!
+  await domains.locator('li .ov-jump').first().click()
+  await expect(page).toHaveURL(new RegExp(`qname=${name.replace(/\./g, '\\.')}`))
+  await expect(page).not.toHaveURL(/[?&]q=/)
+  await expect(page.getByLabel('搜索域名或客户端')).toHaveValue('')
+  const filter = page.locator('.qlog-filter')
+  await expect(filter).toHaveText(`域名 ${name}`)
+  await expect(page.locator('.qlog-row').first()).toBeVisible()
+  for (const shown of await page.locator('.qlog-row .qlog-c-name .qlog-lit').allTextContents()) expect(shown).toBe(name)
+  // 页面时钟停住：去掉筛选马上重读，不是等 5 秒一次的轮询来补 / The page clock stands still: dropping the filter reads again at once,
+  // not by the 5-second poll catching up
+  await page.clock.pauseAt(Date.now() + 1_000)
+  await filter.getByRole('button', { name: `去掉筛选：域名 ${name}` }).click()
+  await expect(page).not.toHaveURL(/qname=/)
+  await expect(page.locator('.qlog-stream')).toHaveAttribute('aria-busy', 'true')
+  // 演示后端回答要等 120 毫秒的页面时间 / The demo backend takes 120 ms of page time to answer
+  await expect.poll(async () => {
+    await page.clock.runFor(100)
+    return new Set(await page.locator('.qlog-row .qlog-c-name .qlog-lit').allTextContents()).size
+  }).toBeGreaterThan(1)
+})

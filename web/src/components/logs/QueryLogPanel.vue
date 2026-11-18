@@ -72,9 +72,16 @@ let timer: number | undefined
 // Each reload takes a new generation: a late answer from before (older pages and polls too) that does not match is dropped instead of
 // covering the new one
 let generation = 0
-// 服务端说过的最新编号：轮询只要比它新的，带筛选也只扫这之后的 / The newest id the server has reported: a poll asks only for newer
-// ones, so even a filtered poll scans only what came after it
+// 读这份列表时服务端说过的最新编号：轮询只要比它新的，带筛选也只扫这之后的（只看列表最上面那条的话，一个少见的筛选每轮都要从很早
+// 扫起，扫到上限还会当成有新查询）。它和列表、攒着的新查询一起由读取换掉：列表和攒着的都来自报了它的读取，最上面那条从不比它新，
+// 轮询一次只发一个，同一条也就不会进来两次
+// The newest id the server reported while this list was read: a poll asks only for newer ones, so even a filtered poll scans only what
+// came after it (going by the top of the list alone, a rare filter would scan from far back every round, and stopping at the scan limit
+// would pass for new queries). It is replaced together with the list and the waiting queries by a read: both come from reads that
+// reported it, so the top is never newer, and with one poll at a time no entry comes in twice
 let seenId = 0
+// 轮询一次只发一个：上一轮慢了还没回来，这一轮就不发 / One poll at a time: while the last round is still on its way, this one is skipped
+let polling = false
 // 离开日志页以后还在路上的读取：回来了也不再动列表和地址栏 / Reads still on the way after leaving the page: when they land they no
 // longer touch the list or the address bar
 let alive = true
@@ -124,6 +131,9 @@ const ruleIn = computed(() => (route.query.rule && route.query.in ? String(route
 // 回答后检查的命中：概览「规则命中」里「回答后」那几行带过来，认的是检查那一步 / An answer-check hit: brought from the 回答后 rows of the overview's rule hits, matched on the check step
 const rulePhase = computed(() => (route.query.rule && route.query.phase === 'response' ? 'response' : ''))
 const upstream = computed(() => (route.query.upstream ? String(route.query.upstream) : ''))
+// 就是这个域名（不是搜索：搜「t.co」也会搜出 microsoft.com）：概览的请求域名排行点过来时带着 / Exactly this domain (not a search:
+// searching 「t.co」 also finds microsoft.com), brought by the overview's ranked domains
+const qname = computed(() => (route.query.qname ? String(route.query.qname) : ''))
 const options = computed(() => destinationOptions(ctx.value))
 function setQuery(patch: Record<string, string | undefined>): void {
   const next = { ...route.query, ...patch }
@@ -140,11 +150,11 @@ watch(() => route.query.q, (value) => {
   q.value = said
 })
 const ruleTitle = computed(() => (rule.value ? (ctx.value?.names.rule(rule.value, ruleIn.value || null) ?? rule.value) : ''))
-const filtered = computed(() => Boolean(q.value.trim() || dest.value || client.value || rule.value || upstream.value))
+const filtered = computed(() => Boolean(q.value.trim() || dest.value || client.value || rule.value || upstream.value || qname.value))
 const searchInput = ref<HTMLInputElement | null>(null)
 function clearFilters(): void {
   q.value = ''
-  setQuery({ q: undefined, dest: undefined, client: undefined, rule: undefined, in: undefined, phase: undefined, upstream: undefined })
+  setQuery({ q: undefined, dest: undefined, client: undefined, rule: undefined, in: undefined, phase: undefined, upstream: undefined, qname: undefined })
   // 按钮跟着空状态一起没了：焦点放进搜索框 / The button leaves with the empty state: focus goes to the search box
   void nextTick(() => searchInput.value?.focus())
 }
@@ -157,6 +167,7 @@ function params(extra: Record<string, string> = {}): string {
   if (ruleIn.value) p.set('rule_pipeline', ruleIn.value)
   if (rulePhase.value) p.set('rule_phase', rulePhase.value)
   if (upstream.value) p.set('upstream', upstream.value)
+  if (qname.value) p.set('qname', qname.value)
   return p.toString()
 }
 
@@ -178,31 +189,36 @@ function stillMatches(entry: QueryLogEntry | null, before: string, after: string
 // Which filters the listed rows were read with: while they differ from the current ones (filters changed and that read failed), the rows
 // stay faded and cannot be clicked, and the notice says they are from before the filter
 const rowsFor = ref('')
-const staleRows = computed(() => items.value.length > 0 && rowsFor.value !== params())
+// 列表（连同往前翻的位置、停在哪、攒着的新查询）是不是按现在的筛选读的：是才轮询、往前翻，不是就整个重读
+// Whether the list (with its paging position, its stop point and the waiting queries) was read with the current filters: only then do
+// polls and older pages run, otherwise a whole read does
+const rowsCurrent = computed(() => rowsFor.value === params())
+const staleRows = computed(() => items.value.length > 0 && !rowsCurrent.value)
 // 列出来的行都是这一个客户端的：收起客户端一列、第二行不写它。旧行（筛选前的）不算 / The listed rows all belong to the one client: the
 // client column folds and the second line leaves it out. Rows from before the filter do not count
 const oneClient = computed(() => Boolean(client.value) && !staleRows.value)
-async function load(): Promise<void> {
+// silent：轮询替一份不是按现在的筛选读的列表重读时不出骨架、不停用「重试」 / silent: when a poll re-reads a list not read with the
+// current filters, no skeleton shows and 重试 stays enabled
+async function load(silent = false): Promise<void> {
   const mine = ++generation
   // 这次按哪套筛选读：记的是发出去时的，读的途中又改了也对得上；和上次读到的一样时，是同一份列表的重读（点新查询、重新连上、保存设置）
   // The filters this read is sent with, recorded at sending so typing during the read cannot mismatch; the same as last time means a
   // reload of the same list (the new-queries banner, a reconnect, a save)
   const sent = params()
   const sameFilter = rowsFor.value === sent || stillMatches(current.value, rowsFor.value, sent)
-  loading.value = true
-  // 换了筛选：旧的往前翻的位置、停在哪、攒着的新查询都作废 / New filters: the old paging position, the stop point and the waiting
-  // queries are void
-  nextBefore.value = null
-  stoppedAt.value = null
-  fresh.value = null
-  freshMore.value = false
+  if (!silent) loading.value = true
   try {
-    const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params()}`)
+    const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${sent}`)
     if (mine !== generation) return
+    // 读到了才换：往前翻的位置、停在哪、攒着的新查询和列表一起换掉；没读到时都照旧，攒着的新查询不丢
+    // Replaced only once read: the paging position, the stop point and the waiting queries go with the list; a failed read leaves them
+    // all as they were, so no waiting query is lost
     supported.value = page.supported
     items.value = page.items.map(itemOf)
     nextBefore.value = page.next_before
     stoppedAt.value = stoppedOf(page)
+    fresh.value = null
+    freshMore.value = false
     newestMs.value = page.newest_unix_ms
     seenId = page.newest_id ?? 0
     rowsFor.value = sent
@@ -221,12 +237,15 @@ async function load(): Promise<void> {
   }
 }
 async function loadOlder(): Promise<void> {
-  if (nextBefore.value === null || loadingOlder.value || loading.value) return
+  if (nextBefore.value === null || loadingOlder.value || loading.value || !rowsCurrent.value) return
   const mine = generation
+  const before = nextBefore.value
   loadingOlder.value = true
   try {
-    const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params({ before: String(nextBefore.value) })}`)
-    if (mine !== generation) return
+    const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params({ before: String(before) })}`)
+    // 途中轮询把列表裁短了，往前翻要从留下的最后一条接着：这一页接不上，丢掉 / A poll trimmed the list meanwhile, so paging back goes on
+    // from the last entry kept: this page no longer joins it and is dropped
+    if (mine !== generation || nextBefore.value !== before) return
     items.value = [...items.value, ...page.items.map(itemOf)]
     nextBefore.value = page.next_before
     stoppedAt.value = stoppedOf(page)
@@ -260,23 +279,40 @@ async function poll(): Promise<void> {
   // redraw the whole table every 5 seconds
   const now = Date.now()
   if (new Date(now).toDateString() !== new Date(today.value).toDateString()) today.value = now
-  if (loading.value || staleRows.value || !loaded.value || !supported.value || unavailable.value || document.hidden) return
-  const mine = generation
+  if (polling || loading.value || !loaded.value || !supported.value || unavailable.value || document.hidden) return
+  polling = true
   try {
-    const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params({ after: String(seenId) })}`)
-    if (mine !== generation || loading.value) return
-    newestMs.value = page.newest_unix_ms
-    seenId = Math.max(seenId, page.newest_id ?? 0)
-    const newer = page.items.map(itemOf)
-    // 还有没取完的（多过一页，或者扫到上限）：不往列表里塞，免得中间留洞 / More than was taken (over a page, or the scan limit): nothing
-    // goes into the list, so no hole is left in it
-    const more = page.next_before !== null
-    if (!newer.length && !more) return
-    if (!more && !fresh.value && atTop.value && selected.value === null) { prepend(newer); return }
-    const waiting = [...newer, ...(fresh.value ?? [])]
-    fresh.value = waiting.slice(0, PAGE)
-    freshMore.value = freshMore.value || more || waiting.length > PAGE
-  } catch { /* 下一轮再试；连不上由顶上的横幅说 / Try again next round; an unreachable panel is the top banner's to say */ }
+    // 列表不是按现在的筛选读的（第一次就没读到、换了筛选那次没读到）：没有可以接着往后要的，整个重读
+    // The list was not read with the current filters (the first read failed, or the one after a filter change): there is nothing to go
+    // on from, so it is read whole
+    if (!rowsCurrent.value) { await load(true); return }
+    const mine = generation
+    try {
+      const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params({ after: String(seenId) })}`)
+      if (mine !== generation || loading.value) return
+      loadError.value = ''
+      newestMs.value = page.newest_unix_ms
+      seenId = Math.max(seenId, page.newest_id ?? 0)
+      const newer = page.items.map(itemOf)
+      // 还有没取完的（多过一页，或者扫到上限）：不往列表里塞，免得中间留洞 / More than was taken (over a page, or the scan limit): nothing
+      // goes into the list, so no hole is left in it
+      const more = page.next_before !== null
+      if (!newer.length && !more) return
+      if (!more && !fresh.value && atTop.value && selected.value === null) { prepend(newer); return }
+      const waiting = [...newer, ...(fresh.value ?? [])]
+      fresh.value = waiting.slice(0, PAGE)
+      freshMore.value = freshMore.value || more || waiting.length > PAGE
+    } catch (error) {
+      // 连不上由顶上的横幅说，下一轮再试；别的错和运行日志一样说出来，目录打不开（503 querylog_unavailable）就不再轮询
+      // An unreachable panel is the top banner's to say, and the next round tries again; other errors are said as in the runtime log,
+      // and with the directory unusable (503 querylog_unavailable) polling stops
+      if (mine !== generation || isPanelDown(error)) return
+      loadError.value = errorMessage(error)
+      unavailable.value = error instanceof ApiError && error.code === 'querylog_unavailable'
+    }
+  } finally {
+    polling = false
+  }
 }
 function prepend(newer: QueryLogItem[]): void {
   const next = [...newer, ...items.value]
@@ -287,7 +323,10 @@ function prepend(newer: QueryLogItem[]): void {
   stoppedAt.value = null
 }
 const freshCount = computed(() => (fresh.value ?? []).filter((item) => !isGap(item)).length)
+// 换了筛选、还没读到（或者没读到）时，攒着的是旧筛选的新查询：不出提示条 / After a filter change not yet read (or not read at all), what
+// waits belongs to the old filters: no banner
 const freshLabel = computed(() => {
+  if (!rowsCurrent.value) return null
   if (freshMore.value) return freshCount.value >= PAGE ? `有 ${PAGE} 条以上新查询，点击显示` : '有新查询，点击显示'
   return freshCount.value ? `有 ${freshCount.value} 条新查询，点击显示` : null
 })
@@ -800,7 +839,7 @@ watch([newestMs, today, loaded, loadError, items], () => {
 
 // 每个筛选各看各的：写 id、settings 这类不是筛选的参数不会触发重读 / Each filter is watched on its own, so writing a parameter that is
 // not a filter (id, settings) never triggers a reload
-watch([() => route.query.q, () => route.query.dest, () => route.query.client, () => route.query.rule, () => route.query.in, () => route.query.phase, () => route.query.upstream], () => { void load() })
+watch([() => route.query.q, () => route.query.dest, () => route.query.client, () => route.query.rule, () => route.query.in, () => route.query.phase, () => route.query.upstream, () => route.query.qname], () => { void load() })
 onMounted(async () => {
   // 配置、日志、设置一起读：日志先到就先画，名字等配置到了再换成配置页上的叫法；慢网络上少等两趟。地址栏里带着去向时先等配置，
   // 上游组这类去向要靠配置才认得出来
@@ -848,7 +887,7 @@ onBeforeUnmount(() => {
     <span>{{ !entries.length ? '读取失败' : staleRows ? '下面还是换筛选之前的结果' : '数据可能已过期' }}</span>
     <small><template v-for="(run, k) in glued(loadError)" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></small>
     <!-- 目录打不开时重试没用，要重启面板 / With the directory unusable a retry cannot help; the panel needs a restart -->
-    <button v-if="!unavailable" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="loading" @click="load">重试</button>
+    <button v-if="!unavailable" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="loading" @click="load()">重试</button>
   </div>
   <p v-else-if="waitingForPanel" class="ui-notice ui-notice--off logs-notice" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
   <!-- 换成了不支持查询日志的内核：以前记下的照样能看，上面说一句 / Switched to a kernel without the query log: what was recorded before can still be read, with a line above -->
@@ -866,7 +905,8 @@ onBeforeUnmount(() => {
       </div>
     </header>
     <!-- 从别处带进来、或点「只看这个客户端」加上的筛选，一个一个能去掉 / Filters brought in from elsewhere or added by 只看这个客户端, each removable -->
-    <div v-if="client || rule || upstream" class="qlog-filters">
+    <div v-if="qname || client || rule || upstream" class="qlog-filters">
+      <span v-if="qname" class="qlog-filter">域名 <span class="qlog-lit">{{ qname }}</span><button type="button" :aria-label="`去掉筛选：域名 ${qname}`" @click="dropFilter({ qname: undefined })"><X :size="14" aria-hidden="true" /></button></span>
       <span v-if="client" class="qlog-filter">客户端 <span class="qlog-lit">{{ client }}</span><button type="button" :aria-label="`去掉筛选：客户端 ${client}`" @click="dropFilter({ client: undefined })"><X :size="14" aria-hidden="true" /></button></span>
       <span v-if="rule" class="qlog-filter">{{ rulePhase ? '回答后检查' : '规则' }}「{{ ruleTitle }}」<button type="button" :aria-label="`去掉筛选：${rulePhase ? '回答后检查' : '规则'}「${ruleTitle}」`" @click="dropFilter({ rule: undefined, in: undefined, phase: undefined })"><X :size="14" aria-hidden="true" /></button></span>
       <span v-if="upstream" class="qlog-filter">问过上游 <span class="qlog-lit">{{ upstream }}</span><button type="button" :aria-label="`去掉筛选：问过上游 ${upstream}`" @click="dropFilter({ upstream: undefined })"><X :size="14" aria-hidden="true" /></button></span>
@@ -901,9 +941,10 @@ onBeforeUnmount(() => {
         </template>
         <p v-if="loadingOlder" class="qlog-more" role="status">正在读取更早的查询</p>
         <!-- 一次只往前找那么多：没凑满一页时说找到哪儿了，接着找由人决定，不悄悄扫完几十天 / A read searches only so far: when the page is short, say how far it got and let the reader decide to go on, instead of quietly scanning weeks -->
-        <p v-else-if="stoppedAt !== null && nextBefore !== null && entries.length" class="qlog-more qlog-stopped" role="status"><span>只往前查到 {{ timeText(stoppedAt, today) }}</span><button class="ui-btn ui-btn--secondary ui-btn--sm qlog-continue" type="button" @click="continueOlder">继续往前查</button></p>
+        <!-- 停在哪是这份列表自己的：换了筛选、还没读到时不说 / The stop point is this list's own: not said after a filter change not yet read -->
+        <p v-else-if="rowsCurrent && stoppedAt !== null && nextBefore !== null && entries.length" class="qlog-more qlog-stopped" role="status"><span>只往前查到 {{ timeText(stoppedAt, today) }}</span><button class="ui-btn ui-btn--secondary ui-btn--sm qlog-continue" type="button" @click="continueOlder">继续往前查</button></p>
         <!-- 一条也还没找到就停下：整张空卡说清楚，按钮在里面 / Stopped before finding any: the empty card says so, with the button inside -->
-        <UiEmpty v-else-if="stoppedAt !== null && nextBefore !== null && !loading" :icon="FileSearch" title="还没找到符合条件的查询" :desc="`往前查到 ${timeText(stoppedAt, today)}，更早的还没查`">
+        <UiEmpty v-else-if="rowsCurrent && stoppedAt !== null && nextBefore !== null && !loading" :icon="FileSearch" title="还没找到符合条件的查询" :desc="`往前查到 ${timeText(stoppedAt, today)}，更早的还没查`">
           <button class="ui-btn ui-btn--secondary qlog-continue" type="button" @click="continueOlder">继续往前查</button>
         </UiEmpty>
         <!-- 清空以后日志本来就是空的：不管有没有筛选，都说还没有查询 / After a clear the log is empty: whatever the filters, it says there are no queries yet -->

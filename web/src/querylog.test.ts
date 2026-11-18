@@ -3,7 +3,7 @@ import type { QueryLogRecord, QueryLogStepRecord } from './api/types'
 import { compile, ruleGroupPipelineId, upstreamPipelineId } from './config-model/model'
 import { sampleModel } from './config-model/testing/samples'
 import { traceNames } from './config-model/trace-names'
-import { answerOf, capProblem, dayText, detailFacts, domainParts, entryOf, errorWord, glueText, hoursProblem, ignoredDomains, latencyText, literalParts, regionAddresses, requestLine, routeOf, sourceOf, statusOf, stepRows, timeText, upstreamHost, type QueryLogContext } from './querylog'
+import { answerOf, capProblem, dayText, destinationOptions, detailFacts, domainParts, entryOf, errorWord, glueText, hoursProblem, ignoredDomains, latencyText, literalParts, regionAddresses, requestLine, routeOf, sourceOf, statusOf, stepRows, timeText, upstreamHost, type QueryLogContext } from './querylog'
 import type { KernelPipeline } from './request-destinations'
 
 function record(steps: QueryLogStepRecord[], extra: Partial<QueryLogRecord> = {}): QueryLogRecord {
@@ -418,6 +418,24 @@ describe('处理过程一步一句', () => {
     expect(latencyText(0.06)).toBe('0.1 ms')
     const eight = entryOf(record([], { answers: Array.from({ length: 8 }, (_, i) => `10.0.0.${i}`) }))
     expect(text(stepRows(eight, null).at(-1)!.lead)).toBe('回给客户端 NOERROR，至少 8 条记录')
+  })
+})
+
+describe('按去向筛', () => {
+  it('自定义回答、拦截和自定义回答只去掉域名映射，不把每个列表都写进请求：上游组再多，参数也不变长', () => {
+    const { ctx } = context()
+    const many = sampleModel()
+    // 上游组照组编辑器的起法：u 加上 36 进制的时间 / Groups made the way the group editor makes them: u and a base-36 time
+    for (let i = 0; i < 24; i++) many.groups.push({ id: `u${(1_763_400_000_000 + i * 7919).toString(36)}`, name: `组${i}`, addresses: [{ address: `10.1.${i}.53`, protocol: 'auto' }], ecs: null, fallback: { group: '', onError: false, onPolluted: false } })
+    const big: QueryLogContext = { model: many, names: traceNames(many), pipelines: compile(many).pipelines as KernelPipeline[] }
+    const params = (c: QueryLogContext, value: string) => destinationOptions(c).find((o) => o.value === value)?.params
+    const mapping = ctx.model.mappingId ?? 'domain_mapping'
+    expect(params(ctx, 'answered')).toEqual({ outcomes: 'answered', exclude_pipelines: mapping })
+    expect(params(big, 'answered')).toEqual(params(ctx, 'answered'))
+    // 样本配置里拦截和自定义回答都有：并成一项 / The sample config has both blocks and custom answers: one combined option
+    expect(params(ctx, 'direct')).toEqual({ outcomes: 'blocked,answered', exclude_pipelines: mapping })
+    expect(params(big, 'direct')).toEqual(params(ctx, 'direct'))
+    expect(params(ctx, 'mapped')).toEqual({ outcomes: 'answered', pipelines: mapping })
   })
 })
 

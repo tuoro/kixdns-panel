@@ -4586,6 +4586,73 @@ async fn the_querylog_endpoints_filter_save_settings_and_clear() {
     assert!(page["items"].as_array().unwrap().is_empty());
 }
 
+/// 列表参数按项数限，不按整串多长：几十个上游组的 Pipeline 照样能筛；去掉某几个列表的、就是这个域名的也能筛，搜索照旧是包含
+/// List parameters are capped by item count, not by length: the pipelines of dozens of upstream groups still filter; leaving lists out
+/// and an exact domain filter too, while the search still matches inside names
+#[tokio::test]
+async fn querylog_lists_are_capped_by_count_lists_can_be_left_out_and_a_name_matched_exactly() {
+    let context = authenticated_app().await;
+    let mut mapped = kernel_entry(3, "t.co", "A");
+    mapped["pipeline"] = "domain_mapping".into();
+    let log = fake_query_log(vec![
+        kernel_entry(1, "a.example", "A"),
+        kernel_entry(2, "www.microsoft.com", "A"),
+        mapped,
+    ]);
+    let _kernel = start_fake_querylog_kernel(context.directory.path(), log);
+    wait_for_querylog(&context, 3).await;
+    let ids = |page: &Value| {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_u64().unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    // 五十个上游组加主列表：整串过了 512 字节 / Fifty upstream groups and the main list: the string passes 512 bytes
+    let many = (0..50_u64)
+        .map(|i| format!("u{:x}", 1_763_400_000_000 + i * 7_919))
+        .chain(["main".to_owned()])
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(many.len() > 512);
+    let page = get_json(&context, &format!("/api/v1/querylog?pipelines={many}")).await;
+    assert_eq!(ids(&page), [2, 1]);
+    // 项数过了上限才拒绝 / Refused only past the item cap
+    let too_many = (0..=1_024)
+        .map(|i| format!("p{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let request = Request::get(format!("/api/v1/querylog?pipelines={too_many}"))
+        .header(COOKIE, context.cookies.clone())
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send_json(&context, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "querylog_filter_invalid");
+
+    // 自定义回答：去掉域名映射那个列表 / Custom answers: the domain mapping list left out
+    let page = get_json(
+        &context,
+        "/api/v1/querylog?exclude_pipelines=domain_mapping",
+    )
+    .await;
+    assert_eq!(ids(&page), [2, 1]);
+    let page = get_json(
+        &context,
+        "/api/v1/querylog?exclude_pipelines=main,domain_mapping",
+    )
+    .await;
+    assert!(ids(&page).is_empty());
+    // 就是这个域名，不分大小写：t.co 不带出 microsoft.com；搜索照旧是包含 / Exactly this name, regardless of case: t.co does not
+    // bring microsoft.com along; the search still matches inside names
+    let page = get_json(&context, "/api/v1/querylog?qname=T.CO").await;
+    assert_eq!(ids(&page), [3]);
+    let page = get_json(&context, "/api/v1/querylog?q=t.co").await;
+    assert_eq!(ids(&page), [3, 2]);
+}
+
 /// 假的服务助手：每个请求回「OK」，收到的动作依次记下 / A fake service helper: answers OK to every request and
 /// keeps the actions it received in order
 fn start_fake_helper(

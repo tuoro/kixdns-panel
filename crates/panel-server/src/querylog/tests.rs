@@ -543,6 +543,35 @@ fn text_and_outcome_filters_match_like_the_page_describes() {
     };
     assert!(only(client("192.168.1.2")).is_empty(), "exact client");
     assert_eq!(only(client("192.168.1.20")), [2]);
+    // 就是这个域名：「example」是三条域名的一部分，却不是哪一条的域名 / Exactly this domain: 「example」 is part of all three names
+    // yet none of them
+    let qname = |name: &str| Filter {
+        qname: Some(name.to_owned()),
+        ..Filter::default()
+    };
+    assert!(only(qname("example")).is_empty(), "exact, not contained");
+    assert_eq!(only(qname("ads.example")), [2], "case-insensitive");
+    // 漏记行里也有「gap」这几个字：按域名筛时它照样不出 / The gap row's line holds the letters 「gap」 too: filtering by domain still
+    // leaves it out
+    assert!(
+        only(qname("gap")).is_empty(),
+        "a filtered list has no gap rows"
+    );
+    assert_eq!(
+        only(Filter {
+            exclude_pipelines: Some(set(&["main"])),
+            ..Filter::default()
+        }),
+        [3]
+    );
+    assert_eq!(
+        only(Filter {
+            exclude_pipelines: Some(set(&["abroad"])),
+            outcomes: Some(set(&["blocked"])),
+            ..Filter::default()
+        }),
+        [2]
+    );
 
     let page = store.read_page(&everything());
     assert_eq!(

@@ -67,6 +67,10 @@ const statsWindows = [
 const runtimeState = computed(() => dashboardRuntimeState(overview.value, service.value))
 const statsSupported = computed(() => supportsQueryStats(overview.value?.health.capabilities ?? []))
 const runtimeUnavailable = computed(() => hasStaleDashboardData(runtimeState.value))
+// 手上是快照（KixDNS 停了、读不到）：数据截在快照那一刻，时段从那里往前说，判定也是那一刻的，页头不说成现在
+// What is in hand is a snapshot (KixDNS stopped or unreadable): the data ends at the snapshot, periods count back from there, and the
+// verdicts are that moment's, so the header does not present them as current
+const snapshotData = computed(() => runtimeState.value !== 'live')
 // 连不上面板时按了只会失败：和 KixDNS 没在跑一样停用 / With the panel unreachable a press could only fail: disabled as when KixDNS is not running
 const runtimeControlsDisabled = computed(() => runtimeState.value !== 'live' || panelDown.value)
 const displayOverview = computed(() => overview.value ?? (runtimeState.value === 'stopped-empty' ? emptyOverview() : null))
@@ -214,7 +218,7 @@ const speed = computed(() => {
   if (!metrics) return null
   const basis = latencyBasis(metrics)
   if (basis.latency.samples === 0) return null
-  return { period: basis.recent ? recentWindowLabel(recentWindow.value) : '启动以来', average: latencyParts(basis.latency.avg_ms) }
+  return { period: basis.recent ? recentWindowLabel(recentWindow.value, snapshotData.value) : '启动以来', average: latencyParts(basis.latency.avg_ms) }
 })
 const cacheLookups = computed(() => displayOverview.value?.metrics.cache_lookups_total ?? 0)
 const cacheHitRate = computed(() => {
@@ -241,7 +245,7 @@ const healthCounts = computed(() => {
 // 每一行都退回了累计时，整张卡的时段改写成启动以来；只有部分退回时不逐行标注
 // When every row fell back to the lifetime total the card names the whole run as its period; when only some did, the rows are not marked
 const allSinceStart = computed(() => upstreamRows.value.length > 0 && upstreamRows.value.every((item) => item.sinceStart))
-const ledgerPeriod = computed(() => (allSinceStart.value ? '启动以来' : recentWindowLabel(recentWindow.value)))
+const ledgerPeriod = computed(() => (allSinceStart.value ? '启动以来' : recentWindowLabel(recentWindow.value, snapshotData.value)))
 // 上游状态里有没有耗时：旧增强版整列都没有，右边就写成功率 / Whether there is latency at all: old enhanced builds have none, so the right end shows the success rate
 const hasLatency = computed(() => upstreamRows.value.some((item) => item.shown.avg_latency_ms !== null))
 // 页头的上游事实：个数，后面跟一句判定汇总——全部正常，或各有几个降级、异常、观察中
@@ -251,7 +255,8 @@ const upstreamFact = computed<string[]>(() => {
   if (!total) return []
   const parts = [`${total} 个`]
   // 连不上面板时判定是上次读到的：只写个数，不在「状态未知」旁边写「全部正常」 / With the panel unreachable the verdicts are last-read: only the count, no 全部正常 beside 状态未知
-  if (!precisionSupported.value || panelDown.value) return parts
+  // 快照里的判定是快照那一刻的：同样只写个数，不在「已停止」旁边写「全部正常」 / A snapshot's verdicts are that moment's: likewise only the count, no 全部正常 beside 已停止
+  if (!precisionSupported.value || panelDown.value || snapshotData.value) return parts
   const { degraded, unhealthy, pending } = healthCounts.value
   if (degraded) parts.push(`${degraded} 个降级`)
   if (unhealthy) parts.push(`${unhealthy} 个异常`)
@@ -345,16 +350,24 @@ const rankingGroups = [
 // 页头和「当前运行配置」写面板的配置版本号（和配置页、历史版本一致），不写内核自己的代次 / The header and 当前运行配置 show the panel's version number (as the config page and history do), not the kernel's own generation
 const versions = ref<ConfigVersion[]>([])
 const runningVersion = computed(() => runningVersionId(overview.value?.active_config.sha256, versions.value))
-function load(silent = false): Promise<void> {
-  if (pendingLoad) return pendingLoad
+// 定时刷新遇到正在进行的读取就搭车；清空缓存这类改动之后要的是改动以后的数据，必须重新发（fresh），改动之前发出的那次晚回来也不盖掉
+// （和查询排行的 loadStats 一样，每次读编一个号，只收最新那次的）
+// A timed refresh rides along with a read in progress; after a change such as clearing the cache the data must come from after it, so
+// a new read is sent (fresh) and one sent before the change cannot overwrite it when it lands late (each read gets a number and only
+// the latest is kept, as loadStats does for the rankings)
+let loadRequest = 0
+function load(silent = false, fresh = false): Promise<void> {
+  if (pendingLoad && !fresh) return pendingLoad
   if (!silent) refreshing.value = true
   requesting.value = true
+  const request = ++loadRequest
   pendingLoad = (async () => {
     const [overviewResult, serviceResult, versionsResult] = await Promise.allSettled([
       apiRequest<Overview>('/api/v1/overview'),
       apiRequest<ServiceStatus>('/api/v1/service'),
       apiRequest<ConfigVersions>('/api/v1/config/versions'),
     ])
+    if (request !== loadRequest) return
     // 历史版本只用来对出正在运行的是哪个版本；读不到时沿用上一次的 / The history only serves to name the running version; on failure the previous list stays
     if (versionsResult.status === 'fulfilled') versions.value = versionsResult.value.versions
     if (overviewResult.status === 'fulfilled') {
@@ -371,6 +384,8 @@ function load(silent = false): Promise<void> {
       serviceError.value = ''
     } else serviceError.value = errorMessage(serviceResult.reason)
   })().finally(() => {
+    // 后面又发了一次：收尾归它 / A later read was sent: winding up is its job
+    if (request !== loadRequest) return
     loading.value = false
     refreshing.value = false
     requesting.value = false
@@ -475,7 +490,8 @@ async function flushCache(): Promise<void> {
     // 说的是刚才确认框里那个数（回答缓存）：规则缓存是内部的，加进来两个数就对不上；操作审计里两个都记着
     // The number just confirmed (the answer cache): the rule cache is internal and adding it made the two numbers disagree; the audit detail keeps both
     toast.success(`已清空 ${formatNumber(result.response_entries_before)} 条缓存`)
-    await load(true)
+    // 清空之前发出的定时刷新不算数 / A timed refresh sent before the clear does not count
+    await load(true, true)
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -512,16 +528,20 @@ const SPARK_HEIGHT = 56
 const trendWindow = computed(() => {
   const trend = displayOverview.value?.trend
   if (!trend || trend.points.length === 0) return ''
-  const seconds = trend.points.length * (trend.bucket_seconds || 3600)
-  if (seconds >= 24 * 3600) return '最近 24 小时'
+  const bucket = trend.bucket_seconds || 3600
+  const seconds = trend.points.length * bucket
   // 不满一小时就按分钟说。四舍五入到小时会把 25 分钟说成「近 0 小时」，
   // 或者更糟，说成「近 1 小时」——把刚开机说成已经跑满一小时。
   // Below an hour the caption counts minutes: rounding to hours would render 25
   // minutes as "last 0 hours" or, worse, "last 1 hour", presenting a panel just
   // started as one that has run a full hour.
-  if (seconds < 3600) return `最近 ${Math.max(1, Math.round(seconds / 60))} 分钟`
   const hours = Math.round(seconds / 3600)
-  return hours === 1 ? '最近一小时' : `最近 ${hours} 小时`
+  const span = seconds >= 24 * 3600 ? ' 24 小时' : seconds < 3600 ? ` ${Math.max(1, Math.round(seconds / 60))} 分钟` : hours === 1 ? '一小时' : ` ${hours} 小时`
+  // 采样停过（KixDNS 停了、读不到）：曲线到最后一个桶的末尾就没了，时段写「截至那一刻的…」，不说「最近」
+  // Sampling stopped (KixDNS stopped or could not be read): the curve ends with its last bucket, so the period reads 「截至 that
+  // moment 的…」 instead of 最近
+  if (lastIsNow.value) return `最近${span}`
+  return `截至 ${clock((trend.points[trend.points.length - 1]!.start_unix + bucket) * 1000, false)} 的${span}`
 })
 
 const trendPending = computed(() => {
@@ -556,8 +576,13 @@ const sparkPaths = computed(() => {
 })
 // 曲线的量级：最忙那个桶的请求数，写在柱图的标题行右端 / The curve's magnitude: the busiest bucket's requests, at the right end of the bar chart's title row
 const sparkPeak = computed(() => Math.max(0, ...(displayOverview.value?.trend.points ?? []).map((point) => point.requests)))
-// 桶是一小时才叫「最忙一小时」，否则说「最忙时段」 / Only hourly buckets are called 最忙一小时; other bucket sizes say 最忙时段
-const peakLabel = computed(() => ((displayOverview.value?.trend.bucket_seconds || 3600) === 3600 ? '最忙一小时' : '最忙时段'))
+// 桶是一小时才叫「最忙一小时」，否则说「最忙时段」；柱图卡同样，一小时一根才叫「每小时查询」，面板刚开始采样的头一天里桶只有几分钟，
+// 叫「各时段查询」
+// Only hourly buckets are called 最忙一小时; other bucket sizes say 最忙时段. The bar card likewise is 每小时查询 only with a bar per
+// hour; in the panel's first day of sampling a bucket is a few minutes, and the card reads 各时段查询
+const hourlyBuckets = computed(() => (displayOverview.value?.trend.bucket_seconds || 3600) === 3600)
+const peakLabel = computed(() => (hourlyBuckets.value ? '最忙一小时' : '最忙时段'))
+const barsTitle = computed(() => (hourlyBuckets.value ? '每小时查询' : '各时段查询'))
 
 // ---------- 每小时查询：趋势的每个桶画一根柱，和上面的曲线是同一份采样 ----------
 // ---------- Hourly queries: one bar per trend bucket, the same samples as the curve above ----------
@@ -637,8 +662,14 @@ const axisTicks = computed<AxisTick[]>(() => {
   if (!stepHours) return ticks
   const px = chartPixels.value
   let index = 0
-  for (let at = Math.ceil(first / 3600) * 3600; at < last + bucket; at += 3600) {
-    const date = new Date(at * 1000)
+  // 按本地时间一个整点一个整点地走：半小时时区里 UTC 的整点是本地的 H:30，按秒数加 3600 也会在夏令时那天错开一小时
+  // Step through local whole hours: in a half-hour zone UTC's whole hours are local H:30, and adding 3600 seconds would drift by an
+  // hour on a daylight-saving day
+  const date = new Date(first * 1000)
+  date.setMinutes(0, 0, 0)
+  if (date.getTime() < first * 1000) date.setHours(date.getHours() + 1)
+  for (; date.getTime() < (last + bucket) * 1000; date.setHours(date.getHours() + 1)) {
+    const at = date.getTime() / 1000
     if (date.getHours() % stepHours !== 0) continue
     while (index + 1 < points.length && points[index + 1].start_unix <= at) index += 1
     const from = points[index].start_unix
@@ -694,7 +725,9 @@ const upstreamLog = (upstream: string) => ({ path: '/logs', query: { upstream } 
 const destinationLog = (key: string) => ({ path: '/logs', query: { dest: routing.value ? destinationOfRow(key, routing.value.model) : undefined } })
 // 内核把拆开的规则记成「名字#N」，查询日志按规则认，不分是哪一段 / The kernel records split rules as name#N; the query log matches the rule, whichever part
 const ruleLog = (rule: RuleCount) => ({ path: '/logs', query: { rule: rule.rule.replace(/#\d+$/, ''), in: rule.pipeline, phase: rule.phase === 'response' ? 'response' : undefined } })
-const rankingLog = (group: 'clients' | 'domains', name: string) => ({ path: '/logs', query: group === 'clients' ? { client: name } : { q: name } })
+// 排行里的域名按域名本身筛（qname），不当搜索词：搜「t.co」也会搜出 microsoft.com / A ranked domain filters on the name itself (qname),
+// not as a search term: searching 「t.co」 would also find microsoft.com
+const rankingLog = (group: 'clients' | 'domains', name: string) => ({ path: '/logs', query: group === 'clients' ? { client: name } : { qname: name } })
 // 配置写进了新版本（包括离开配置页以后才落地的保存）：马上重读，页头和「当前运行配置」不和「版本 #N 已生效」对不上
 // A new config version was written (including a save that landed after leaving the config page): re-read at once, so the header and the running-config card match 「版本 #N 已生效」
 // 正在读的那一次可能是保存落地之前发出的：等它读完再读一次，不拿它的旧结果充数 / A read already in flight may predate the save: wait for it, then read again instead of reusing its stale answer
@@ -824,12 +857,12 @@ onBeforeUnmount(() => {
 
             <!-- 每小时查询：同一份采样按桶画柱；最后一根是正在进行的这一小时，画淡。卡片撑到和右栏一样高，柱图跟着长高
                  Hourly queries: the same samples drawn as one bar per bucket; the last bar is the hour in progress, drawn faint. The card stretches to the right column's height and the chart grows with it -->
-            <section class="ui-card overview-card overview-card--bars" aria-label="每小时查询">
+            <section class="ui-card overview-card overview-card--bars" :aria-label="barsTitle">
               <div class="overview-card-head">
-                <h2 class="ui-card__label">每小时查询</h2>
+                <h2 class="ui-card__label">{{ barsTitle }}</h2>
                 <span v-if="sparkPeak" class="overview-card-note">{{ peakLabel }} <b>{{ formatNumber(sparkPeak) }}</b> 次</span>
               </div>
-              <div v-if="bars.length" class="overview-bars" role="img" :aria-label="`${trendWindow}每小时查询量`">
+              <div v-if="bars.length" class="overview-bars" role="img" :aria-label="`${trendWindow}${barsTitle}量`">
                 <div class="overview-bars-plot">
                   <div ref="barsEl" class="overview-bars-cols">
                     <i v-for="bar in bars" :key="bar.key" :class="{ 'is-live': bar.live }" :style="{ height: `${bar.share * 100}%` }" :title="bar.title"></i>
