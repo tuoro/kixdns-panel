@@ -275,12 +275,17 @@ installed=false
 verify_removed
 
 # 迁移：主机上已有一个运行中且开机自启的外部 KixDNS。用包里的程序和另一个空闲端口让它真的跑起来。
+# 它的配置写着一个 GeoSite 文件，先放在只有 root 进得去的目录里。
 # Migration: the host already has an external KixDNS, running and enabled. Use the package's own
-# binary on another free port so it really runs.
-migration_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
+# binary on another free port so it really runs. Its config names a GeoSite file, kept at first in a
+# directory only root can enter.
+migration_geosite="${MIGRATION_ROOT}/private/geosite.dat"
+migration_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}" --geosite "${migration_geosite}")"
 [[ ${migration_port} =~ ^[0-9]+$ ]] || fail "没有获得迁移验收的 DNS 端口"
 migration_fixture=true
 install -d -m 0755 "${MIGRATION_ROOT}"
+install -d -m 0700 "$(dirname -- "${migration_geosite}")"
+install -m 0644 "${PACKAGE_ROOT}/geo/geosite.dat" "${migration_geosite}"
 install -m 0755 "${PACKAGE_ROOT}/bin/kixdns" "${MIGRATION_ROOT}/kixdns"
 cat > "${MIGRATION_UNIT}" <<EOF
 [Unit]
@@ -300,26 +305,78 @@ systemctl enable --now kixdns.service
 python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
 [[ $(unit_main_executable kixdns.service) == "${MIGRATION_ROOT}/kixdns" ]] ||
   fail "外部 KixDNS 没有运行验收准备的程序"
+# 原配置和它所在的目录：迁移、面板改配置、卸载恢复之后都要和这时一模一样。
+# The original config and its directory: after migration, a panel edit and the uninstall restore they must be exactly as now.
+original_config_state() {
+  stat -c '%U:%G:%a' -- "${CONFIG_PATH}" "$(dirname -- "${CONFIG_PATH}")"
+  sha256sum -- "${CONFIG_PATH}"
+}
+original_before="$(original_config_state)"
+
+# 迁移后的 KixDNS 以 kixdns 账号运行，读不到这个 GeoSite：安装器要在改动主机之前拒绝，并点名文件。
+# The migrated KixDNS runs as the kixdns account and cannot read this GeoSite: the installer must refuse before
+# touching the host, naming the file.
+if run_installer --replace-existing; then
+  fail "迁移后的 KixDNS 读不到原配置里写的文件，安装器却没有拒绝"
+fi
+require_output "读不到原配置 ${CONFIG_PATH} 里写的这些文件" "拒绝迁移时没有说明原因"
+require_output "  ${migration_geosite}：kixdns 账号没有读取权限" "拒绝迁移时没有点名读不到的文件"
+[[ ! -e /etc/kixdns-panel && ! -e /var/lib/kixdns-panel && ! -e /usr/local/bin/kixdns-panel-server ]] ||
+  fail "拒绝迁移时改动了主机"
+cmp -s -- "${MIGRATION_UNIT}" "${MIGRATION_ROOT}/original.service" || fail "拒绝迁移时改动了原来的 unit"
+[[ $(unit_main_executable kixdns.service) == "${MIGRATION_ROOT}/kixdns" ]] || fail "拒绝迁移时动了原来的 KixDNS"
+chmod 0755 "$(dirname -- "${migration_geosite}")"
 
 run_installer --replace-existing
 installed=true
 require_output "KixDNS：已迁移为增强版，保持原来的运行状态（运行中）" "迁移结果没有说明保持运行状态"
+require_output "配置：已复制到 /etc/kixdns-panel/kixdns/pipeline.json 由面板管理，原来的 ${CONFIG_PATH} 不动" \
+  "迁移结果没有说明配置副本"
 systemctl is-active --quiet kixdns.service || fail "迁移后 KixDNS 没有保持运行"
 systemctl is-enabled --quiet kixdns.service || fail "迁移后 KixDNS 没有保持开机自启"
 [[ $(unit_main_executable kixdns.service) == /var/lib/kixdns-panel/bin/kixdns ]] ||
   fail "迁移后运行的不是增强版程序"
 python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
 [[ -f /var/lib/kixdns-panel/external-backup/install.env ]] || fail "迁移没有备份原 unit 与运行状态"
+# 面板管理的是原配置的副本，放在面板自己建的目录里；面板 unit 只能写这个目录和状态目录。
+# The panel manages a copy of the original config in a directory of its own; the panel unit may write only that and its state.
+[[ $(original_config_state) == "${original_before}" ]] || fail "迁移改动了原配置或它所在的目录"
+cmp -s -- "${CONFIG_PATH}" /etc/kixdns-panel/kixdns/pipeline.json || fail "迁移副本和原配置不一致"
+[[ $(stat -c '%U:%G:%a' -- /etc/kixdns-panel/kixdns/pipeline.json) == kixdns-panel:kixdns:640 ]] ||
+  fail "迁移副本的权限不符合预期"
+[[ $(stat -c '%U:%G:%a' -- /etc/kixdns-panel/kixdns) == kixdns-panel:kixdns:750 ]] ||
+  fail "迁移副本所在目录的权限不符合预期"
+[[ $(stat -c '%U:%G:%a' -- /etc/kixdns-panel) == root:kixdns:750 ]] || fail "面板配置目录的权限不符合预期"
+grep -Fxq 'KIXDNS_CONFIG=/etc/kixdns-panel/kixdns/pipeline.json' "${PANEL_ENV}" || fail "panel.env 没有指向迁移副本"
+grep -Fq -- '--config /etc/kixdns-panel/kixdns/pipeline.json ' "${MIGRATION_UNIT}" || fail "增强版 unit 没有运行迁移副本"
+grep -Fxq 'ReadWritePaths=/etc/kixdns-panel/kixdns /var/lib/kixdns-panel' /etc/systemd/system/kixdns-panel.service ||
+  fail "面板 unit 放开了迁移副本所在目录以外的路径"
+grep -Fxq "KIXDNS_CONFIG=${CONFIG_PATH}" /var/lib/kixdns-panel/external-backup/install.env ||
+  fail "迁移备份没有记下原配置"
+grep -Fxq 'KIXDNS_MANAGED_CONFIG=/etc/kixdns-panel/kixdns/pipeline.json' /var/lib/kixdns-panel/external-backup/install.env ||
+  fail "迁移备份没有记下面板管理的副本"
+# 在面板里改配置：改的是副本，原配置不变。/ Edit the config in the panel: the copy changes, the original does not.
+python3 "${ACCEPTANCE_PY}" verify --dns-port "${migration_port}" --mode migrated
+[[ $(original_config_state) == "${original_before}" ]] || fail "在面板里改配置改到了原配置"
+! cmp -s -- "${CONFIG_PATH}" /etc/kixdns-panel/kixdns/pipeline.json || fail "面板保存的配置没有写进迁移副本"
 
-bash "${UNINSTALLER}" --remove-kixdns --remove-config --yes
+uninstall_log="$(mktemp)"
+bash "${UNINSTALLER}" --remove-kixdns --remove-config --yes 2>&1 | tee "${uninstall_log}"
 installed=false
+grep -Fq "它用的是迁移前的配置 ${CONFIG_PATH}，面板改过的副本已删除。" "${uninstall_log}" ||
+  fail "卸载没有说明用回了迁移前的配置"
+rm -f -- "${uninstall_log}"
 systemctl daemon-reload
 cmp -s -- "${MIGRATION_UNIT}" "${MIGRATION_ROOT}/original.service" || fail "卸载没有放回原来的 unit"
 systemctl is-active --quiet kixdns.service || fail "卸载后原来的 KixDNS 没有恢复运行"
 systemctl is-enabled --quiet kixdns.service || fail "卸载后原来的 KixDNS 没有恢复开机自启"
 [[ $(unit_main_executable kixdns.service) == "${MIGRATION_ROOT}/kixdns" ]] ||
   fail "卸载后运行的不是原来的程序"
+# 按迁移前的地址应答，说明原来的 KixDNS 跑的是迁移前的配置，不是面板改过的那份。
+# Answering with the pre-migration address shows the original KixDNS runs the pre-migration config, not the panel's edit.
 python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
+[[ $(original_config_state) == "${original_before}" ]] || fail "卸载恢复后原配置或它所在的目录和迁移前不一样"
+[[ ! -e /etc/kixdns-panel ]] || fail "卸载后仍残留 /etc/kixdns-panel"
 ! systemctl is-active --quiet kixdns-panel.service || fail "卸载后面板服务仍在运行"
 remove_migration_fixture
 migration_fixture=false

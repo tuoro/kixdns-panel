@@ -106,11 +106,15 @@ When the installer finds a KixDNS not installed by this panel, it lists the dete
 
 Migration does the following:
 
-- The configuration file stays in its original location (the path is written to `panel.env`) and is managed by the panel from then on
+- Copies the original configuration byte for byte to `/etc/kixdns-panel/kixdns/pipeline.json` (the path is written to `panel.env`), and the panel edits only this copy. The original configuration file and its directory are left alone, owner and mode included; the panel can write only the directory of the copy and `/var/lib/kixdns-panel`
 - Replaces the KixDNS program and systemd unit with the enhanced build
 - Backs up the original unit and its running and boot state to `/var/lib/kixdns-panel/external-backup/`
-- Keeps the original running state: what was running keeps running after the migration, what was stopped stays stopped. If the enhanced build fails to start, the whole install rolls back to the pre-migration state
-- Choosing to remove the enhanced build when uninstalling the panel puts the original unit back and restores the original running state
+- Keeps the original running state: what was running keeps running after the migration, what was stopped stays stopped. If the enhanced build fails to start, the whole install rolls back to the pre-migration state, and the copy and its directory are removed
+- Choosing to remove the enhanced build when uninstalling the panel puts the original unit back and restores the original running state. The original KixDNS runs its pre-migration configuration again, and the copy is removed with the enhanced build. Changes made in the panel are not carried back; back up the copy before uninstalling if you need them
+
+The migrated KixDNS runs as the `kixdns` account. If that account cannot read a file the original configuration names (GeoSite, GeoIP, a DoH certificate and so on), or the file is in `/home`, `/root`, `/run/user`, `/tmp` or `/var/tmp`, which the service cannot see, the installer refuses to migrate before changing the host and lists each file with the reason. Adjust the permissions or move the file, fix the original configuration, then run it again. Relative paths in the original configuration resolve against KixDNS's working directory `/`; if the original unit sets `WorkingDirectory=`, change them to absolute paths first.
+
+The installer of v4.3.4 and earlier took the original configuration over in place on migration: it stayed where it was, and its directory was handed to the panel. Such hosts behave as before after an upgrade; when uninstalling restores the original KixDNS, it runs the configuration the panel saved last, and the uninstaller says so.
 
 An unattended install (no terminal, or through `curl | sudo bash`) migrates only with `--replace-existing`. Otherwise it exits immediately and gives the command.
 
@@ -190,7 +194,8 @@ The panel process does not run as root. Starting and stopping KixDNS and the pan
 
 | Path | Purpose |
 | --- | --- |
-| `/etc/kixdns/pipeline.json` | KixDNS configuration, written atomically by the panel |
+| `/etc/kixdns/pipeline.json` | KixDNS configuration of a fresh install, written atomically by the panel |
+| `/etc/kixdns-panel/kixdns/pipeline.json` | KixDNS configuration on a migrated host: a copy of the original, written atomically by the panel |
 | `/etc/kixdns-panel/panel.env` | Panel startup parameters |
 | `/var/lib/kixdns-panel/panel.db` | Users, sessions, configuration history, audit, version records and request volume samples |
 | `/var/lib/kixdns-panel/bin/kixdns` | Managed KixDNS binary |
@@ -307,7 +312,7 @@ sudo kixdns-panel-uninstall
 
 The uninstaller asks two things: whether to keep KixDNS, and whether to keep the panel configuration, database, version store and Geo data. Deleting the configuration cannot be undone, so back up `pipeline.json` and `panel.db` first.
 
-- On a host installed by migration, choosing to remove the enhanced build first restores the pre-migration unit and running state
+- On a host installed by migration, choosing to remove the enhanced build restores the pre-migration unit and running state. The original KixDNS runs its untouched original configuration, and the copy the panel managed is removed with the enhanced build. When you keep the enhanced build, the copy stays in `/etc/kixdns-panel/kixdns/`, even if the panel configuration is deleted
 - When you choose to remove KixDNS, the systemd-resolved local listener that the installer turned off and `/etc/resolv.conf` are restored with it
 - On a host installed in the early 仅安装面板 (panel only) mode, the uninstaller always keeps the original KixDNS
 - If the last uninstall kept KixDNS and deleted the configuration, running the uninstaller again still keeps KixDNS, even with `--remove-kixdns`

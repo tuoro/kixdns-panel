@@ -15,7 +15,21 @@ MANAGED_KIXDNS_BINARY="/var/lib/kixdns-panel/bin/kixdns"
 EXISTING_KIXDNS_BINARY_PATH=""
 KIXDNS_CONTROL_SOCKET="/run/kixdns/admin.sock"
 KIXDNS_SERVICE_HELPER_SOCKET="/run/kixdns-panel/control.sock"
+PANEL_CONFIG_DIRECTORY=/etc/kixdns-panel
 PANEL_ENV=/etc/kixdns-panel/panel.env
+# 迁移外部 KixDNS 时，面板管理的是原配置的一份副本，放在这个只有面板会建的目录里；原配置和它所在的目录一点不动，
+# 卸载时恢复原来的 KixDNS，它用的还是迁移前的那份。uninstall.sh 按同一个位置认出副本。
+# Migrating an external KixDNS, the panel manages a copy of the original config, kept in this directory that only the
+# panel creates; the original config and its directory are left exactly as they were, so the original KixDNS restored
+# on uninstall still runs the pre-migration one. uninstall.sh recognises the copy by the same location.
+MIGRATED_KIXDNS_CONFIG_DIRECTORY=/etc/kixdns-panel/kixdns
+MIGRATED_KIXDNS_CONFIG=/etc/kixdns-panel/kixdns/pipeline.json
+# 迁移前原来的 KixDNS 的配置；只在面板改管它的副本时有值。
+# The original KixDNS's config from before migration; set only when the panel manages a copy of it.
+ORIGINAL_KIXDNS_CONFIG_PATH=""
+# 受管 KixDNS 的服务沙箱看不到的目录：deploy/systemd/kixdns.service 的 ProtectHome 和 PrivateTmp。
+# Directories the managed KixDNS's service sandbox cannot see: ProtectHome and PrivateTmp in deploy/systemd/kixdns.service.
+KIXDNS_HIDDEN_DIRECTORIES=(/home /root /run/user /tmp /var/tmp)
 PANEL_SERVER_BINARY=/usr/local/bin/kixdns-panel-server
 GITHUB_TOKEN_FILE=/var/lib/kixdns-panel/github-token
 # 与 uninstall.sh 相同的固定位置：面板 unit 只允许写 /var/lib/kixdns-panel。
@@ -351,7 +365,13 @@ print_migration_plan() {
     printf '  程序：没有找到\n'
   fi
   printf '\n迁移为增强版会：\n'
-  printf '  - 配置文件留在原位置，改由面板管理\n'
+  if ! config_copied_on_migration "${KIXDNS_BINARY_PATH}"; then
+    printf '  - 配置文件留在原位置，改由面板管理\n'
+  elif [[ -f ${KIXDNS_CONFIG_PATH} ]]; then
+    printf '  - 把配置复制到 %s，面板只改这份副本；原来的配置文件和它所在的目录不动\n' "${MIGRATED_KIXDNS_CONFIG}"
+  else
+    printf '  - 默认配置写到 %s，由面板管理；不在原位置创建文件\n' "${MIGRATED_KIXDNS_CONFIG}"
+  fi
   printf '  - 用增强版替换 KixDNS 程序和 systemd unit\n'
   printf '  - 把原 unit 与运行状态备份到 %s\n' "${EXTERNAL_BACKUP}"
   printf '  - 保持原来的运行状态（现在%s）\n' "$(running_state_text "${KIXDNS_WAS_ACTIVE}")"
@@ -438,6 +458,92 @@ validate_install_mode() {
   fi
   EXISTING_KIXDNS_BINARY_PATH=${KIXDNS_BINARY_PATH}
   KIXDNS_BINARY_PATH=${MANAGED_KIXDNS_BINARY}
+  plan_migrated_config
+}
+
+# 外部 KixDNS 迁移时面板改管原配置的副本。面板自己留下的 KixDNS（上次卸载时保留的）不是外部安装，配置本来就归面板；
+# 配置已经在副本的位置时也一样，照旧原地管理。
+# Migrating an external KixDNS, the panel manages a copy of the original config. The panel's own KixDNS kept by an
+# earlier uninstall is no external install and its config is the panel's already; so is a config already where the copy
+# goes. Both stay managed in place.
+config_copied_on_migration() {
+  local binary=$1
+  [[ ${binary} != "${MANAGED_KIXDNS_BINARY}" && ${KIXDNS_CONFIG_PATH} != "${MIGRATED_KIXDNS_CONFIG}" ]]
+}
+
+plan_migrated_config() {
+  [[ ${INSTALL_KIND} == migrate ]] || return 0
+  config_copied_on_migration "${EXISTING_KIXDNS_BINARY_PATH}" || return 0
+  # install -d 会顺着符号链接改目标的属主和权限 / install -d would change the owner and mode of a symlink's target
+  [[ ! -L ${PANEL_CONFIG_DIRECTORY} && ! -L ${MIGRATED_KIXDNS_CONFIG_DIRECTORY} ]] ||
+    fail "${PANEL_CONFIG_DIRECTORY} 和 ${MIGRATED_KIXDNS_CONFIG_DIRECTORY} 不能是符号链接"
+  ORIGINAL_KIXDNS_CONFIG_PATH=${KIXDNS_CONFIG_PATH}
+  KIXDNS_CONFIG_PATH=${MIGRATED_KIXDNS_CONFIG}
+  require_original_files_readable
+}
+
+# 原配置里写的文件：以 / 开头、存在又不是目录的 JSON 字符串。KixDNS 只读文件；写着却不存在的文件，原来的 KixDNS
+# 一样跳过。带转义的字符串不算，路径里没有。
+# The files the original config names: JSON strings starting with / that exist and are not directories. KixDNS reads
+# files only, and a named file that does not exist is skipped by the original KixDNS too. Strings with escapes do not
+# count; paths have none.
+original_config_files() {
+  local path
+  grep -oE '"/[^"\\]*"' -- "${ORIGINAL_KIXDNS_CONFIG_PATH}" 2>/dev/null | sed -e 's/^"//' -e 's/"$//' | sort -u |
+    while IFS= read -r path; do
+      if [[ -e ${path} && ! -d ${path} ]]; then
+        printf '%s\n' "${path}"
+      fi
+    done
+}
+
+# 以受管 KixDNS 的身份（kixdns 账号、kixdns 组）试读一个文件。账号还没建时用 nobody 的 UID 代替：新建的账号同样
+# 不拥有任何文件。组还没建时用 nogroup 的 GID，同理。
+# Try reading a file as the managed KixDNS would (the kixdns account, the kixdns group). Before the account exists,
+# nobody's UID stands in for it: a new account owns no files either. Likewise nogroup's GID before the group exists.
+kixdns_can_read() {
+  local file=$1
+  local group
+  group="$(getent group "${KIXDNS_GROUP}" | cut -d: -f3 || true)"
+  if id -u "${KIXDNS_USER}" >/dev/null 2>&1; then
+    setpriv --reuid="${KIXDNS_USER}" --regid="${group:-65534}" --init-groups -- test -r "${file}"
+  else
+    setpriv --reuid=65534 --regid="${group:-65534}" --clear-groups -- test -r "${file}"
+  fi
+}
+
+# 迁移后 KixDNS 读的是副本，原配置所在的目录不再为它放开（以前原地接管时会归到 kixdns 组）。原配置里写的文件它读不到时，
+# 在改动主机之前停下，点名每个文件和原因；否则装好以后分流少了 GeoSite、DoH 证书读不到，原因却不在眼前。
+# After migration KixDNS reads the copy, and the original config's directory is no longer opened for it (the in-place
+# takeover used to hand it to the kixdns group). When it cannot read a file the original config names, stop before the
+# host is touched and name each file and why; otherwise routing would lose its GeoSite or DoH its certificate after the
+# install, with the cause nowhere in sight.
+require_original_files_readable() {
+  local files
+  local file
+  local directory
+  local reason
+  local unreadable=""
+  files="$(original_config_files || true)"
+  [[ -n ${files} ]] || return 0
+  type -P setpriv >/dev/null ||
+    fail "系统缺少 setpriv（util-linux），无法确认迁移后的 KixDNS 能读到原配置里写的文件"
+  while IFS= read -r file; do
+    reason=""
+    for directory in "${KIXDNS_HIDDEN_DIRECTORIES[@]}"; do
+      if [[ ${file} == "${directory}"/* ]]; then
+        reason="KixDNS 的服务看不到 ${directory} 里的文件"
+        break
+      fi
+    done
+    if [[ -z ${reason} ]] && ! kixdns_can_read "${file}"; then
+      reason="kixdns 账号没有读取权限"
+    fi
+    [[ -z ${reason} ]] || unreadable+="  ${file}：${reason}"$'\n'
+  done <<< "${files}"
+  [[ -n ${unreadable} ]] || return 0
+  fail "迁移后的 KixDNS 以 kixdns 账号运行，读不到原配置 ${ORIGINAL_KIXDNS_CONFIG_PATH} 里写的这些文件：
+${unreadable}迁移不会改动原来的文件和目录。让 kixdns 账号能读到它们（放宽权限，或移到别处并改原配置）后重新运行；现有 KixDNS 未作修改。"
 }
 
 render_kixdns_unit() {
@@ -482,7 +588,8 @@ kixdns_replaced() {
 # 输出 KixDNS 要监听的「协议 地址」；配置里没写时按上游默认的 0.0.0.0:53。
 # Print the "protocol address" pairs KixDNS will listen on; missing settings fall back to upstream's 0.0.0.0:53.
 kixdns_listen_addresses() {
-  local config=${KIXDNS_CONFIG_PATH}
+  # 迁移的副本要到安装那一步才写出来，在那之前按原配置查 / The migration copy is only written at install time; until then read the original
+  local config=${ORIGINAL_KIXDNS_CONFIG_PATH:-${KIXDNS_CONFIG_PATH}}
   local protocol
   local value
   [[ -f ${config} ]] || config=${PACKAGE_ROOT}/deploy/config/pipeline.json
@@ -990,7 +1097,11 @@ preserve_external_install() {
   fi
   {
     printf 'KIXDNS_SERVICE_UNIT=%s\n' "${KIXDNS_SERVICE_UNIT}"
-    printf 'KIXDNS_CONFIG=%s\n' "${KIXDNS_CONFIG_PATH}"
+    # 原来的 KixDNS 的配置，和面板管理的那一份分开记：迁移时后者是前者的副本，旧版原地迁移时两者相同。
+    # The original KixDNS's config, recorded apart from the one the panel manages: on migration the latter is a copy
+    # of the former, and an older in-place migration made them the same.
+    printf 'KIXDNS_CONFIG=%s\n' "${ORIGINAL_KIXDNS_CONFIG_PATH:-${KIXDNS_CONFIG_PATH}}"
+    printf 'KIXDNS_MANAGED_CONFIG=%s\n' "${KIXDNS_CONFIG_PATH}"
     printf 'KIXDNS_BINARY=%s\n' "${EXISTING_KIXDNS_BINARY_PATH}"
     printf 'KIXDNS_WAS_ACTIVE=%s\n' "${KIXDNS_WAS_ACTIVE}"
     printf 'KIXDNS_WAS_ENABLED=%s\n' "${KIXDNS_WAS_ENABLED}"
@@ -1171,7 +1282,7 @@ update_panel_environment() {
   local kixdns_source_id=$2
   local kixdns_source=$3
   local temporary
-  temporary="$(mktemp /etc/kixdns-panel/.panel.env.XXXXXX)"
+  temporary="$(mktemp "${PANEL_CONFIG_DIRECTORY}/.panel.env.XXXXXX")"
   render_panel_environment "${PANEL_ENV}" "${temporary}" "${kixdns_commit}" \
     "${PANEL_BUILD_COMMIT}" "${PANEL_RELEASE}" "${kixdns_source_id}" "${kixdns_source}"
   chown root:"${KIXDNS_GROUP}" "${temporary}"
@@ -1180,9 +1291,14 @@ update_panel_environment() {
 }
 
 install_configuration() {
-  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 /etc/kixdns-panel
+  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 "${PANEL_CONFIG_DIRECTORY}"
   install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 "$(dirname -- "${KIXDNS_CONFIG_PATH}")"
-  if [[ ! -e ${KIXDNS_CONFIG_PATH} ]]; then
+  if [[ -n ${ORIGINAL_KIXDNS_CONFIG_PATH} && -f ${ORIGINAL_KIXDNS_CONFIG_PATH} ]]; then
+    # 迁移：把原配置一字不差地复制给面板管理。原文件只读不写，属主和权限都不动。
+    # Migration: copy the original config byte for byte for the panel to manage. The original is only read; its owner
+    # and mode stay as they are.
+    install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0640 -- "${ORIGINAL_KIXDNS_CONFIG_PATH}" "${KIXDNS_CONFIG_PATH}"
+  elif [[ ! -e ${KIXDNS_CONFIG_PATH} ]]; then
     install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0640 \
       "${PACKAGE_ROOT}/deploy/config/pipeline.json" "${KIXDNS_CONFIG_PATH}"
   else
@@ -1377,6 +1493,13 @@ print_summary() {
     migrate)
       printf 'KixDNS：已迁移为增强版，保持原来的运行状态（%s）；原 unit 备份在 %s，卸载面板时可恢复\n' \
         "$(running_state_text "${KIXDNS_WAS_ACTIVE}")" "${EXTERNAL_BACKUP}"
+      if [[ -z ${ORIGINAL_KIXDNS_CONFIG_PATH} ]]; then
+        :
+      elif [[ -f ${ORIGINAL_KIXDNS_CONFIG_PATH} ]]; then
+        printf '配置：已复制到 %s 由面板管理，原来的 %s 不动\n' "${KIXDNS_CONFIG_PATH}" "${ORIGINAL_KIXDNS_CONFIG_PATH}"
+      else
+        printf '配置：%s 不存在，面板在 %s 写入了默认配置\n' "${ORIGINAL_KIXDNS_CONFIG_PATH}" "${KIXDNS_CONFIG_PATH}"
+      fi
       ;;
     upgrade)
       if [[ ${PREVIOUS_PANEL_LABEL} == "${package_label}" ]]; then
