@@ -9,7 +9,13 @@ BACKUP_ROOT=""
 INSTALL_MODE="auto"
 INSTALL_KIND=""
 KIXDNS_SERVICE_UNIT="kixdns.service"
-KIXDNS_CONFIG_PATH="/etc/kixdns/pipeline.json"
+# KixDNS 配置的默认目录，面板固定的位置；uninstall.sh 按同一个位置认出它。
+# The KixDNS config's default directory, the panel's fixed location; uninstall.sh recognises it by the same location.
+KIXDNS_CONFIG_DIRECTORY=/etc/kixdns
+KIXDNS_CONFIG_PATH="${KIXDNS_CONFIG_DIRECTORY}/pipeline.json"
+# 主机上已有 KixDNS 的 unit 里写着的配置路径。
+# The config path the existing KixDNS's unit names.
+KIXDNS_UNIT_CONFIG_PATH=""
 KIXDNS_BINARY_PATH="/var/lib/kixdns-panel/bin/kixdns"
 MANAGED_KIXDNS_BINARY="/var/lib/kixdns-panel/bin/kixdns"
 EXISTING_KIXDNS_BINARY_PATH=""
@@ -324,7 +330,10 @@ detect_existing_kixdns() {
   capture_managed_service_state
   [[ ${EXISTING_PANEL} == false ]] || return 0
   detected="$(detect_service_argument config || true)"
-  [[ -z ${detected} ]] || KIXDNS_CONFIG_PATH=${detected}
+  if [[ -n ${detected} ]]; then
+    KIXDNS_CONFIG_PATH=${detected}
+    KIXDNS_UNIT_CONFIG_PATH=${detected}
+  fi
   detected="$(detect_service_argument admin-socket || true)"
   [[ -z ${detected} ]] || KIXDNS_CONTROL_SOCKET=${detected}
   detected="$(systemctl show --property=ExecStart --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
@@ -459,6 +468,41 @@ validate_install_mode() {
   EXISTING_KIXDNS_BINARY_PATH=${KIXDNS_BINARY_PATH}
   KIXDNS_BINARY_PATH=${MANAGED_KIXDNS_BINARY}
   plan_migrated_config
+}
+
+# 面板原子写配置（同一目录里写临时文件再改名），所以 install_configuration 把配置所在的目录交给它：改归 kixdns-panel、
+# 权限 0750，面板 unit 的 ReadWritePaths 放开它。安装器不改、也不让面板写它没建的目录，所以这个目录只能是：panel.env 记下的、
+# 或者主机上已有 KixDNS 的 unit 写着的配置所在的目录（以前就交给了面板，照旧：v4.3.4 及更早原地迁移的主机因此照常升级）；
+# 还不存在、由安装器新建的目录；面板固定的 /etc/kixdns 和迁移副本的目录。除了记录里的，放着 panel.env 的面板配置目录即使
+# 还不存在也不行：面板能改 panel.env，下次以 root 运行的安装器就会照着它改别的目录。要在 validate_install_mode 之后、
+# 改动主机之前调用：迁移时检查的是副本，不是原配置。
+# The panel writes its config atomically (a temporary file in the same directory, then a rename), so install_configuration
+# hands it the config's directory: owner kixdns-panel, mode 0750, opened by the panel unit's ReadWritePaths. The installer
+# neither changes nor opens for the panel a directory it did not create, so that directory may only be: the directory of
+# the config panel.env records or the existing KixDNS's unit names (handed to the panel before and kept as it is, which keeps
+# hosts migrated in place by v4.3.4 and earlier upgrading); one that does not exist yet, which the installer creates; the
+# panel's fixed /etc/kixdns or the migration copy's directory. Unless recorded, the panel's config directory, which holds
+# panel.env, does not qualify even before it exists: a panel that could rewrite panel.env would steer the next installer run,
+# as root, onto other directories. Call it after validate_install_mode and before the host is touched: on migration the copy
+# is checked, not the original.
+require_dedicated_config_directory() {
+  local config_parent
+  local recorded
+  local reason
+  config_parent="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+  for recorded in "$(environment_value KIXDNS_CONFIG || true)" "${KIXDNS_UNIT_CONFIG_PATH}"; do
+    [[ -z ${recorded} || $(dirname -- "${recorded}") != "${config_parent}" ]] || return 0
+  done
+  if [[ ${config_parent} == "${PANEL_CONFIG_DIRECTORY}" ]]; then
+    reason="这里的 panel.env 只能由 root 修改"
+  elif [[ ! -e ${config_parent} || ${config_parent} == "${KIXDNS_CONFIG_DIRECTORY}" ||
+    ${config_parent} == "${MIGRATED_KIXDNS_CONFIG_DIRECTORY}" ]]; then
+    return 0
+  else
+    reason="这个目录已经存在，安装器不会把它交给面板"
+  fi
+  fail "KixDNS 配置不能放在 ${config_parent}：面板要能写配置所在的目录，而${reason}。
+换一个还不存在的目录，或者去掉 --kixdns-config，用默认的 ${KIXDNS_CONFIG_DIRECTORY}/pipeline.json；要沿用已有的配置，先把它复制过去。"
 }
 
 # 外部 KixDNS 迁移时面板改管原配置的副本。面板自己留下的 KixDNS（上次卸载时保留的）不是外部安装，配置本来就归面板；
@@ -1578,6 +1622,7 @@ main() {
   fi
   determine_install_kind
   validate_install_mode
+  require_dedicated_config_directory
   plan_kixdns_changes
   plan_port53
 

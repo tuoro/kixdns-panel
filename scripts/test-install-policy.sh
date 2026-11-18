@@ -1044,6 +1044,222 @@ assert_contains "${output}" "ORIGINAL=original 604" "迁移失败后原配置的
 assert_contains "${output}" "PARENT=751" "迁移失败后原配置所在目录的权限不变"
 assert_not_contains "${output}" "COPY-LEFT" "迁移失败应删掉副本和它的目录"
 
+# ---------------------------------------------------------------------------
+# 配置所在的目录 / The config's directory
+# ---------------------------------------------------------------------------
+
+# 面板要原子写配置，安装器就把配置所在的目录交给它：install -d 改归 kixdns-panel、权限 0750，面板 unit 的 ReadWritePaths
+# 放开它。这个目录只能是 panel.env 或已有 KixDNS 的 unit 记下的、安装器新建的，或者面板固定的 /etc/kixdns 和迁移副本的目录。
+# 回归：全新安装带 --kixdns-config /etc/foo.json 时，/etc 归面板账号、权限变成 0750（别的非 root 账号进不去），面板还能写
+# 整个 /etc。
+# The panel writes its config atomically, so the installer hands it the config's directory: install -d gives it to
+# kixdns-panel with mode 0750, and the panel unit's ReadWritePaths opens it. That directory may only be one panel.env or the
+# existing KixDNS's unit records, one the installer creates, or the panel's fixed /etc/kixdns or migration copy directory.
+# Regression: a fresh install with --kixdns-config /etc/foo.json gave /etc to the panel account with mode 0750 (no other
+# non-root account could enter it), and the panel could write all of /etc.
+config_directory_root="${WORK}/config-directory"
+config_directory_tree() {
+  local root=${config_directory_root}
+  rm -rf -- "${root}"
+  mkdir -p "${root}/etc" "${root}/units" "${root}/state/bin" "${root}/package/bin" "${root}/package/deploy/systemd" \
+    "${root}/package/deploy/config"
+  cp "${PACKAGE_ROOT}/deploy/systemd/"*.service "${root}/package/deploy/systemd/"
+  cp "${PACKAGE_ROOT}/deploy/config/pipeline.json" "${root}/package/deploy/config/"
+  cp "${PACKAGE_ROOT}/deploy/panel.env.example" "${root}/package/deploy/"
+  printf 'kixdns\n' > "${root}/package/bin/kixdns"
+  printf '{}\n' > "${root}/etc/foo.json"
+}
+# 用安装器自己的函数从参数一路走到装好服务。改动主机的命令只记下来；临时目录里的目录真的建出来。面板 unit 装上之前，记下它
+# 放开的写入路径。CONFIG_DIRECTORY_UNIT 非空时，主机上有一个面板自带 KixDNS 的 unit，配置是它；CONFIG_DIRECTORY_KIXDNS=true
+# 时只剩面板目录里的 KixDNS 程序、没有 unit。
+# Walk from the arguments to the installed services with the installer's own functions. Commands that change the host are
+# only recorded; directories inside the scratch tree are really created. Before the panel unit is installed, record the
+# write paths it opens. With CONFIG_DIRECTORY_UNIT set, the host has a unit of the panel's own KixDNS running that config;
+# with CONFIG_DIRECTORY_KIXDNS=true only the KixDNS program in the panel's directory is left, without a unit.
+config_directory_run() {
+  local root=${config_directory_root}
+  (
+    PACKAGE_ROOT="${root}/package"
+    PANEL_CONFIG_DIRECTORY="${root}/panel-etc"
+    PANEL_ENV="${root}/panel-etc/panel.env"
+    MIGRATED_KIXDNS_CONFIG_DIRECTORY="${root}/panel-etc/kixdns"
+    MIGRATED_KIXDNS_CONFIG="${root}/panel-etc/kixdns/pipeline.json"
+    KIXDNS_CONFIG_DIRECTORY="${root}/etc-kixdns"
+    KIXDNS_CONFIG_PATH="${root}/etc-kixdns/pipeline.json"
+    MANAGED_KIXDNS_BINARY="${root}/state/bin/kixdns"
+    KIXDNS_BINARY_PATH=${MANAGED_KIXDNS_BINARY}
+    PANEL_SERVER_BINARY="${root}/panel-server"
+    SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    EXTERNAL_BACKUP="${root}/external-backup"
+    INSTALL_MODE=auto
+    PANEL_ONLY_UPDATE=false
+    EXISTING_PANEL=false
+    EXISTING_KIXDNS=false
+    EXISTING_KIXDNS_UNIT=false
+    ORIGINAL_KIXDNS_CONFIG_PATH=""
+    KIXDNS_UNIT_CONFIG_PATH=""
+    unit_config=${CONFIG_DIRECTORY_UNIT:-}
+    systemctl() {
+      case $1 in
+        cat) [[ -n ${unit_config} ]] ;;
+        show)
+          [[ -z ${unit_config} ]] ||
+            printf '{ path=%s ; argv[]=%s run --config %s ; }\n' "${MANAGED_KIXDNS_BINARY}" "${MANAGED_KIXDNS_BINARY}" "${unit_config}"
+          ;;
+        is-active | is-enabled) return 1 ;;
+        *) printf 'systemctl %s\n' "$*" ;;
+      esac
+    }
+    install() {
+      printf 'install %s\n' "$*"
+      [[ $1 != -d || ${*: -1} != "${root}"/* ]] || mkdir -p -- "${*: -1}"
+      [[ ${*: -1} != */kixdns-panel.service ]] || grep '^ReadWritePaths=' "${*: -2:1}"
+    }
+    chown() { printf 'chown %s\n' "$*"; }
+    chmod() { printf 'chmod %s\n' "$*"; }
+    rm() { [[ ${*: -1} != "${root}"/* ]] || command rm "$@"; }
+    id() { printf '990\n'; }
+    mktemp() { local file="${root}/temporary.${RANDOM}"; : > "${file}"; printf '%s\n' "${file}"; }
+    update_panel_environment() { :; }
+    parse_arguments "$@"
+    load_existing_panel_settings
+    # 没有 unit 时不检测：主机上 PATH 里或 /usr/local/bin 下有 kixdns 会把这里变成迁移。
+    # Without a unit, skip detection: a kixdns on this host's PATH or in /usr/local/bin would turn this into a migration.
+    if [[ -n ${unit_config} || ${EXISTING_PANEL} == true ]]; then
+      detect_existing_kixdns
+    else
+      EXISTING_KIXDNS=${CONFIG_DIRECTORY_KIXDNS:-false}
+    fi
+    choose_install_mode
+    determine_install_kind
+    validate_install_mode
+    require_dedicated_config_directory
+    plan_kixdns_changes
+    printf 'PLANNED %s %s\n' "${INSTALL_KIND}" "${KIXDNS_CONFIG_PATH}"
+    install_configuration
+    install_services
+  ) 2>&1 || true
+}
+# 改动了这个目录或它里面那份配置的属主、权限的命令。/ The commands that changed the owner or mode of this directory or of the config in it.
+config_directory_touched() {
+  awk -v directory="$2" -v config="$2/foo.json" '
+    ($1 == "install" && $2 == "-d" || $1 == "chown" || $1 == "chmod") && ($NF == directory || $NF == config)
+  ' <<< "$1"
+}
+root=${config_directory_root}
+config_directory_message="换一个还不存在的目录，或者去掉 --kixdns-config，用默认的 ${root}/etc-kixdns/pipeline.json；要沿用已有的配置，先把它复制过去。"
+
+config_directory_tree
+output="$(config_directory_run --kixdns-config "${root}/etc/foo.json")"
+assert_equals "$(config_directory_touched "${output}" "${root}/etc")" "" "全新安装不能改动已有目录和里面配置的属主或权限"
+assert_not_contains "${output}" "ReadWritePaths=${root}/etc " "全新安装不能让面板写已有的目录"
+assert_contains "${output}" "安装失败：KixDNS 配置不能放在 ${root}/etc：面板要能写配置所在的目录，而这个目录已经存在，安装器不会把它交给面板。" \
+  "配置落在已有目录里时应说明为什么拒绝"
+assert_contains "${output}" "${config_directory_message}" "拒绝时应说明换到哪里"
+assert_not_contains "${output}" "PLANNED" "配置落在已有目录里时应在改动主机之前拒绝"
+
+# 上次安装留下的 panel.env 记的是别的目录：这个已有的目录照样不交出去。
+# A panel.env left by an earlier install records another directory: this existing one is still not handed over.
+config_directory_tree
+mkdir -p "${root}/panel-etc" "${root}/kept"
+printf 'KIXDNS_CONFIG=%s\n' "${root}/kept/pipeline.json" > "${root}/panel-etc/panel.env"
+output="$(config_directory_run --kixdns-config "${root}/etc/foo.json")"
+assert_contains "${output}" "KixDNS 配置不能放在 ${root}/etc：" "panel.env 记的是别的目录时仍应拒绝已有目录"
+assert_not_contains "${output}" "PLANNED" "panel.env 记的是别的目录时不能继续安装"
+
+# 上次安装时 panel.env 记下的目录（卸载时保留了面板配置）：那是面板自己的目录，照旧交给它。
+# The directory panel.env recorded in an earlier install (the uninstall kept the panel's config): it is the panel's own,
+# and goes to it as before.
+config_directory_tree
+mkdir -p "${root}/panel-etc" "${root}/kept"
+printf '{"kept":true}\n' > "${root}/kept/pipeline.json"
+printf 'KIXDNS_CONFIG=%s\n' "${root}/kept/pipeline.json" > "${root}/panel-etc/panel.env"
+output="$(config_directory_run --kixdns-config "${root}/kept/pipeline.json")"
+assert_contains "${output}" "PLANNED fresh ${root}/kept/pipeline.json" "panel.env 记下的目录应照旧可用"
+assert_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/kept" "panel.env 记下的目录照旧交给面板"
+
+# 还不存在的目录由安装器新建，交给面板。/ A directory that does not exist yet is created by the installer and handed to the panel.
+config_directory_tree
+output="$(config_directory_run --kixdns-config "${root}/srv/kixdns/pipeline.json")"
+assert_contains "${output}" "PLANNED fresh ${root}/srv/kixdns/pipeline.json" "还不存在的目录应可用"
+assert_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/srv/kixdns" "新建的配置目录归面板"
+assert_contains "${output}" "ReadWritePaths=${root}/srv/kixdns /var/lib/kixdns-panel" "面板 unit 只放开新建的配置目录"
+
+# 默认的 /etc/kixdns 已经存在（比如先放好了配置）：那是面板固定的位置，照旧接管，留下已有的配置。
+# The default /etc/kixdns already exists (say a config was put there first): it is the panel's fixed location, taken over as
+# before, keeping the config already there.
+config_directory_tree
+mkdir -p "${root}/etc-kixdns"
+printf '{"prepared":true}\n' > "${root}/etc-kixdns/pipeline.json"
+output="$(config_directory_run)"
+assert_contains "${output}" "PLANNED fresh ${root}/etc-kixdns/pipeline.json" "默认目录已经存在时应照旧安装"
+assert_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/etc-kixdns" "默认目录照旧交给面板"
+assert_contains "${output}" "chown kixdns-panel:kixdns -- ${root}/etc-kixdns/pipeline.json" "默认目录里已有的配置照旧归面板"
+output="$(config_directory_run --kixdns-config "${root}/etc-kixdns/custom.json")"
+assert_contains "${output}" "PLANNED fresh ${root}/etc-kixdns/custom.json" "默认目录里的其他文件名应可用"
+
+# 放着 panel.env 的面板配置目录不能交给面板，哪怕它还不存在：面板能改 panel.env，下次以 root 运行的安装器就会照着它改别的目录。
+# The panel's config directory, which holds panel.env, never goes to the panel, even before it exists: a panel that could
+# rewrite panel.env would steer the next installer run, as root, onto other directories.
+config_directory_tree
+output="$(config_directory_run --kixdns-config "${root}/panel-etc/pipeline.json")"
+assert_contains "${output}" "安装失败：KixDNS 配置不能放在 ${root}/panel-etc：面板要能写配置所在的目录，而这里的 panel.env 只能由 root 修改。" \
+  "配置放在面板配置目录时应说明为什么拒绝"
+assert_contains "${output}" "${config_directory_message}" "拒绝时应说明换到哪里"
+assert_not_contains "${output}" "PLANNED" "配置放在面板配置目录时应在改动主机之前拒绝"
+
+# 升级沿用 panel.env 记下的路径：v4.3.4 及更早原地迁移、配置所在目录已经归面板的主机照旧，不在升级时拒绝。
+# An upgrade keeps the path panel.env records: hosts migrated in place by v4.3.4 and earlier, whose config directory is the
+# panel's already, carry on as before and are not refused on upgrade.
+config_directory_tree
+mkdir -p "${root}/panel-etc"
+printf 'KIXDNS_CONFIG=%s\n' "${root}/etc/foo.json" > "${root}/panel-etc/panel.env"
+: > "${root}/panel-server"
+chmod 0755 "${root}/panel-server"
+output="$(config_directory_run)"
+assert_contains "${output}" "PLANNED upgrade ${root}/etc/foo.json" "升级应沿用 panel.env 记下的配置路径"
+assert_contains "${output}" "ReadWritePaths=${root}/etc /var/lib/kixdns-panel" "升级时旧主机的面板 unit 照旧"
+
+# 上次卸载保留下来的面板自带 KixDNS：配置按它的 unit 记下的路径原地管理，照旧。
+# The panel's own KixDNS kept by an earlier uninstall: its config stays managed in place where its unit says, as before.
+config_directory_tree
+printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
+output="$(CONFIG_DIRECTORY_UNIT="${root}/etc/foo.json" config_directory_run --replace-existing)"
+assert_contains "${output}" "PLANNED migrate ${root}/etc/foo.json" "面板自带 KixDNS 的配置应按它的 unit 原地管理"
+
+# 迁移外部 KixDNS：检查的是副本的目录，不是原配置所在的已有目录；副本的目录已经在（上次卸载保留增强版时留下的）也照旧可用。
+# Migrating an external KixDNS: the copy's directory is checked, not the existing one of the original config; the copy's
+# directory being there already (left by an earlier uninstall that kept the enhanced KixDNS) is fine as before.
+config_directory_tree
+mkdir -p "${root}/panel-etc/kixdns"
+output="$(CONFIG_DIRECTORY_KIXDNS=true config_directory_run --replace-existing --kixdns-binary /usr/local/bin/kixdns \
+  --kixdns-config "${root}/etc/foo.json")"
+assert_contains "${output}" "PLANNED migrate ${root}/panel-etc/kixdns/pipeline.json" "迁移副本的目录已经在时应照旧迁移"
+assert_equals "$(config_directory_touched "${output}" "${root}/etc")" "" "迁移不能改动原配置所在的目录"
+
+# 只剩面板目录里的 KixDNS 程序、没有 unit：配置路径来自 --kixdns-config，不是记录，照样不能落在已有目录里。
+# Only the KixDNS program in the panel's directory is left, without a unit: the config path comes from --kixdns-config,
+# not from a record, so it still may not land in an existing directory.
+config_directory_tree
+printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
+output="$(CONFIG_DIRECTORY_KIXDNS=true config_directory_run --replace-existing --kixdns-config "${root}/etc/foo.json")"
+assert_contains "${output}" "KixDNS 配置不能放在 ${root}/etc：" "没有 unit 记下配置时，参数给的路径不能落在已有目录里"
+assert_equals "$(config_directory_touched "${output}" "${root}/etc")" "" "没有 unit 记下配置时不能改动已有目录"
+
+# 安装器照这个顺序检查：迁移副本计划好之后（validate_install_mode 里），改动主机之前。
+# The installer checks in this order: once the migration copy is planned (in validate_install_mode), before the host is touched.
+main_body="$(declare -f main)"
+# 少了哪一步时 grep 什么也找不到；|| true 让下面的断言说出来，而不是 set -e 无声退出。
+# grep finds nothing when a step is missing; || true lets the assertion below say so instead of set -e exiting silently.
+validate_line="$(grep -n 'validate_install_mode' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+dedicated_line="$(grep -n 'require_dedicated_config_directory' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+accounts_line="$(grep -n 'create_accounts' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${dedicated_line} && ${validate_line} -lt ${dedicated_line} && ${dedicated_line} -lt ${accounts_line} ]] || {
+  printf '断言失败：配置目录应在规划好迁移副本之后、改动主机之前检查（validate=%s dedicated=%s accounts=%s）\n' \
+    "${validate_line}" "${dedicated_line}" "${accounts_line}" >&2
+  exit 1
+}
+
 substitution_rollback() {
   local root="${WORK}/rollback-substitution"
   rm -rf -- "${root}"

@@ -63,6 +63,8 @@ sudo bash ./scripts/install.sh
 | `--panel-only-update` | 只更新面板，等同「系统」页的面板更新；不停止也不替换 KixDNS |
 | `--kixdns-unit`、`--kixdns-config`、`--kixdns-binary`、`--control-socket` | 已有 KixDNS 不在默认位置、又无法从 unit 自动检测时手动指定 |
 
+全新安装时，`--kixdns-config` 决定配置放在哪里。面板要能写配置所在的目录，所以这个目录要么还不存在（由安装器新建），要么是默认的 `/etc/kixdns/`，要么是上次安装用过、卸载时保留了面板配置的那个；落在别的已有目录里的路径（如 `/etc/foo.json`）会在改动主机之前被拒绝。安装器这样新建的目录卸载时不删，配置留在里面。
+
 一键安装把参数放在 `bash -s --` 之后；运行安装器前会先检查，拼错的参数不会改动主机：
 
 ```bash
