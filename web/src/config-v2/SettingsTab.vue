@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
-import { groupName, outcomeProblem, upstreamListProblem } from '../config-model/model'
+import { groupName, outcomeProblem, upstreamListProblem, withDefaultPorts } from '../config-model/model'
 import { changedSettingKeys, model } from './store'
 
 // 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、Geo 数据），最前面多一组「规则默认值」。
@@ -19,6 +19,10 @@ const problems = computed((): Record<string, string> => {
   const problem = hidden.value.length || value === undefined ? null : upstreamListProblem(String(value))
   return problem ? { default_upstream: problem } : {}
 })
+// 默认上游写完（离开这一格、按回车）时和上游组的地址按「完成」时一样，只写 IP、TCP 主机的按 53 补上端口；写到一半不动它，上面照写的查
+// 默认上游 once written (leaving the box, pressing Enter) is treated as an upstream group's addresses on 完成: an IP or TCP host alone takes
+// port 53; mid-typing it is left alone and checked above as written
+const commit = { default_upstream: withDefaultPorts }
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]
 const blockNote: Record<string, string> = {
   // 词不拆到两行：「不存在」「放弃」 / Words are not split across lines: 不存在, 放弃
@@ -48,7 +52,7 @@ const lead = computed(() => ({
 
 <template>
   <section class="ui-card sets__card" aria-label="基础设置">
-    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :problems="problems">
+    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :problems="problems" :commit="commit">
       <template #lead>
         <div class="ui-setrow">
           <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}。</small></span>

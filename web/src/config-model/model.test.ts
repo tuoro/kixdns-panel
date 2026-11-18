@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { andChains, compile, kernelAddress, ruleProblems, upstreamListProblem, type Condition, type Model } from './model'
+import { andChains, compile, kernelAddress, ruleProblems, upstreamListProblem, withDefaultPorts, type Condition, type Model } from './model'
 import { cond, sampleModel } from './testing/samples'
 import { foldChain } from './testing/kernel-sim'
 
@@ -190,6 +190,18 @@ describe('upstreamListProblem', () => {
     expect(upstreamListProblem('1.1.1.1:53, 8.8.8.8:0')).toBe('第 2 个地址的端口要在 1 到 65535 之间')
     expect(upstreamListProblem('')).toBe('至少填一个地址')
     expect(upstreamListProblem(' , ')).toBe('至少填一个地址')
+  })
+})
+
+// 「默认上游」写完（离开这一格、按回车）时和上游组的地址按「完成」时一样：没写端口的 IP、TCP 主机按 53 补上，同一个 withDefaultPort
+// 默认上游 once written (leaving the box, pressing Enter) is treated as an upstream group's addresses on 完成: an IP or TCP host without a port
+// takes 53, by the same withDefaultPort
+describe('withDefaultPorts', () => {
+  it('没写端口的按 53 补上；写了端口的、补不了的原样，别的写法一个字不动', () => {
+    expect(withDefaultPorts('1.1.1.1')).toBe('1.1.1.1:53')
+    expect(withDefaultPorts('1.1.1.1, 2001:db8::1,tcp://dns.example')).toBe('1.1.1.1:53, [2001:db8::1]:53,tcp://dns.example:53')
+    expect(withDefaultPorts('8.8.8.8:5353, https://dns.google/dns-query, dns.example, ')).toBe('8.8.8.8:5353, https://dns.google/dns-query, dns.example, ')
+    expect(upstreamListProblem(withDefaultPorts('1.1.1.1, tcp://dns.example'))).toBeNull()
   })
 })
 

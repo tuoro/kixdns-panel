@@ -424,6 +424,7 @@ fn api_router(state: AppState) -> Router {
         .route("/stats/clear", post(clear_query_stats))
         .route("/config", get(get_config).put(save_config))
         .route("/config/validate", post(validate_config))
+        .route("/config/regex-check", post(check_regexes))
         .route("/config/geo-data", get(get_geo_data))
         .route("/config/geo-data/sync", post(sync_geo_data))
         .route(
@@ -890,6 +891,50 @@ async fn validate_config(
         .await
         .map(Json)
         .map_err(map_control_error)
+}
+
+/// 一次最多查几个正则：页面按这个分批 / At most this many regexes per request; the page batches by it
+const MAX_REGEX_CHECKS: usize = 200;
+
+#[derive(Debug, Deserialize)]
+struct RegexCheckRequest {
+    patterns: Vec<String>,
+}
+
+/// 和请求里的正则一一对应：内核编得出为 null，编不出为内核报的原因 / One per regex of the request: null when the kernel compiles
+/// it, otherwise the cause the kernel gives
+#[derive(Debug, Serialize)]
+struct RegexCheckResponse {
+    errors: Vec<Option<String>>,
+}
+
+/// 编辑器里的正则照内核编译一遍（见 `regex_check.rs`）。只读，和「校验」一样要登录、要 CSRF；编译放到阻塞线程上，几个大的不卡住别的请求
+/// The editor's regexes compiled as the kernel compiles them (see `regex_check.rs`). Read-only, it takes a session and CSRF as 校验 does;
+/// compiling runs on a blocking thread, so a few large ones hold up no other request
+async fn check_regexes(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(request): Json<RegexCheckRequest>,
+) -> AppResult<Json<RegexCheckResponse>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    if request.patterns.len() > MAX_REGEX_CHECKS {
+        return Err(AppError::BadRequest(
+            "regex_check_invalid",
+            format!("一次最多查 {MAX_REGEX_CHECKS}\u{a0}个正则"),
+        ));
+    }
+    let errors = tokio::task::spawn_blocking(move || {
+        request
+            .patterns
+            .iter()
+            .map(|pattern| crate::regex_check::kernel_regex_problem(pattern))
+            .collect()
+    })
+    .await
+    .context("正则检查任务异常结束")?;
+    Ok(Json(RegexCheckResponse { errors }))
 }
 
 async fn save_config(

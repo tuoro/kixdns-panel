@@ -7,7 +7,7 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { isCnameTarget, isTtl, TTL_PROBLEM } from '../config-model/grammar'
-import { isDomain, isIp, mappingDomain, mappingIsIp, splitList, type Mapping } from '../config-model/model'
+import { isDomain, isIp, kernelDomain, mappingDomain, mappingIsIp, splitList, type Mapping } from '../config-model/model'
 import { useNarrowDesktop, usePhone } from './phone'
 import { changedMappingIds, draftGeneration, model, newId, trackDialogEdits } from './store'
 import { canCname } from './useConfigDocument'
@@ -38,7 +38,8 @@ function problem(domain: string, target: string, self: number | null): string | 
   const d = domainOf(domain)
   if (!d) return '填要映射的域名'
   if (!isDomain(d)) return '域名写得不对'
-  if (model.mappings.some((r) => r.id !== self && mappingDomain(r).toLowerCase() === d)) return `${d} 已经有映射了`
+  // 中文和它的 punycode 是同一个域名：按写进内核的样子比 / A Chinese name and its punycode are one name: compared as written to the kernel
+  if (model.mappings.some((r) => r.id !== self && kernelDomain(mappingDomain(r).toLowerCase()) === kernelDomain(d))) return `${d} 已经有映射了`
   return targetProblem(target)
 }
 function submit(): void {

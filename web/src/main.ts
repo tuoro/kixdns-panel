@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import App from './App.vue'
-import { SESSION_EXPIRED_EVENT } from './api/client'
+import { SESSION_EXPIRED_EVENT, apiRequest, jsonBody } from './api/client'
+import { setRegexChecker } from './config-model/regex-check'
 import { probePanel, untilReachable } from './composables/useConnection'
 import { useConfirm } from './composables/useConfirm'
 import { useHelp } from './composables/useHelp'
@@ -15,6 +16,9 @@ import { createStaleChunkRecovery } from './stale-chunk-recovery'
 import './styles.css'
 
 stopIosFocusZoom(document.querySelector<HTMLMetaElement>('meta[name="viewport"]'), navigator)
+// 编辑器里的正则请面板服务端照内核编译一遍（见 config-model/regex-check.ts） / The editor's regexes are compiled by the panel server as the
+// kernel compiles them (see config-model/regex-check.ts)
+setRegexChecker(async (patterns) => (await apiRequest<{ errors: (string | null)[] }>('/api/v1/config/regex-check', { method: 'POST', ...jsonBody({ patterns }) })).errors)
 
 const session = useSession()
 // 会话过期就回登录页，登录后回到这一页。不再问「放弃修改」：会话已经没了，留下也存不了；没保存的修改留不住，登录页照实说

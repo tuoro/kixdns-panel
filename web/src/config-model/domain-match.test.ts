@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { exportConfig, kernelPart, panelHash, readConfig } from './document'
 import { importKernel } from './importer'
 import type { KConfigLike } from './kernel'
-import { compile, conditionText, FIELD, newRule, responseConditionText, type Condition, type Model, type ResponseCondition, type Rule } from './model'
+import { compile, conditionText, FIELD, isDomain, newRule, responseConditionText, ruleProblems, type Condition, type Model, type ResponseCondition, type Rule } from './model'
 import { sampleModel } from './testing/samples'
 
 // 域名条件的三种比较：「属于」是这个名字加它下面的所有子域名，「就是」只算这个名字本身，还有正则。
@@ -104,5 +104,45 @@ describe('域名条件：属于、就是、正则 / domain conditions: 属于, �
     const { model } = withRule([domain(['*.example.net', 'example.net'])])
     const back = readConfig(JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown>)
     expect(back.model.rules.find((r) => r.name === 'domain-match')!.conditions[0]![0]!.values).toEqual(['example.net'])
+  })
+})
+
+// 中文这样的域名：内核拿查询名的每一级照原样比，查询名到内核时是 punycode（xn--…），写中文的条件永远匹配不上。所以输入框照收中文，
+// 写进内核时换成 punycode（IDNA，和浏览器地址栏一样），页面上照旧显示写的中文
+// Names like 中文.example: the kernel compares each label of the query name as written, and query names arrive in punycode (xn--…), so a
+// condition written in Chinese never matched. The boxes take Unicode, written to the kernel as punycode (IDNA, as a browser's address bar
+// does), and the page keeps showing what was written
+describe('中文域名 / IDN names', () => {
+  it('能换成 punycode 的才收：写错的照样不收', () => {
+    expect(['中文.example', 'Bücher.example', '*.中文.example', '中文.example.', '例子.测试'].filter((d) => !isDomain(d))).toEqual([])
+    expect(['中文 .example', '中文.example:80', '中文..example', '中文/x.example', '*.*.中文'].filter(isDomain)).toEqual([])
+  })
+
+  it('条件、回答条件写中文域名：没有问题，写进内核的是 punycode', () => {
+    const { model, rule } = withRule([domain(['中文.example', '*.例子.测试']), domain(['Bücher.example'], { id: 900_004, exact: true })], [requestDomain(['中文.example'], { exact: true }), requestDomain(['例子.测试'], { id: 900_005 })])
+    expect(ruleProblems(model, rule)).toEqual([])
+    expect((compiledRule(model).matchers as Record<string, unknown>[]).map((m) => [m.type, m.value])).toEqual([
+      ['domain_suffix', 'xn--fiq228c.example'], ['domain_suffix', 'xn--fsqu00a.xn--0zwm56d'], ['domain_exact', 'xn--bcher-kva.example'],
+    ])
+    expect(compiledResponse(model).map((m) => [m.type, m.value])).toEqual([['request_domain_exact', 'xn--fiq228c.example'], ['request_domain_suffix', 'xn--fsqu00a.xn--0zwm56d']])
+    // 页面上还是写的中文 / The page still shows the Chinese written
+    expect(conditionText(rule.conditions[0]![0]!)).toBe('域名属于 中文.example、*.例子.测试')
+  })
+
+  it('域名映射写中文域名：入口和规则里是 punycode，规则名照写的', () => {
+    const model = { ...sampleModel(), mappings: [{ id: 900_100, domain: '中文.example', target: '192.168.1.10', ttl: null, enabled: true }] }
+    const cfg = compile(model)
+    expect(cfg.pipeline_select[0]!.matchers.map((m) => m.value)).toEqual(['xn--fiq228c.example'])
+    expect(cfg.pipelines.find((p) => p.id === 'domain_mapping')!.rules.map((r) => [r.name, r.matchers[0]!.value])).toEqual([['域名映射 中文.example', 'xn--fiq228c.example']])
+  })
+
+  it('导入写着 punycode 的内核配置：照写的读，编回去还是它', () => {
+    const kernel: KConfigLike = { version: '1.0', settings: { default_upstream: '1.1.1.1:53' }, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [
+      { name: 'idn', matchers: [{ type: 'domain_suffix', value: 'xn--fiq228c.example' }], actions: [{ type: 'static_response', rcode: 'NXDOMAIN' }] },
+    ] }] }
+    const back = importKernel(kernel).model
+    const idn = back.rules.find((r) => r.name === 'idn')!
+    expect(idn.conditions[0]![0]!.values).toEqual(['xn--fiq228c.example'])
+    expect(compile(back).pipelines.find((p) => p.id === 'main')!.rules.find((r) => r.name === 'idn')!.matchers.map((m) => m.value)).toEqual(['xn--fiq228c.example'])
   })
 })
