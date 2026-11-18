@@ -146,6 +146,19 @@ command -v python3 >/dev/null || fail "临时机缺少 Python 3"
 require_clean_host
 trap cleanup EXIT
 
+# 全新安装把配置指到已有的 /etc 里：安装器要在改动主机之前拒绝，/etc 的属主和权限不变。
+# A fresh install pointing the config into the existing /etc: the installer must refuse before touching the host, and
+# /etc keeps its owner and mode.
+etc_before="$(stat -c '%U:%G:%a' -- /etc)"
+if run_installer --kixdns-config /etc/kixdns-acceptance.json; then
+  fail "配置指到已有的 /etc 里，安装器却没有拒绝"
+fi
+require_output "KixDNS 配置不能放在 /etc：面板要能写配置所在的目录，而这个目录已经存在" "拒绝时没有说明原因"
+[[ $(stat -c '%U:%G:%a' -- /etc) == "${etc_before}" ]] || fail "拒绝时改动了 /etc 的属主或权限"
+[[ ! -e /etc/kixdns-panel && ! -e /var/lib/kixdns-panel && ! -e /usr/local/bin/kixdns-panel-server ]] ||
+  fail "拒绝时改动了主机"
+! getent passwd kixdns-panel >/dev/null || fail "拒绝时建了面板账号"
+
 dns_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
 [[ ${dns_port} =~ ^[0-9]+$ ]] || fail "没有获得有效 DNS 端口"
 

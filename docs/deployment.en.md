@@ -63,6 +63,8 @@ Every question that needs your decision (migrating an existing KixDNS, turning o
 | `--panel-only-update` | Updates only the panel, equivalent to the panel update on the 系统 (System) page. Does not stop or replace KixDNS |
 | `--kixdns-unit`, `--kixdns-config`, `--kixdns-binary`, `--control-socket` | Specify these by hand when an existing KixDNS is not in the default location and cannot be detected automatically from the unit |
 
+On a fresh install, `--kixdns-config` sets where the configuration lives. The panel must be able to write the configuration's directory, so that directory must not exist yet (the installer creates it), be the default `/etc/kixdns/`, or be the one an earlier install used when its uninstall kept the panel configuration; a path inside any other existing directory (such as `/etc/foo.json`) is refused before the host is touched. Uninstalling leaves a directory the installer created this way in place, with the configuration in it.
+
 One-line install puts options after `bash -s --`. They are checked before the installer runs, so a misspelled option does not change the host:
 
 ```bash
