@@ -1,43 +1,51 @@
 //! 正则照内核编译一遍 / Regexes compiled as the kernel compiles them
 //!
-//! 最新的内核（tuoro/kixdns 的 main）读配置时用 regex 库原样编译正则（不加大小写、不加锚点），编不出来整份配置不收：
+//! 最新的内核（tuoro/kixdns 的 main）读配置时用 regex 库编译正则（不加大小写、不加锚点），编不出来整份配置不收：
 //! - 域名的正则（规则和入口的 `domain_regex`、回答条件的 `request_domain_regex`，kixdns matcher/mod.rs `domain_regex`）：
-//!   先看长度，超过 16384 字节不解析就不收（kixdns #231），再按状态空间和 DFA 各 1 MB 编译；
+//!   先看长度，超过 16384 字节不解析就不收（kixdns #231）；再把 `\w`、`\d`、`\s`、`\b` 改成和拦截列表一样的 ASCII 写法（kixdns
+//!   #232，见 [`ascii_regex_pattern`]），照写的也得是对的正则（`[\w-a]` 改写后是合法的区间，照写的却不对），原话引照写的；最后按
+//!   状态空间和 DFA 各 1 MB 编译改写后的。规则看到的名字只有 ASCII，两种理解匹配结果一样，按 Unicode 理解只是多花内存：`\w{50}`
+//!   照写的编不下，改写后编得出；
 //! - TXT 内容的正则（`response_txt_content` 的 regex，matcher/mod.rs `ResponseTxtContent`）：先看长度，超过 1000 字节不收，
-//!   再和域名的正则一样编译（kixdns #219 起；以前限在 1000 字节，`.`、`\d+` 都编译不过），编不出的原因前面加「invalid regex: 」；
-//! - 拦截列表合并文件里的 `regexp:`（`GeoSite` JSON，matcher/geosite.rs `compile_geosite_regex`）：超过 16384 字节的不解析、
-//!   跳过；别的先把 `\w`、`\d`、`\s`、`\b` 改成 Go 的 ASCII 写法（数据是写给 v2ray 的），再照 1 MB 编译；编不出的那条内核跳过，
-//!   别的照用（一个 tag 的正则再按每组最多 256 条、合起来最多 16384 字节合成集合，合不成就逐条用，哪条用得上不变）。
+//!   再照写的按 1 MB 编译（kixdns #219 起；以前限在 1000 字节，`.`、`\d+` 都编译不过），`\w` 这些照旧按 Unicode 理解（TXT 里本来
+//!   就可以写任意文字），编不出的原因前面加「invalid regex: 」；
+//! - 拦截列表合并文件里的 `regexp:`（`GeoSite` JSON，matcher/geosite.rs `compile_geosite_regex`）：和域名的正则同一段改写
+//!   （超过 16384 字节的不解析、跳过），只是不另查照写的语法，再照 1 MB 编译；编不出的那条内核跳过，别的照用（一个 tag 的正则再按
+//!   每组最多 256 条、合起来最多 16384 字节合成集合，合不成就逐条用，哪条用得上不变）。
 //!
-//! 这里用同一个库、同样的上限编译，回答和内核一样。regex、regex-automata、regex-syntax 的版本和最新的内核的 Cargo.lock 一样
-//! （CI 每次拿 main 此刻的那一版比一遍，见 scripts/check-kernel-regex-versions.py）；`testdata/kernel-regex.json` 是拿内核跑出来的
+//! 这里用同一个库、同样的上限、同样的先后编译，回答和内核一样。regex、regex-automata、regex-syntax 的版本和最新的内核的 Cargo.lock
+//! 一样（CI 每次拿 main 此刻的那一版比一遍，见 scripts/check-kernel-regex-versions.py）；`testdata/kernel-regex.json` 是拿内核跑出来的
 //! 用例（scripts/kernel-regex-cases.py 重新生成），页面（web/src/config-model/regex-check.ts）也用它测。
 //!
-//! regex-syntax 先把整个正则展开成语法树，大小上限要到编译时才起作用：`\w`、`\pL` 每个都展开成几 KB 的 Unicode 字符类，
-//! 几 MB 这样的写法能吃掉几 GB 内存。所以长度和内核一样在解析之前看：超过 [`MAX_REGEX_BYTES`] 的这里也不编译。
+//! regex-syntax 先把整个正则展开成语法树，大小上限要到编译时才起作用：`\pL` 这样的 Unicode 字符类（还有 TXT 里的 `\w`）每个都展开成
+//! 几 KB，几 MB 这样的写法能吃掉几 GB 内存。所以长度和内核一样在解析之前看：超过 [`MAX_REGEX_BYTES`] 的这里也不编译。
 //!
-//! When the latest kernel (tuoro/kixdns main) reads a config it compiles regexes as written with the regex library (no case
-//! folding or anchors added), and one that does not compile makes the whole config refused:
+//! When the latest kernel (tuoro/kixdns main) reads a config it compiles regexes with the regex library (no case folding or
+//! anchors added), and one that does not compile makes the whole config refused:
 //! - name regexes (`domain_regex` in rules and entries, `request_domain_regex` in answer conditions, kixdns matcher/mod.rs
-//!   `domain_regex`): one over 16384 bytes long is refused before it is parsed (kixdns #231), the rest compile within 1 MB each for
-//!   the state space and the DFA;
+//!   `domain_regex`): one over 16384 bytes long is refused before it is parsed (kixdns #231); `\w`, `\d`, `\s` and `\b` are then
+//!   rewritten to ASCII as in the blocklists (kixdns #232, see [`ascii_regex_pattern`]), the pattern as written must be a valid
+//!   regex too (`[\w-a]` is a valid range once rewritten, not as written), the words quoting it as written; the rewrite compiles
+//!   last, within 1 MB each for the state space and the DFA. The names rules see are ASCII alone, so both readings match alike and
+//!   Unicode only costs memory: `\w{50}` does not compile as written and does once rewritten;
 //! - TXT content regexes (`response_txt_content` in regex mode, matcher/mod.rs `ResponseTxtContent`): one over 1000 bytes long is
-//!   refused first, the rest compile as name regexes do (since kixdns #219; it used to be held to 1000 bytes, which `.` or `\d+`
-//!   already exceed), the cause of a refusal prefixed with 「invalid regex: 」;
-//! - `regexp:` entries in the blocklists' merged file (`GeoSite` JSON, matcher/geosite.rs `compile_geosite_regex`): one over
-//!   16384 bytes is skipped unparsed; the rest have `\w`, `\d`, `\s` and `\b` take their Go ASCII meaning first (the data is
-//!   written for v2ray) and compile within 1 MB; one that does not compile is skipped by the kernel and the rest stay in use (a
-//!   tag's regexes then combine into sets of at most 256 and 16384 bytes together, used one by one when they cannot combine,
-//!   which changes none of what is used).
+//!   refused first, the rest compile as written within 1 MB (since kixdns #219; it used to be held to 1000 bytes, which `.` or `\d+`
+//!   already exceed), `\w` and the rest still Unicode (TXT may hold any text), the cause of a refusal prefixed with
+//!   「invalid regex: 」;
+//! - `regexp:` entries in the blocklists' merged file (`GeoSite` JSON, matcher/geosite.rs `compile_geosite_regex`): the same
+//!   rewrite as name regexes (one over 16384 bytes is skipped unparsed), without the separate check of the syntax as written,
+//!   compiled within 1 MB; one that does not compile is skipped by the kernel and the rest stay in use (a tag's regexes then
+//!   combine into sets of at most 256 and 16384 bytes together, used one by one when they cannot combine, which changes none of
+//!   what is used).
 //!
-//! This compiles with the same library and limits and answers as the kernel does. The versions of regex, regex-automata and
-//! regex-syntax are those of the latest kernel's Cargo.lock (CI compares them with main as it stands on every run, see
+//! This compiles with the same library, limits and order and answers as the kernel does. The versions of regex, regex-automata
+//! and regex-syntax are those of the latest kernel's Cargo.lock (CI compares them with main as it stands on every run, see
 //! scripts/check-kernel-regex-versions.py); `testdata/kernel-regex.json` holds cases run through the kernel (regenerated by
 //! scripts/kernel-regex-cases.py), and the page (web/src/config-model/regex-check.ts) is tested on it too.
 //!
-//! regex-syntax spells the whole regex out as a syntax tree first, and the size limits only apply once it compiles: every `\w` or
-//! `\pL` becomes a Unicode class of several KB, so a few MB of them can take gigabytes. So the length is looked at before parsing,
-//! as the kernel does: nothing over [`MAX_REGEX_BYTES`] is compiled here either.
+//! regex-syntax spells the whole regex out as a syntax tree first, and the size limits only apply once it compiles: every Unicode
+//! class such as `\pL` (and `\w` in TXT) becomes several KB, so a few MB of them can take gigabytes. So the length is looked at
+//! before parsing, as the kernel does: nothing over [`MAX_REGEX_BYTES`] is compiled here either.
 
 use std::borrow::Cow;
 
@@ -88,60 +96,88 @@ pub enum Answer {
     Refused { cause: Cause, error: String },
 }
 
-/// 比 `max` 字节长时内核的回答：只看长度，不解析，再长也不花什么 / The kernel's answer for one longer than `max` bytes: the length
-/// alone, nothing parsed, so however long it costs nothing
-fn too_long(pattern: &str, max: usize) -> Option<Answer> {
-    (pattern.len() > max).then(|| Answer::Refused {
-        cause: Cause::TooLong,
-        error: format!(
-            "regex pattern too long: {} bytes (max {max})",
-            pattern.len()
-        ),
-    })
+/// 内核不收的原因和原话 / Why the kernel refuses a regex, and its words
+type Refusal = (Cause, String);
+
+/// 比 `max` 字节长时内核的回答（kixdns matcher/mod.rs `regex_within`）：只看长度，不解析，再长也不花什么 / The kernel's answer for
+/// one longer than `max` bytes (kixdns matcher/mod.rs `regex_within`): the length alone, nothing parsed, so however long it costs
+/// nothing
+fn regex_within(pattern: &str, max: usize) -> Result<(), Refusal> {
+    if pattern.len() > max {
+        return Err((
+            Cause::TooLong,
+            format!(
+                "regex pattern too long: {} bytes (max {max})",
+                pattern.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// 写法不对的原话：regex-syntax 报的，引的是它解析的那条 / The words for one written wrong: regex-syntax's, quoting the pattern it
+/// parsed
+fn syntax(error: impl std::fmt::Display) -> Refusal {
+    (Cause::Syntax, error.to_string())
 }
 
 /// 内核对这个正则的回答 / The kernel's answer for this regex
 #[must_use]
 pub fn answer(kind: Kind, pattern: &str) -> Answer {
-    match kind {
-        Kind::Domain => too_long(pattern, MAX_REGEX_BYTES).unwrap_or_else(|| {
-            match compile(pattern, SIZE_LIMIT) {
-                Ok(()) => Answer::Compiles,
-                Err((cause, error)) => Answer::Refused { cause, error },
-            }
-        }),
-        Kind::Txt => {
-            too_long(pattern, TXT_MAX_LEN).unwrap_or_else(|| match compile(pattern, SIZE_LIMIT) {
-                Ok(()) => Answer::Compiles,
-                Err((cause, error)) => Answer::Refused {
-                    cause,
-                    error: format!("invalid regex: {error}"),
-                },
-            })
-        }
+    let found = match kind {
+        Kind::Domain => domain_regex(pattern),
+        Kind::Txt => txt_regex(pattern),
+    };
+    match found {
+        Ok(()) => Answer::Compiles,
+        Err((cause, error)) => Answer::Refused { cause, error },
     }
 }
 
-/// 拦截列表合并文件里的一条 `regexp:` 内核用不用得上：用得上为 None，不然是原因。比 [`MAX_REGEX_BYTES`] 长的内核不解析、跳过，
-/// 这里也不编译，面板不把它写进合并文件
-/// Whether the kernel can use one `regexp:` entry of the blocklists' merged file: None when it can, otherwise why not. One longer
-/// than [`MAX_REGEX_BYTES`] the kernel skips unparsed; it is not compiled here either, and the panel leaves it out of the merged
-/// file
+/// 域名的正则，照 kixdns matcher/mod.rs `domain_regex`：长度（在 [`ascii_regex_pattern`] 里先查）、改写，再查照写的语法，最后编译
+/// 改写后的。`[\w-a]` 照写是错的（`\w` 不能当区间的一端），改写后却成了合法的区间，所以照写的另查一遍；只解析成语法树（AST），不展开
+/// 字符类，花不了多少
+/// A name regex, as kixdns matcher/mod.rs `domain_regex` reads it: the length (checked first in [`ascii_regex_pattern`]), the
+/// rewrite, then the syntax as written, and the rewrite compiled last. `[\w-a]` is wrong as written (`\w` cannot end a range),
+/// yet a valid range once rewritten, so the pattern as written is checked apart; parsed into the syntax tree (AST) alone, classes
+/// not spelt out, which costs little
+fn domain_regex(pattern: &str) -> Result<(), Refusal> {
+    let ascii = ascii_regex_pattern(pattern)?;
+    regex_syntax::ast::parse::Parser::new()
+        .parse(pattern)
+        .map_err(syntax)?;
+    compile(&ascii)
+}
+
+/// TXT 内容的正则，照 kixdns matcher/mod.rs `ResponseTxtContent`：先看 1000 字节的长度，再照写的编译（不改写，`\w` 这些照旧按
+/// Unicode 理解），编不出的原因前面加「invalid regex: 」
+/// A TXT content regex, as kixdns matcher/mod.rs `ResponseTxtContent` reads it: the length against 1000 bytes first, then
+/// compiled as written (not rewritten, `\w` and the rest still Unicode), the cause of a refusal prefixed with 「invalid regex: 」
+fn txt_regex(pattern: &str) -> Result<(), Refusal> {
+    regex_within(pattern, TXT_MAX_LEN)?;
+    compile(pattern).map_err(|(cause, error)| (cause, format!("invalid regex: {error}")))
+}
+
+/// 拦截列表合并文件里的一条 `regexp:` 内核用不用得上（kixdns matcher/geosite.rs `compile_geosite_regex`：[`ascii_regex_pattern`]
+/// 再编译）：用得上为 None，不然是原因。比 [`MAX_REGEX_BYTES`] 长的内核不解析、跳过，这里也不编译，面板不把它写进合并文件
+/// Whether the kernel can use one `regexp:` entry of the blocklists' merged file (kixdns matcher/geosite.rs
+/// `compile_geosite_regex`: [`ascii_regex_pattern`], then compiled): None when it can, otherwise why not. One longer than
+/// [`MAX_REGEX_BYTES`] the kernel skips unparsed; it is not compiled here either, and the panel leaves it out of the merged file
 #[must_use]
 pub fn blocklist_problem(pattern: &str) -> Option<Cause> {
-    if pattern.len() > MAX_REGEX_BYTES {
-        return Some(Cause::TooLong);
-    }
-    compile(&geosite_pattern(pattern), SIZE_LIMIT)
+    ascii_regex_pattern(pattern)
+        .and_then(|ascii| compile(&ascii))
         .err()
         .map(|(cause, _)| cause)
 }
 
-/// 照内核的写法编译：状态空间和 DFA 用同一个上限 / Compiles as the kernel does: one limit for both the state space and the DFA
-fn compile(pattern: &str, limit: usize) -> Result<(), (Cause, String)> {
+/// 照内核的写法编译：状态空间和 DFA 用同一个上限（kixdns matcher/mod.rs `limited_regex`，matcher/geosite.rs `Regexes::compile`）
+/// Compiles as the kernel does: one limit for both the state space and the DFA (kixdns matcher/mod.rs `limited_regex`,
+/// matcher/geosite.rs `Regexes::compile`)
+fn compile(pattern: &str) -> Result<(), Refusal> {
     regex::RegexBuilder::new(pattern)
-        .size_limit(limit)
-        .dfa_size_limit(limit)
+        .size_limit(SIZE_LIMIT)
+        .dfa_size_limit(SIZE_LIMIT)
         .build()
         .map(drop)
         .map_err(|error| {
@@ -153,25 +189,37 @@ fn compile(pattern: &str, limit: usize) -> Result<(), (Cause, String)> {
         })
 }
 
-/// 内核实际编译的 `GeoSite` 正则（kixdns matcher/geosite.rs `compile_geosite_regex`）：改成 Go 写法以后语法对就用它，
-/// 不然用原样
-/// The `GeoSite` regex the kernel actually compiles (kixdns matcher/geosite.rs `compile_geosite_regex`): the Go rewrite when its
-/// syntax holds, the pattern as written otherwise
-fn geosite_pattern(pattern: &str) -> Cow<'_, str> {
-    match go_classes(pattern) {
-        Cow::Owned(rewritten) if regex_syntax::Parser::new().parse(&rewritten).is_ok() => {
-            Cow::Owned(rewritten)
-        }
-        _ => Cow::Borrowed(pattern),
+/// 一条域名正则（拦截列表的和配置里的）实际要编译的写法，照抄 kixdns matcher/mod.rs `ascii_regex_pattern`：比
+/// [`MAX_REGEX_BYTES`] 长的不解析，直接不收；按 Go 的 ASCII 含义改写过字符类的（见 [`go_classes`]）语法对就用它，不然用照写的，
+/// 照写的也不对时是写法不对，原话引的是照写的。只查语法、不编译
+/// The pattern a name regex (of the blocklists, or of a config) actually compiles as, copied from kixdns matcher/mod.rs
+/// `ascii_regex_pattern`: one longer than [`MAX_REGEX_BYTES`] is refused unparsed; the rewrite of its classes to their ASCII
+/// meaning in Go (see [`go_classes`]) when its syntax holds, the pattern as written otherwise, and written wrong, in words
+/// quoting it as written, when that does not hold either. The syntax alone is checked, nothing compiled
+fn ascii_regex_pattern(pattern: &str) -> Result<String, Refusal> {
+    regex_within(pattern, MAX_REGEX_BYTES)?;
+    let check = |pattern: &str| {
+        regex_syntax::Parser::new()
+            .parse(pattern)
+            .map(drop)
+            .map_err(Box::new)
+    };
+    if let Cow::Owned(rewritten) = go_classes(pattern)
+        && check(&rewritten).is_ok()
+    {
+        return Ok(rewritten);
     }
+    check(pattern).map_err(syntax)?;
+    Ok(pattern.to_owned())
 }
 
 /// `pattern` 里的 `\w`、`\d`、`\s`、`\b` 及其大写的取反形式改成 Go 正则的 ASCII 含义：字符类外写成一个字符类
-/// （`\b` 写成 `(?-u:\b)`），字符类里展开成范围（取反的写成嵌套的字符类）。转义的反斜杠和别的转义原样保留。
-/// 照抄 kixdns matcher/geosite.rs `go_classes`
+/// （`\b` 写成 `(?-u:\b)`；`\b{start}` 这样带名字的词边界整个写进去，`\<`、`\>` 也一样），字符类里展开成范围（取反的写成嵌套的
+/// 字符类）。转义的反斜杠和别的转义原样保留。照抄 kixdns matcher/mod.rs `go_classes`
 /// `\w`, `\d`, `\s` and `\b` in `pattern`, and their negated capitals, rewritten to their ASCII meaning in Go regexes: outside a
-/// class each becomes a class (`\b` becomes `(?-u:\b)`), inside a class it becomes ranges (a negated one a nested class).
-/// Escaped backslashes and other escapes stay as they are. Copied from kixdns matcher/geosite.rs `go_classes`
+/// class each becomes a class (`\b` becomes `(?-u:\b)`; a named boundary such as `\b{start}` goes in whole, and so do `\<` and
+/// `\>`), inside a class it becomes ranges (a negated one a nested class). Escaped backslashes and other escapes stay as they
+/// are. Copied from kixdns matcher/mod.rs `go_classes`
 fn go_classes(pattern: &str) -> Cow<'_, str> {
     const WORD: &str = "0-9A-Za-z_";
     const DIGIT: &str = "0-9";
@@ -206,9 +254,21 @@ fn go_classes(pattern: &str) -> Cow<'_, str> {
                         out.push_str(class);
                         out.push(']');
                     }
-                    (None, _, false) if matches!(next, 'b' | 'B') => {
+                    (None, _, false) if matches!(next, 'b' | 'B' | '<' | '>') => {
                         out.push_str("(?-u:\\");
                         out.push(next);
+                        // 词边界的名字（`start`、`end`、`start-half`、`end-half`）以字母开头；`\b{2}` 是重复次数，留在外面
+                        // A boundary's name (`start`, `end`, `start-half`, `end-half`) starts with a letter; `\b{2}` is a
+                        // repetition and stays outside
+                        let rest = chars.as_str();
+                        if next == 'b'
+                            && let Some(name) = rest.strip_prefix('{')
+                            && name.starts_with(|c: char| c.is_ascii_alphabetic())
+                            && let Some(end) = rest.find('}')
+                        {
+                            out.push_str(&rest[..=end]);
+                            chars = rest[end + 1..].chars();
+                        }
                         out.push(')');
                     }
                     _ => {
@@ -329,9 +389,13 @@ mod tests {
     fn a_long_regex_is_not_compiled() {
         let at_cap = "a".repeat(MAX_REGEX_BYTES);
         assert_eq!(answer(Kind::Domain, &at_cap), Answer::Compiles);
-        let words = r"\w".repeat(MAX_REGEX_BYTES / 2);
+        // 正好到上限、编译后太大的：用照旧是 Unicode 字母类的 `\pL`。`\w` 在域名的正则里按 ASCII 理解（kixdns #232），连写到上限也编得出
+        // One right at the limit and too big once compiled: `\pL`, still the Unicode letter class. `\w` reads as ASCII in a name
+        // regex (kixdns #232), and written out to the limit it compiles
+        let letters = format!("{}a", r"\pL".repeat(MAX_REGEX_BYTES / 3));
+        assert_eq!(letters.len(), MAX_REGEX_BYTES);
         assert!(matches!(
-            answer(Kind::Domain, &words),
+            answer(Kind::Domain, &letters),
             Answer::Refused {
                 cause: Cause::TooBig,
                 ..
@@ -387,6 +451,138 @@ mod tests {
         assert!(matches!(
             go_classes(r"plain\.com$"),
             std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    /// `\b{start}`、`\b{end}` 这类带名字的词边界整个放进 `(?-u:…)`，`\<`、`\>` 也按 ASCII 改写（kixdns #232）：以前只包住 `\b`，剩下的
+    /// `{start}` 成了写错的重复次数，整条只好照写的按 Unicode 编译。`\b{2}` 是 `\b` 重复两次，照旧只包 `\b`。和内核的
+    /// `named_word_boundaries_are_rewritten_whole` 同一组用例，改写后的都能解析
+    /// A named word boundary such as `\b{start}` or `\b{end}` goes into `(?-u:…)` whole, and `\<` and `\>` are rewritten as ASCII
+    /// too (kixdns #232): only `\b` used to be wrapped, leaving `{start}` as a broken repetition, so the whole pattern compiled as
+    /// written, as Unicode. `\b{2}` is `\b` twice and still wraps just `\b`. The same cases as the kernel's
+    /// `named_word_boundaries_are_rewritten_whole`, every rewrite parsing
+    #[test]
+    fn named_word_boundaries_are_rewritten_whole() {
+        for (pattern, rewritten) in [
+            (r"\b{start}x\b{end}", r"(?-u:\b{start})x(?-u:\b{end})"),
+            (
+                r"\b{start-half}\w\b{end-half}",
+                r"(?-u:\b{start-half})[0-9A-Za-z_](?-u:\b{end-half})",
+            ),
+            (r"\<x\>", r"(?-u:\<)x(?-u:\>)"),
+            (r"\b{2}x\B", r"(?-u:\b){2}x(?-u:\B)"),
+            (r"[<>]\<", r"[<>](?-u:\<)"),
+        ] {
+            assert_eq!(go_classes(pattern), rewritten, "{pattern}");
+            assert!(
+                regex_syntax::Parser::new().parse(rewritten).is_ok(),
+                "{rewritten}"
+            );
+        }
+        // 名字没写完的、`\B` 后面的花括号不算名字：照旧只包反斜杠那一下 / An unfinished name, or braces after `\B`, are no name:
+        // just the escape is wrapped
+        assert_eq!(go_classes(r"\b{start"), r"(?-u:\b){start");
+        assert_eq!(go_classes(r"\B{start}"), r"(?-u:\B){start}");
+    }
+
+    /// 域名的正则里 `\w`、`\d`、`\s`、`\b` 和大写的取反形式按 ASCII 理解，和拦截列表（`GeoSite`）的一样（kixdns #232）：照写的按
+    /// Unicode、1 MB 的上限下面每一条都编不出，现在内核的三种域名正则都收，面板也得收。TXT 的照旧按 Unicode，照旧编不出；拦截列表里
+    /// 的都用得上
+    /// `\w`, `\d`, `\s` and `\b` in a name regex, and their negated capitals, read as ASCII, as in the blocklists (`GeoSite`)
+    /// (kixdns #232): as written, as Unicode within 1 MB, none of these compiles, and now the kernel takes each in all three name
+    /// regexes, so the panel must too. A TXT one stays Unicode and still does not compile; in a blocklist each is of use
+    #[test]
+    fn word_classes_in_a_domain_regex_are_ascii() {
+        for pattern in [
+            r"\w{50}".to_owned(),
+            r"\w{60}".to_owned(),
+            r"\w".repeat(200),
+            r"\W{60}".to_owned(),
+            r"[\w.-]{60}".to_owned(),
+            r"[^\W\d]{60}".to_owned(),
+            r"(?i)\w{60}".to_owned(),
+            r"\b{start}\w{60}\b{end}".to_owned(),
+            r"\<\w{60}\>".to_owned(),
+        ] {
+            assert_eq!(
+                answer(Kind::Domain, &pattern),
+                Answer::Compiles,
+                "{pattern}"
+            );
+            assert!(
+                matches!(
+                    answer(Kind::Txt, &pattern),
+                    Answer::Refused {
+                        cause: Cause::TooBig,
+                        ..
+                    }
+                ),
+                "{pattern} as TXT"
+            );
+            assert_eq!(
+                blocklist_problem(&pattern),
+                None,
+                "{pattern} in a blocklist"
+            );
+        }
+        // `\pL` 不改写：照旧是 Unicode 字母类，编译后照旧太大 / `\pL` is not rewritten: still the Unicode letter class, still too big
+        for kind in [Kind::Domain, Kind::Txt] {
+            assert!(matches!(
+                answer(kind, r"\pL{50}"),
+                Answer::Refused {
+                    cause: Cause::TooBig,
+                    ..
+                }
+            ));
+        }
+    }
+
+    /// 改写只换字符类，不改哪些写法算错（kixdns #232）：照写的写错了，域名的正则照旧不收，原话引的是照写的那条。`[\w-a]` 照写是错的
+    /// （`\w` 不能当区间的一端），改写成 `[0-9A-Za-z_-a]` 却是一个合法的区间，所以照写的另查一遍语法；`\p{Foo}` 改写后仍然错，原话引的是
+    /// 照写的，不是改写后的
+    /// The rewrite changes classes, not which patterns are wrong (kixdns #232): a name regex written wrong is refused as before,
+    /// the words quoting it as written. `[\w-a]` is wrong as written (`\w` cannot end a range), yet rewritten as `[0-9A-Za-z_-a]`
+    /// it is a valid range, so the syntax as written is checked apart; `\p{Foo}` stays wrong once rewritten, and the words quote the
+    /// pattern as written, not the rewrite
+    #[test]
+    fn a_domain_regex_written_wrong_is_refused_in_its_own_words() {
+        for (pattern, words) in [
+            (r"^[\w-a]+$", "invalid range boundary, must be a literal"),
+            (r"^\w+\p{Foo}$", "Unicode property not found"),
+            (r"^(\w+\.example$", "unclosed group"),
+        ] {
+            let Answer::Refused { cause, error } = answer(Kind::Domain, pattern) else {
+                panic!("{pattern} compiles");
+            };
+            assert_eq!(cause, Cause::Syntax, "{pattern}: {error}");
+            assert!(
+                error.contains(words) && error.contains(pattern) && !error.contains("0-9A-Za-z_"),
+                "{pattern}: {error}"
+            );
+        }
+    }
+
+    /// 内核查的先后（kixdns matcher/mod.rs `domain_regex`）：先看长度，再看照写的语法，最后编译。太长又写错的说太长；写错又会编得
+    /// 太大的说写错
+    /// The kernel's order (kixdns matcher/mod.rs `domain_regex`): the length first, then the syntax as written, compiling last.
+    /// One too long and written wrong is too long; one written wrong that would compile too big is written wrong
+    #[test]
+    fn a_domain_regex_is_checked_in_the_kernels_order() {
+        let long_and_wrong = format!("({}", "a".repeat(MAX_REGEX_BYTES));
+        assert!(matches!(
+            answer(Kind::Domain, &long_and_wrong),
+            Answer::Refused {
+                cause: Cause::TooLong,
+                ..
+            }
+        ));
+        assert_eq!(blocklist_problem(&long_and_wrong), Some(Cause::TooLong));
+        assert!(matches!(
+            answer(Kind::Domain, r"[\w-a]\pL{50}"),
+            Answer::Refused {
+                cause: Cause::Syntax,
+                ..
+            }
         ));
     }
 }
