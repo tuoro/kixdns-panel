@@ -177,12 +177,15 @@ export function kernelRegexCause(kind: RegexKind, regex: string): RegexCause | n
 }
 /** 内核读不读得了这个正则 / Whether the kernel can read this regex */
 export const kernelRegexOk = (kind: RegexKind, regex: string): boolean => kernelRegexCause(kind, regex) === null
-/** 编辑器里怎么说内核为什么不收：域名的和 TXT 的正则编译的上限一样，都是 1 MB；长度上限不一样，域名的 16384 字节，TXT 的 1000 字节 /
+/** 编辑器里怎么说内核为什么不收：域名的和 TXT 的正则编译的上限一样，都是 1 MB；长度上限不一样，域名的 16384 字节，TXT 的 1000 字节。
+ * 编译后太大时点名最占地方的写法：域名的正则里 \w 按 ASCII 理解（kixdns #232），\w{50} 编得出，只剩 \pL 这样的 Unicode 字符类；TXT 的
+ * \w 照旧按 Unicode 理解 /
  * How the editor says why the kernel refuses a regex: name and TXT regexes compile within the same 1 MB; the length limits differ,
- * 16384 bytes for names and 1000 for TXT */
+ * 16384 bytes for names and 1000 for TXT. Too big once compiled, it names what takes the most room: \w reads as ASCII in a name regex
+ * (kixdns #232) and \w{50} compiles, leaving Unicode classes such as \pL; in TXT \w is still Unicode */
 export function regexCauseText(kind: RegexKind, cause: RegexCause): string {
   if (cause === 'too-long') return kind === 'txt' ? `TXT 的正则最长 ${TXT_REGEX_BYTES} 字节` : `正则最长 ${REGEX_MAX_BYTES} 字节`
-  if (cause === 'too-big') return '正则编译出来超过 KixDNS 的 1 MB 上限：\\w、\\pL 配上 {n} 最占地方'
+  if (cause === 'too-big') return kind === 'txt' ? '正则编译出来超过 KixDNS 的 1 MB 上限：\\w、\\pL 配上 {n} 最占地方' : '正则编译出来超过 KixDNS 的 1 MB 上限：\\pL 配上 {n} 最占地方'
   return '正则写得不对，或者用了 KixDNS 不认的写法，比如前后断言、反向引用'
 }
 /** TXT 内容的正则最长 1000 字节（内核先看长度，再按 1 MB 编译；定在 regex-check.ts） / A TXT content regex is at most 1000 bytes (the
