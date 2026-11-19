@@ -734,6 +734,12 @@ restore_resolved_stub() {
 # the uninstall again with the same options carries the restore through. The local uninstall command is gone with the
 # panel, so the way to run it from the web is given.
 restore_incomplete() {
+  # 给有意留下的备份标上「恢复没做完」和这次的选项：安装器看到它，就不会把它当成旧卸载器留下的过期备份、换成恢复到一半的
+  # 样子，而是让人先把卸载做完（install.sh 的 refuse_unfinished_restore）。恢复做完时它随备份一起删掉。
+  # Mark the backup left on purpose as "restore not finished", with this run's options: seeing it, the installer does not
+  # take it for a stale backup an older uninstaller left and replace it with the half-restored state, but asks for the
+  # uninstall to be finished first (refuse_unfinished_restore in install.sh). It goes with the backup once the restore is done.
+  printf -- '--%s-config\n' "${CONFIG_ACTION}" > "${EXTERNAL_BACKUP}/restore-incomplete" 2>/dev/null || true
   fail "原来的 KixDNS（${ORIGINAL_UNIT}）没能按迁移前的状态恢复，备份还在 ${EXTERNAL_BACKUP}。
 查明原因（journalctl -u ${ORIGINAL_UNIT} -n 50 --no-pager）后用同样的选项重新运行卸载，会接着恢复：
   curl -fsSL ${UNINSTALL_URL} | sudo bash -s -- --remove-kixdns --${CONFIG_ACTION}-config --yes"

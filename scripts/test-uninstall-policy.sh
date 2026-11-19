@@ -605,6 +605,8 @@ migrate_scratch_host() {
     PANEL_ENV=\"\${root}/panel-etc/panel.env\"
     SYSTEMD_UNIT_DIRECTORY=\"\${root}/units\"
     EXTERNAL_BACKUP=\"\${root}/state/external-backup\"
+    # 安装器把已有的旧备份先挪进回滚备份 / The installer first moves an old backup already there into the rollback backup
+    BACKUP_ROOT=\"\$(mktemp -d \"\${root}/rollback.XXXXXX\")\"
     systemctl() {
       case \$1 in
         show) printf '{ path=/usr/local/bin/kixdns ; argv[]=/usr/local/bin/kixdns run --config %s ; }\n' '${config}' ;;
@@ -643,7 +645,7 @@ migrate_scratch_host() {
     preserve_external_install
     install_configuration
     render_kixdns_unit > \"\${SYSTEMD_UNIT_DIRECTORY}/kixdns.service\"
-  "
+  " || return 1
   # 受管 unit 运行的是面板状态目录里的程序；换成临时主机的状态目录，卸载器才认得出它。
   # The managed unit runs the program in the panel's state directory; point it at the scratch host's, so the
   # uninstaller recognises it.
@@ -861,6 +863,29 @@ for config_action in keep remove; do
   output="$(uninstall_scratch_host "${host}" --remove-kixdns "--${config_action}-config" --yes)"
   assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "它能稳定运行以后重新运行卸载器应恢复完（${config_action}）"
 done
+
+# 恢复没做完（原来的 KixDNS 起不来）时卸载器有意留下备份，让人查明原因后重跑卸载接着恢复。这时先去安装，安装器不能把这份
+# 备份当成旧卸载器留下的过期备份、换成恢复到一半的样子（原来的 KixDNS 停着，迁移前它在运行）：在改动主机之前拒绝，说清先把
+# 卸载做完，或者不再恢复就删掉备份。
+# When the restore was not finished (the original KixDNS would not start) the uninstaller leaves the backup on purpose, so the
+# uninstall can be rerun once the cause is found. Installing at that point, the installer must not take the backup for a
+# stale one an older uninstaller left and replace it with the half-restored state (the original KixDNS stopped, while it was
+# running before the migration): it refuses before touching the host and says to finish the uninstall first, or to remove
+# the backup when the restore is not wanted any more.
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+output="$(SYSTEMCTL_FAIL_START=true uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_contains "${output}" "RUN-FAILED" "原来的 KixDNS 起不来时卸载应失败"
+backup_before="$(cat "${host}/state/external-backup/install.env")"
+output="$(migrate_scratch_host "${host}" "${host}/etc/kixdns.json" false true 2>&1)" || true
+assert_equals "$(cat "${host}/state/external-backup/install.env")" "${backup_before}" \
+  "恢复没做完时安装器不能换掉迁移前的备份"
+assert_contains "${output}" "安装失败：上次卸载没有把原来的 KixDNS 恢复完，迁移前的备份还在 ${host}/state/external-backup。" \
+  "恢复没做完时安装器应拒绝并说明"
+assert_contains "${output}" "| sudo bash -s -- --remove-kixdns --keep-config --yes" "拒绝时应给出用同样选项接着卸载的命令"
+assert_contains "${output}" "sudo rm -rf ${host}/state/external-backup" "拒绝时应说明不再恢复就删掉备份"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "接着卸载应把恢复做完"
+[[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：恢复做完后应删掉备份和它的标记\n' >&2; exit 1; }
 
 # 保留增强版、删除面板数据：保留的 KixDNS 还在用副本，副本和它的目录必须留下，面板配置目录里的其他东西照删；
 # 再卸载一次（这时已经没有 panel.env）也一样。

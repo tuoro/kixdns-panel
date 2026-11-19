@@ -98,6 +98,9 @@ RESOLV_CONF=/etc/resolv.conf
 RESOLVED_UPLINK_RESOLV_CONF=/run/systemd/resolve/resolv.conf
 RESOLVED_STATE=/var/lib/kixdns-panel/resolved-stub
 ONE_CLICK_URL="https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh"
+# 和 uninstall.sh 同一个：本地的卸载命令随面板删掉以后接着卸载用的 / The same as uninstall.sh's: what carries an uninstall on
+# once the local command is gone with the panel
+UNINSTALL_URL="https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/uninstall.sh"
 # v4.3.4 及更早的 panel.env 示例里，可信代理那一行和它上面的说明：默认信任本机代理。现在的示例默认谁都不信，说明是下面两行。
 # The trusted-proxies line of the panel.env example up to v4.3.4 and the comment above it: the local proxy was trusted by
 # default. The current example trusts none by default, with the two comment lines below.
@@ -520,8 +523,28 @@ print_reclaim_backup_note() {
   fi
 }
 
+# 上次卸载恢复原来的 KixDNS 没做完（uninstall.sh 的 restore_incomplete 标了记号），备份是有意留着、等重跑卸载接着恢复的。这时
+# 安装不能把它当成过期备份换掉：新的备份记的会是恢复到一半的样子，迁移前的状态就丢了。在改动主机之前拒绝。
+# An earlier uninstall did not finish restoring the original KixDNS (uninstall.sh's restore_incomplete left its mark), and the
+# backup was kept on purpose for a rerun to carry the restore on. Installing must not replace it as stale: the new backup
+# would record the half-restored state and the pre-migration one would be lost. Refuse before the host is touched.
+refuse_unfinished_restore() {
+  local marker=${EXTERNAL_BACKUP}/restore-incomplete
+  local options
+  local unit
+  [[ -f ${marker} ]] || return 0
+  options="$(head -n 1 -- "${marker}")"
+  [[ ${options} =~ ^--(keep|remove)-config$ ]] || options=--keep-config
+  unit="$(state_file_value "${EXTERNAL_BACKUP}/install.env" KIXDNS_SERVICE_UNIT || true)"
+  [[ ${unit} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${unit} != *..* ]] || unit=${KIXDNS_SERVICE_UNIT}
+  fail "上次卸载没有把原来的 KixDNS 恢复完，迁移前的备份还在 ${EXTERNAL_BACKUP}。先查明原因（journalctl -u ${unit} -n 50 --no-pager），再用同样的选项重新运行卸载，恢复做完以后再安装：
+  curl -fsSL ${UNINSTALL_URL} | sudo bash -s -- --remove-kixdns ${options} --yes
+不再恢复原来的 KixDNS 的话，删掉这份备份再安装：sudo rm -rf ${EXTERNAL_BACKUP}"
+}
+
 validate_install_mode() {
   local config_parent
+  refuse_unfinished_restore
   validate_unit
   validate_absolute_path "KixDNS 配置路径" "${KIXDNS_CONFIG_PATH}"
   validate_absolute_path "KixDNS 二进制路径" "${KIXDNS_BINARY_PATH}"
