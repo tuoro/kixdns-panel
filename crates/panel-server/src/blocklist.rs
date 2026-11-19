@@ -161,7 +161,8 @@ pub enum Skip {
     /// 正则编译出来超过内核的 1 MB 上限，内核跳过它 / A regex over the kernel's 1 MB limit once compiled, which the kernel
     /// skips
     RegexTooLarge,
-    /// 规则写成的正则超过 16 KiB：面板不编译它，也不写进合并文件 / A rule whose regex is over 16 KiB: the panel neither
+    /// 规则写成的正则超过 16384 字节：内核不解析就跳过，面板不编译它，也不写进合并文件 / A rule whose regex is over 16384 bytes:
+    /// the kernel skips it unparsed, and the panel neither
     /// compiles it nor writes it into the merged file
     RegexTooLong,
     /// 这个列表的通配符和正则规则已经用满 [`MAX_PATTERNS_PER_LIST`] 条 / The list has used up its
@@ -377,7 +378,7 @@ fn parse_pattern(pattern: &str) -> Result<Match, Skip> {
 }
 
 /// 这一行的正则内核用不用得上（照内核读 `GeoSite` JSON 的办法编译，见 `regex_check.rs`）：用不上的这一行算没用上，说出内核为什么
-/// 不用；16 KiB 以上的不编译（只是展开成语法树就要几十 MB），也不要
+/// 不用；超过 16384 字节的和内核一样不编译（只是展开成语法树就要几十 MB），也不要
 /// Whether the kernel can use this line's regex (compiled as the kernel reads `GeoSite` JSON, see `regex_check.rs`): when it
 /// cannot, the line counts as unused, saying why the kernel would not use it; one over 16 KiB is not compiled (spelling it out as
 /// a syntax tree alone takes tens of MB) and not taken either

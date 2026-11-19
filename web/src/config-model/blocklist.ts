@@ -39,8 +39,6 @@ export type MatchKind = 'suffix' | 'exact' | 'regex'
 export interface Match { kind: MatchKind; value: string }
 export interface ListRule { allow: boolean; important: boolean; match: Match }
 export type Skip =
-  // regex-too-long 只有服务端读订阅时给（自己写的规则太长时照内核的 domain_regex 不下结论） / regex-too-long comes only from the server reading a
-  // subscription (one's own rule that long gets no verdict, as the kernel's domain_regex)
   | { reason: 'cosmetic' | 'hosts-address' | 'bad-regex' | 'regex-too-large' | 'regex-too-long' | 'too-many-patterns' | 'url-path' | 'unreadable' }
   | { reason: 'unsupported-modifier' | 'browser-modifier' | 'unknown-modifier'; modifier: string }
 export type Line =
@@ -152,7 +150,7 @@ function parsePattern(pattern: string): Match | Skip {
     // (with (?i) for a capital letter): one's own rule becomes a domain_regex, which the kernel compiles
     const value = ignoringCase(regex)
     const cause = kernelRegexCause('domain', value)
-    return cause === null ? { kind: 'regex', value } : { reason: cause === 'syntax' ? 'bad-regex' : 'regex-too-large' }
+    return cause === null ? { kind: 'regex', value } : { reason: cause === 'syntax' ? 'bad-regex' : cause === 'too-big' ? 'regex-too-large' : 'regex-too-long' }
   }
   let lower = pattern.toLowerCase()
   // AdGuard 拿「http://域名」去匹配 DNS 查询，所以开头的 `://` 和 `|` 一样是域名的开头
@@ -232,7 +230,7 @@ export function skipText(skip: Skip): string {
     case 'unknown-modifier': return `认不出 $${skip.modifier}`
     case 'bad-regex': return '正则写得不对，或者用了 KixDNS 不认的写法，比如前后断言、反向引用'
     case 'regex-too-large': return '正则编译出来超过 KixDNS 的 1 MB 上限'
-    case 'regex-too-long': return '正则超过 16\u00a0KiB，太长了没有用上'
+    case 'regex-too-long': return '正则超过 16384 字节，KixDNS 不收'
     case 'too-many-patterns': return '这个列表的通配符和正则规则超过 1000 条，多的没用上'
     case 'url-path': return '带网址路径，只对浏览器有用，DNS 用不上'
     case 'unreadable': return '看不懂这一行'

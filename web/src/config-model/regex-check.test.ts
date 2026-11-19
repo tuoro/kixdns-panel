@@ -77,14 +77,14 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
       expect(fields.matcherFieldErrors({ type, operator: 'and', value: '[a-\\d]' }, scope)).toEqual({ value: SYNTAX })
       expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\w+' }, scope)).toEqual({})
       // 编译后太大说的是大小，不是写法 / Too big once compiled is said as size, not syntax
-      expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\w{60}' }, scope)).toEqual({ value: grammar.regexCauseText('too-big') })
+      expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\w{60}' }, scope)).toEqual({ value: grammar.regexCauseText('domain', 'too-big') })
     }
     const txtField = (value: string) => fields.matcherFieldErrors({ type: 'response_txt_content', operator: 'and', mode: 'regex', value }, 'response')
     expect(txtField('[a-\\d]')).toEqual({ value: SYNTAX })
     expect(txtField('\\w+')).toEqual({ value: SYNTAX })
     // TXT 编译后太大说的也是 1 MB / Too big once compiled is 1 MB for TXT too
-    expect(txtField('\\w{60}')).toEqual({ value: grammar.regexCauseText('too-big') })
-    expect(grammar.regexCauseText('too-big')).toContain('1 MB')
+    expect(txtField('\\w{60}')).toEqual({ value: grammar.regexCauseText('txt', 'too-big') })
+    expect([grammar.regexCauseText('domain', 'too-big'), grammar.regexCauseText('txt', 'too-big')].every((text) => text.includes('1 MB'))).toBe(true)
     // TXT 先看长度，和内核一样 / A TXT regex's length comes first, as in the kernel
     expect(txtField(`(?=x)${'a'.repeat(1000)}`)).toEqual({ value: 'TXT 的正则最长 1000 字节' })
     // 不是正则模式的 TXT 不问 / A TXT condition not in regex mode is not asked about
@@ -127,7 +127,7 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
     // 上限长度、满是要转义的反斜杠的正则：按写成 JSON 的字节数分批，一批不超过 REGEX_CHECK_BODY_BYTES / Regexes at the length cap full of
     // backslashes to escape: batched by their bytes as JSON, no batch over REGEX_CHECK_BODY_BYTES
     asked.length = 0
-    const heavy = Array.from({ length: 200 }, (_, i) => `${i}${'\\'.repeat(check.REGEX_CHECK_MAX_BYTES - 6)}.`)
+    const heavy = Array.from({ length: 200 }, (_, i) => `${i}${'\\'.repeat(check.REGEX_MAX_BYTES - 6)}.`)
     for (const p of heavy) grammar.kernelRegexOk('domain', p)
     await vi.runAllTimersAsync()
     const sizes = asked.map((batch) => new TextEncoder().encode(JSON.stringify({ patterns: batch })).length)
@@ -148,28 +148,30 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
     expect([grammar.kernelRegexOk('domain', '\\d+'), grammar.kernelRegexOk('txt', '\\d+')]).toEqual([true, false])
   })
 
-  it('16 KiB 以上的不问，不下结论：只按本地查得出的拦', async () => {
+  // 内核在解析之前看长度：域名的正则超过 16384 字节、TXT 的超过 1000 字节，只看长度就不收。页面不送过去，照内核的原话直接回答（原话拿内核
+  // 跑出来的那张表对），出错提示说的是长度；正好到上限的照问
+  // The kernel looks at the length before parsing: a name regex over 16384 bytes and a TXT one over 1000 are refused on their length
+  // alone. The page sends neither and answers at once in the kernel's words (checked against the table the kernel produced), the error
+  // being about the length; one right at the limit is asked as usual
+  it('比内核的长度上限长的不问，照内核的原话直接回答', async () => {
     vi.useFakeTimers()
-    const { check, grammar, fields } = await load()
+    const { check, grammar, fields, blocklist } = await load()
     const asked: RegexItem[][] = []
-    check.setRegexChecker(async (items) => { asked.push(items); return items.map(() => ({ verdict: 'unchecked' })) })
-    const long = 'a'.repeat(check.REGEX_CHECK_MAX_BYTES + 1)
-    expect(check.kernelRegexVerdict('domain', long)).toEqual({ verdict: 'unchecked' })
-    expect(grammar.kernelRegexOk('domain', long)).toBe(true)
-    expect(grammar.kernelRegexOk('domain', `(?=x)${long}`)).toBe(false)
-    expect(fields.matcherValueChecking({ type: 'domain_regex', operator: 'and', value: long })).toBe(false)
+    check.setRegexChecker(async (items) => { asked.push(items); return items.map(() => ({ verdict: 'compiles' })) })
+    const over = 'a'.repeat(check.REGEX_MAX_BYTES + 1)
+    expect(check.kernelRegexVerdict('domain', over)).toEqual(kernelAnswer({ kind: 'domain', pattern: over }))
+    expect(check.kernelRegexVerdict('txt', over)).toEqual(kernelAnswer({ kind: 'txt', pattern: over }))
+    expect(check.kernelRegexVerdict('domain', `${over}${'é'.repeat(3)}`)).toEqual({ verdict: 'refused', cause: 'too-long', error: 'regex pattern too long: 16391 bytes (max 16384)' })
+    expect(grammar.kernelRegexOk('domain', over)).toBe(false)
+    expect(fields.matcherFieldErrors({ type: 'domain_regex', operator: 'and', value: over }, 'request')).toEqual({ value: '正则最长 16384 字节' })
+    expect(fields.matcherValueChecking({ type: 'domain_regex', operator: 'and', value: over })).toBe(false)
+    expect(blocklist.parseOwnRules(`/${over}/`).problems.map((p) => p.problem)).toEqual([blocklist.skipText({ reason: 'regex-too-long' })])
     await vi.runAllTimersAsync()
     expect(asked).toEqual([])
-    // 正好到上限的照问；服务端回答「不下结论」也记下，不一直问 / One right at the cap is asked; a 「no verdict」 answer is kept too, not asked
-    // over and over
-    const atCap = 'a'.repeat(check.REGEX_CHECK_MAX_BYTES)
+    const atCap = 'a'.repeat(check.REGEX_MAX_BYTES)
     expect(grammar.kernelRegexOk('domain', atCap)).toBe(true)
     await vi.runAllTimersAsync()
-    expect(asked.map((a) => a.length)).toEqual([1])
-    expect(check.kernelRegexVerdict('domain', atCap)).toEqual({ verdict: 'unchecked' })
-    expect(grammar.kernelRegexOk('domain', atCap)).toBe(true)
-    await vi.runAllTimersAsync()
-    expect(asked.length).toBe(1)
+    expect(asked).toEqual([[{ kind: 'domain', pattern: atCap }]])
   })
 
   it('在路上的不再问一遍：回答来了才用上；在问的时候算「在查」，回答来了就不是', async () => {

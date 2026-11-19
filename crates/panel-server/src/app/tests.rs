@@ -2906,17 +2906,17 @@ async fn regex_check_answers_as_the_kernel_compiles() {
     assert_eq!(body["error"]["code"], "regex_check_invalid");
 }
 
-/// 一次检查花多少有上限：regex-syntax 先把整个正则展开成语法树、编译时才看大小上限，一个 `\w` 就是几 KB，所以 16 KiB 以上的
-/// 域名正则不编译、回答「不下结论」（不算内核收，也不算不收）；TXT 的内核先看长度，再长也照样回答；请求体照 200 个 16 KiB 算，
+/// 一次检查花多少有上限：regex-syntax 先把整个正则展开成语法树、编译时才看大小上限，一个 `\w` 就是几 KB。内核在解析之前看长度：
+/// 域名的正则超过 16384 字节、TXT 的超过 1000 字节都不收，这里一样只看长度、不编译，再长也照样回答；请求体照 200 个 16 KiB 算，
 /// 再大的整个不收
 /// What one check costs is bounded: regex-syntax spells the whole regex out as a syntax tree and the size limits only apply when it
-/// compiles, a single `\w` being several KB, so a name regex over 16 KiB is not compiled and answered as no verdict (neither taken
-/// nor refused); the kernel looks at a TXT regex's length first, so any length is answered; the body is sized for 200 of 16 KiB, and
-/// a larger one is refused whole
+/// compiles, a single `\w` being several KB. The kernel looks at the length before parsing: a name regex over 16384 bytes or a TXT
+/// one over 1000 is refused, and here too only the length is looked at, nothing compiled, so any length is answered; the body is
+/// sized for 200 of 16 KiB, and a larger one is refused whole
 #[tokio::test]
 async fn regex_check_bounds_what_one_request_costs() {
     let context = authenticated_app().await;
-    let cap = crate::regex_check::MAX_CHECKED_BYTES;
+    let cap = crate::regex_check::MAX_REGEX_BYTES;
     let at_cap = r"\w".repeat(cap / 2);
     let over = format!("{at_cap}a");
     let txt = r"\pL".repeat(cap);
@@ -2931,11 +2931,13 @@ async fn regex_check_bounds_what_one_request_costs() {
     assert_eq!(body["answers"][0]["verdict"], "refused");
     assert_eq!(body["answers"][0]["cause"], "too-big");
     assert_eq!(
-        body["answers"][1]["verdict"], "unchecked",
-        "{}",
-        body["answers"][1]
+        body["answers"][1],
+        serde_json::json!({
+            "verdict": "refused",
+            "cause": "too-long",
+            "error": format!("regex pattern too long: {} bytes (max 16384)", over.len()),
+        })
     );
-    assert!(body["answers"][1].get("error").is_none());
     assert_eq!(
         body["answers"][2],
         serde_json::json!({

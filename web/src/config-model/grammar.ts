@@ -1,5 +1,5 @@
 import { PREFIX } from './kernel'
-import { kernelRegexVerdict, type RegexCause, type RegexKind } from './regex-check'
+import { kernelRegexVerdict, REGEX_MAX_BYTES, TXT_REGEX_BYTES, type RegexCause, type RegexKind } from './regex-check'
 
 // 内核读配置时认的写法：编辑器查一个值写没写对都看这里，读法和内核加载配置时一样，内核拒绝的这里也不认，内核会悄悄另作解释的这里也不放过。
 // 依据 kixdns 79e8fd5：matcher/mod.rs parse_dns_type、parse_dns_class、client_net、cidr_list、domain_regex、ResponseRcode、ResponseTxtContent；
@@ -173,21 +173,21 @@ export function kernelRegexCause(kind: RegexKind, regex: string): RegexCause | n
   const verdict = kernelRegexVerdict(kind, regex)
   if (verdict?.verdict === 'refused') return verdict.cause
   if (verdict?.verdict === 'compiles') return null
-  if (kind === 'txt' && byteLength(regex) > TXT_REGEX_BYTES) return 'too-long'
   return regexSurelyRefused(regex) ? 'syntax' : null
 }
 /** 内核读不读得了这个正则 / Whether the kernel can read this regex */
 export const kernelRegexOk = (kind: RegexKind, regex: string): boolean => kernelRegexCause(kind, regex) === null
-/** 编辑器里怎么说内核为什么不收：域名的和 TXT 的正则编译的上限一样，都是 1 MB；只有 TXT 另有 1000 字节的长度上限 / How the editor says
- * why the kernel refuses a regex: name and TXT regexes compile within the same 1 MB; only a TXT one also has a 1000-byte length limit */
-export function regexCauseText(cause: RegexCause): string {
-  if (cause === 'too-long') return `TXT 的正则最长 ${TXT_REGEX_BYTES} 字节`
+/** 编辑器里怎么说内核为什么不收：域名的和 TXT 的正则编译的上限一样，都是 1 MB；长度上限不一样，域名的 16384 字节，TXT 的 1000 字节 /
+ * How the editor says why the kernel refuses a regex: name and TXT regexes compile within the same 1 MB; the length limits differ,
+ * 16384 bytes for names and 1000 for TXT */
+export function regexCauseText(kind: RegexKind, cause: RegexCause): string {
+  if (cause === 'too-long') return kind === 'txt' ? `TXT 的正则最长 ${TXT_REGEX_BYTES} 字节` : `正则最长 ${REGEX_MAX_BYTES} 字节`
   if (cause === 'too-big') return '正则编译出来超过 KixDNS 的 1 MB 上限：\\w、\\pL 配上 {n} 最占地方'
   return '正则写得不对，或者用了 KixDNS 不认的写法，比如前后断言、反向引用'
 }
-/** TXT 内容的正则最长 1000 字节（内核先看长度，再按 1 MB 编译） / A TXT content regex is at most 1000 bytes (the kernel looks at the
- * length first, then compiles within 1 MB) */
-export const TXT_REGEX_BYTES = 1000
+/** TXT 内容的正则最长 1000 字节（内核先看长度，再按 1 MB 编译；定在 regex-check.ts） / A TXT content regex is at most 1000 bytes (the
+ * kernel looks at the length first, then compiles within 1 MB; defined in regex-check.ts) */
+export { TXT_REGEX_BYTES }
 
 // ---------- 长度和数 / lengths and numbers ----------
 export const byteLength = (text: string): number => new TextEncoder().encode(text).length

@@ -71,7 +71,7 @@ export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope):
     else if (matcher.type === 'response_rcode' && !isRcode(value)) errors.value = `KixDNS 只认 ${RCODES.join('、')}，其余的响应码写 OTHER`
     // 说的是内核不收的那个原因：写法、编译后太大、TXT 太长各说各的 / The reason given is the kernel's own: the syntax, too big once compiled,
     // or a TXT regex too long, each in its own words
-    else if (regex && cause) errors.value = regexCauseText(cause)
+    else if (regex && cause) errors.value = regexCauseText(regex, cause)
   }
   // 规则和入口的 client_ip 只认一个网段；回答阶段的网段是逗号隔开的列表 / A rule's or entry's client_ip takes one network; answer-phase networks
   // are a comma-separated list

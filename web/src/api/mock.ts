@@ -2,7 +2,7 @@ import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
 import { exportConfig, panelHash, PANEL_FORMAT, readConfig } from '../config-model/document'
 import { compile } from '../config-model/model'
 import { regexSurelyRefused, TXT_REGEX_BYTES } from '../config-model/grammar'
-import { REGEX_CHECK_MAX_BYTES, type RegexAnswer, type RegexItem } from '../config-model/regex-check'
+import { REGEX_MAX_BYTES, type RegexAnswer, type RegexItem } from '../config-model/regex-check'
 import { SETTING_SECTIONS } from '../config-editor/schema'
 import { sampleModel } from '../config-model/testing/samples'
 import type {
@@ -1236,7 +1236,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const answer = ({ kind, pattern }: RegexItem): RegexAnswer => {
       const bytes = new TextEncoder().encode(pattern).length
       if (kind === 'txt' && bytes > TXT_REGEX_BYTES) return { verdict: 'refused', cause: 'too-long', error: `regex pattern too long: ${bytes} bytes (max ${TXT_REGEX_BYTES})` }
-      if (kind === 'domain' && bytes > REGEX_CHECK_MAX_BYTES) return { verdict: 'unchecked' }
+      if (kind === 'domain' && bytes > REGEX_MAX_BYTES) return { verdict: 'refused', cause: 'too-long', error: `regex pattern too long: ${bytes} bytes (max ${REGEX_MAX_BYTES})` }
       if (refused.has(pattern) || regexSurelyRefused(pattern)) return { verdict: 'refused', cause: 'syntax', error: 'regex parse error' }
       if (tooBig.has(pattern)) return { verdict: 'refused', cause: 'too-big', error: 'Compiled regex exceeds size limit of 1000000 bytes.' }
       return { verdict: 'compiles' }

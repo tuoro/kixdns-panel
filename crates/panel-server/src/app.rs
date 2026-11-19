@@ -911,11 +911,11 @@ async fn validate_config(
 
 /// 一次最多查几个正则：页面按这个分批 / At most this many regexes per request; the page batches by it
 const MAX_REGEX_CHECKS: usize = 200;
-/// 正则检查的请求体上限：200 个上限长度（16 KiB）的正则，外加 64 KiB 的 JSON 外壳；页面按它分批，再大的整个不收（413）
-/// The body limit of a regex check: 200 regexes at the length cap (16 KiB) plus 64 KiB of JSON around them; the page batches by
-/// it, and anything larger is refused whole (413)
+/// 正则检查的请求体上限：200 个内核长度上限（16384 字节）的正则，外加 64 KiB 的 JSON 外壳；页面按它分批，再大的整个不收（413）
+/// The body limit of a regex check: 200 regexes at the kernel's length limit (16384 bytes) plus 64 KiB of JSON around them; the
+/// page batches by it, and anything larger is refused whole (413)
 const REGEX_CHECK_BODY_BYTES: usize =
-    MAX_REGEX_CHECKS * crate::regex_check::MAX_CHECKED_BYTES + 64 * 1024;
+    MAX_REGEX_CHECKS * crate::regex_check::MAX_REGEX_BYTES + 64 * 1024;
 /// 同时最多几个请求在编译正则：别的排队。每个请求一次只编译一个正则，所以占的 CPU 不超过这么多个核，内存不超过这么多个正则展开的大小
 /// At most this many requests compile regexes at once, the rest waiting their turn. Each request compiles one regex at a time, so
 /// no more cores are busy than this, and no more memory is taken than this many regexes spelled out
