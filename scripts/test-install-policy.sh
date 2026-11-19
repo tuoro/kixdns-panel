@@ -302,7 +302,7 @@ path_verdict() {
 for bad_path in /etc/kixdns/../x.json /etc/kixdns-panel/x/../pipeline.json /etc/kixdns/./pipeline.json \
   /etc//kixdns/pipeline.json /etc/kixdns/ /etc/kixdns/.. /etc/kixdns/. / //pipeline.json; do
   output="$(path_verdict "${bad_path}")"
-  assert_contains "${output}" "安装失败：路径必须是绝对路径，不含空白、控制字符和反斜杠，也不含 .、.. 或空的一段（//）" "${bad_path} 应被拒绝"
+  assert_contains "${output}" "安装失败：路径必须是绝对路径，不含空白和控制字符，不含 \ \" ' % \$ 这几个符号（systemd 会解开它们），也不含 .、.. 或空的一段（//）" "${bad_path} 应被拒绝"
   assert_not_contains "${output}" "accepted" "${bad_path} 不能被接受"
 done
 for good_path in /etc/kixdns/pipeline.json /srv/..kixdns/pipeline.json /srv/kixdns./x.json /run/kixdns/admin.sock; do
@@ -3016,11 +3016,15 @@ render_output="$(
 )" || true
 assert_contains "${render_output}" "FAILED 要写进 panel.env 的 KIXDNS_INSTALLED_COMMIT 格式不对" "要写的值不合格式时应停下"
 assert_not_contains "${render_output}" "RENDERED" "要写的值不合格式时不能写"
-# 路径里的反斜杠和控制字符：awk -v 和 systemd 都会解开反斜杠 / Backslashes and control characters in paths: awk -v and
-# systemd both decode backslashes
-for bad_path in '/etc/kixdns/a\nb.json' "/etc/kixdns/a"$'\t'"b.json" "/etc/kixdns/a"$'\x01'"b.json"; do
+# 路径里的反斜杠和控制字符：awk -v 和 systemd 都会解开反斜杠；systemd 还把引号当引号、% 当说明符、$ 当变量（unit 的 Exec 行、
+# ReadWritePaths、panel.env 都是它读），写进去的路径就和安装器建的不是同一个
+# Backslashes and control characters in paths: awk -v and systemd both decode backslashes; systemd also takes quotes as
+# quotes, % as a specifier and $ as a variable (it reads the unit's Exec lines, ReadWritePaths and panel.env), so the path
+# written would not be the one the installer made
+for bad_path in '/etc/kixdns/a\nb.json' "/etc/kixdns/a"$'\t'"b.json" "/etc/kixdns/a"$'\x01'"b.json" '/etc/kixdns/%h.json' \
+  '/etc/kixdns/$HOME.json' '/etc/kixdns/${HOME}.json' '/etc/kixdns/a"b.json' "/etc/kixdns/a'b.json"; do
   output="$(path_verdict "${bad_path}")"
-  assert_contains "${output}" "不含空白、控制字符和反斜杠" "${bad_path} 应被拒绝"
+  assert_contains "${output}" "（systemd 会解开它们）" "${bad_path} 应被拒绝"
   assert_not_contains "${output}" "accepted" "${bad_path} 不能被接受"
 done
 # 四个脚本里不再有 awk -v，也不把读来的值插进 sed 的脚本（只看代码行，注释不算）

@@ -294,15 +294,17 @@ validate_absolute_path() {
   local label=$1
   local path=$2
   safe_absolute_path "${path}" ||
-    fail "${label}必须是绝对路径，不含空白、控制字符和反斜杠，也不含 .、.. 或空的一段（//）"
+    fail "${label}必须是绝对路径，不含空白和控制字符，不含 \ \" ' % \$ 这几个符号（systemd 会解开它们），也不含 .、.. 或空的一段（//）"
 }
 
-# 能写进 unit、panel.env 的绝对路径：不含空白、控制字符和反斜杠（awk -v、systemd 都会解开反斜杠），也不含 .、.. 或空的一段。
-# An absolute path fit for a unit or panel.env: no whitespace, control character or backslash (awk -v and systemd both
-# decode backslashes), and no ., .. or empty segment.
+# 能写进 unit、panel.env 的绝对路径：不含空白和控制字符；不含反斜杠、引号、% 和 $（systemd 读 unit 的 Exec 行、ReadWritePaths
+# 和 panel.env 时会把它们当成转义、引号、说明符和变量，读到的就不是安装器建的那个路径）；也不含 .、.. 或空的一段。
+# An absolute path fit for a unit or panel.env: no whitespace or control character; no backslash, quote, % or $ (systemd
+# reading the unit's Exec lines, ReadWritePaths and panel.env takes them as escapes, quotes, specifiers and variables, so
+# what it reads would not be the path the installer made); and no ., .. or empty segment.
 safe_absolute_path() {
   local path=$1
-  [[ ${path} == /* && ${#path} -le 4096 && ${path} != *[[:space:][:cntrl:]\\]* &&
+  [[ ${path} == /* && ${#path} -le 4096 && ${path} != *[[:space:][:cntrl:]\\\"\'%\$]* &&
     ${path}/ != *//* && ${path}/ != */./* && ${path}/ != */../* ]]
 }
 
