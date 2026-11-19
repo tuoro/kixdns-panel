@@ -2716,8 +2716,13 @@ early_restart="$(
     stop_panel_processes() { printf 'STOP-PROCESSES %s\n' "$*"; }
     quiesce_for_records
     panel_was_running && printf 'WAS-RUNNING\n'
+    # SHOULD 3：之后的退出都经过 on_installer_exit（它还管回滚挂上了却没开始、删准备回滚的备份目录）/ SHOULD 3: every exit
+    # after this goes through on_installer_exit (which also sees to an armed rollback that never started and the backup
+    # directory made for it)
+    trap -p EXIT
   )
 )" || true
+assert_contains "${early_restart}" "trap -- 'on_installer_exit' EXIT" "开头停面板以后的退出应经过 on_installer_exit"
 assert_contains "${early_restart}" "systemctl stop kixdns-panel.service" "挪旧版的记录之前应停面板"
 # 停不掉进程时照记录停下、面板不重启（S1；第四轮以前是 fail）/ Processes that cannot be stopped stop the run over the
 # record with the panel kept stopped (S1; fail before the fourth review)
@@ -3164,6 +3169,9 @@ assert_contains "${output}" "chown -hR 0:$(id -g) -- ${root}/records/quarantine/
 legacy_host_tree 'User=kxu\n'
 mkdir -p "${root}/linked-units"
 cp -- "${root}/state/external-backup/kixdns.service" "${root}/linked-units/kixdns.service"
+# unit 文件通常是 0644：接手以后照样只有 root 能读写 / Unit files are usually 0644: adopted, it is still root's alone to read
+# and write
+chmod 0644 "${root}/linked-units/kixdns.service"
 rm -f -- "${root}/state/external-backup/kixdns.service"
 ln -s -- "${root}/linked-units/kixdns.service" "${root}/state/external-backup/kixdns.service"
 output="$(config_directory_run)"
@@ -4098,6 +4106,10 @@ assert_equals "$(jq -r '.message | length' "${online_update_root}/status/status.
 output="$(online_update_status "exit 0" "${latest_release}")"
 assert_equals "${output}" "complete 面板已更新到 v3.1.2" "安装器成功时状态应为完成"
 
+# SHOULD 2：在线更新自己的锁也在只有 root 能进的目录里（原来是 /run 里面板能打开的 0644 文件）/ SHOULD 2: the online
+# update's own lock lives in the root-only directory too (it was a 0644 file in /run the panel could open)
+[[ -f ${online_update_root}/locks/update.lock ]] ||
+  { printf '断言失败：在线更新自己的锁应在只有 root 能进的目录里\n' >&2; exit 1; }
 # SHOULD 2：在线更新放锁的目录不是只有 root 能进时不用它 / SHOULD 2: the online update does not use a lock directory others
 # can enter
 chmod 0755 "${online_update_root}/locks"

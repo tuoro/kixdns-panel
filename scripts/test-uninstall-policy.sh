@@ -1724,7 +1724,10 @@ assert_not_contains "${output}" "FAILED" "单独挂载的状态目录不算卸�
 # R1: the uninstaller checks a record at every read: the pre-migration backup (backup_value, external_backup_present) and
 # the resolved record (restore_resolved_stub). When the copy in the root-only directory is bad (here: writable by others),
 # it is moved away and the run stops, never acting on it.
-for reader in value present resolved; do
+# NIT 4：经 backup_value 读备份的几处（load、inplace、kept）都先跑 trusted_record，不能信的在那里挪走、停下 / NIT 4: each
+# place reading the backup through backup_value (load, inplace, kept) runs trusted_record first, which moves an untrusted
+# one away and stops there
+for reader in value present resolved load inplace kept; do
   output="$(
     base="${scratch}/record-reader"
     rm -rf -- "${base}"
@@ -1762,6 +1765,26 @@ for reader in value present resolved; do
         record=${RESOLVED_STATE}
         restore_resolved_stub
         ;;
+      load)
+        record=${EXTERNAL_BACKUP}
+        HAS_EXTERNAL_BACKUP=true
+        load_external_backup
+        ;;
+      inplace)
+        record=${EXTERNAL_BACKUP}
+        ORIGINAL_CONFIG="${base}/etc/kixdns.json"
+        MANAGED_CONFIG=${ORIGINAL_CONFIG}
+        hand_back_original_config() { printf 'HANDED-BACK\n'; }
+        hand_back_in_place_config
+        ;;
+      kept)
+        record=${EXTERNAL_BACKUP}
+        KIXDNS_MANAGED=true
+        KIXDNS_ACTION=keep
+        CONFIG_ACTION=keep
+        HAS_EXTERNAL_BACKUP=true
+        hand_back_kept_in_place_directory
+        ;;
     esac
     [[ ! -e ${record} ]] || printf 'STILL-TRUSTED-NAME\n'
   )" || true
@@ -1770,7 +1793,27 @@ for reader in value present resolved; do
   assert_not_contains "${output}" "PRESENT" "验不过的备份不能算数（${reader}）"
   assert_not_contains "${output}" "已恢复原样" "验不过的 resolved 记录不能照着恢复（${reader}）"
   assert_not_contains "${output}" "STILL-TRUSTED-NAME" "验不过的记录不能还留在会被信的名字上（${reader}）"
+  assert_not_contains "${output}" "HANDED-BACK" "验不过的备份不能照着交还（${reader}）"
 done
+# NIT 4：backup_value 只验：放记录的目录不是 0700（别的都对）时也不给值 / NIT 4: backup_value only checks: with the records
+# directory not 0700 (all else fine) it gives no value either
+output="$(
+  umask 022
+  base="${scratch}/record-chain"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/records/external-backup"
+  chmod 0755 "${base}/records"
+  chmod 0700 "${base}/records/external-backup"
+  printf 'KIXDNS_SERVICE_UNIT=pwn.service\n' > "${base}/records/external-backup/install.env"
+  ROOT_CHAIN_TOP=${base}
+  ROOT_RECORDS="${base}/records"
+  EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+  ROOT_UID="$(id -u)"
+  printf 'VALUE=%s\n' "$(backup_value KIXDNS_SERVICE_UNIT || true)"
+  chmod 0700 "${base}/records"
+  printf 'VALUE=%s\n' "$(backup_value KIXDNS_SERVICE_UNIT || true)"
+)"
+assert_equals "${output}" $'VALUE=\nVALUE=pwn.service' "放记录的目录不是只有 root 能进时 backup_value 不能给值"
 
 # 回归（S3）：只有程序是 KixDNS 的 unit，它看不出指着哪里的配置参数才算数。sh 的 -c、mosdns 的相对路径配置不能让 /etc/kixdns 整个
 # 留着（以前留着，面板的文件还交给了 root:root 0644）；绝对路径不管是哪个程序写的都照旧算，留着它不会删错。
