@@ -200,13 +200,100 @@ test('导入的配置里其余请求指向已经删掉的组：规则列表和�
   await expect(rests.nth(1).locator('.ui-tag--warn')).toHaveText('要修改')
 })
 
-// 有高级规则时「默认上游」在「基础与监听」里单独设：照内核读一遍，写错了当场说哪个地址哪里不对，和上游组的地址一个说法，不等保存时内核拒绝
-// With advanced rules 默认上游 is set on its own under 基础与监听: read as the kernel reads it, a mistake says on the spot which address is wrong and
-// how, in the words of an upstream group's addresses, instead of waiting for the kernel to refuse the save
-test('有高级规则时的「默认上游」写错了当场标出来，说法和上游组的地址一样 @responsive', async ({ page }) => {
+// 有高级规则时「默认上游」在「基础与监听」里单独设：查的是写进内核的那样（没写端口的补上 53），写错了说哪个地址哪里不对，和上游组的地址一个说法，
+// 不等保存时内核拒绝。读进来就是错的当场说；在这里打的，打字时不说（打到一半总是错的），离开这一格才说
+// With advanced rules 默认上游 is set on its own under 基础与监听: what is checked is what reaches the kernel (53 for a missing port), and a
+// mistake says which address is wrong and how, in the words of an upstream group's addresses, instead of waiting for the kernel to refuse the
+// save. Read in wrong, it is said at once; typed here, nothing is said while typing (half-typed text is always wrong), only once the box is left
+test('有高级规则时的「默认上游」写错了标出来，打字时不说、离开这一格才说，说法和上游组的地址一样 @responsive', async ({ page }) => {
   await open(page)
-  // 决定结果的动作后面还有一个：放不进面板的写法，导入后成为高级规则；默认上游没写端口 / An action after the deciding one fits no panel field and
-  // imports as an advanced rule; the default upstream lacks a port
+  // 决定结果的动作后面还有一个：放不进面板的写法，导入后成为高级规则；默认上游写的是 UDP 用不了的域名 / An action after the deciding one fits
+  // no panel field and imports as an advanced rule; the default upstream is a name, which UDP cannot use
+  const config = { version: '1.0', settings: { default_upstream: 'dns.example' }, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'ads', matchers: [{ type: 'geo_site', value: 'category-ads-all' }], actions: [{ type: 'deny' }, { type: 'static_response', rcode: 'NXDOMAIN' }] }] }] }
+  await page.locator('input[type=file]').setInputFiles({ name: 'raw.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  await expect(page.locator('.toast', { hasText: '已导入 raw.json' })).toBeVisible()
+  const report = page.getByRole('button', { name: '知道了', exact: true })
+  if (await report.count()) await report.click()
+  await toSection(page, '基础设置')
+  await page.locator('.settings-nav').getByRole('button', { name: /基础与监听/ }).click()
+  const field = page.getByLabel('默认上游', { exact: true })
+  await expect(field).toHaveValue('dns.example')
+  await expect(field).toHaveAttribute('aria-invalid', 'true')
+  const error = page.locator(`#${await field.getAttribute('aria-describedby')}`)
+  await expect(error).toHaveText('第 1 个地址：UDP 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ')
+  // 打字时不说，离开这一格才说 / Not while typing, once the box is left
+  await field.fill('1.1.1.1:53, 8.8.8.8:0')
+  await expect(field).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(error).toHaveCount(0)
+  await field.blur()
+  await expect(error).toHaveText('第 2 个地址的端口要在 1 到 65535 之间')
+  // 清空了内核读到的是空的，一个地址都没有，整份配置不收 / Cleared, the kernel reads an empty value with no address and refuses the config
+  await field.fill('')
+  await field.blur()
+  await expect(error).toHaveText('至少填一个地址')
+  // 只写了 IP 的不算错：写进内核时补上 53，写完这一格也补上 / An IP alone is no mistake: it takes 53 in the kernel, and in the box once written
+  await field.fill('1.1.1.1, https://dns.google/dns-query')
+  await field.blur()
+  await expect(field).toHaveValue('1.1.1.1:53, https://dns.google/dns-query')
+  await expect(field).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(field).not.toHaveAttribute('aria-describedby', /./)
+  await expect(error).toHaveCount(0)
+})
+
+// 其余请求拦截时没有组可写，内核拿的就是设置里照写的「默认上游」：它显示出来、查得出错（以前藏着，写错了只能等内核拒绝，页面上改不了）。
+// 在框里按 Ctrl+S：先当这一格写完了，补上端口再保存
+// When 其余请求 blocks there is no group to write, so the kernel takes 默认上游 as written in the settings: it shows and is checked (it used to be
+// hidden, so a mistake waited for the kernel's refusal with no way to fix it on the page). Ctrl+S inside the box counts the box as written,
+// adding the port before saving
+test('其余请求拦截时「默认上游」显示出来，打到一半不说错，在框里按 Ctrl+S 先补上端口 @responsive', async ({ page }) => {
+  await open(page)
+  await toSection(page, '基础设置')
+  await page.locator('.settings-nav').getByRole('button', { name: /规则默认值/ }).click()
+  await page.getByRole('combobox', { name: '其余请求', exact: true }).selectOption({ label: '拦截' })
+  // 手机上先回到分组列表 / On a phone, back to the group list first
+  const back = page.getByRole('button', { name: '全部设置', exact: true })
+  if (await back.isVisible()) await back.click()
+  await page.locator('.settings-nav').getByRole('button', { name: /基础与监听/ }).click()
+  const field = page.getByLabel('默认上游', { exact: true })
+  await expect(field).toBeVisible()
+  await field.fill('8')
+  await expect(field).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(page.locator('.settings-control .ui-field-error')).toHaveCount(0)
+  await field.fill('8.8.8.8')
+  await field.press('Control+s')
+  await expect(field).toHaveValue('8.8.8.8:53')
+  await expect(field).not.toHaveAttribute('aria-invalid', 'true')
+})
+
+// 草稿写出去会有两个同名的列表：内核的校验不收（以前的内核照收，只认后一个，前一个的规则悄悄没了）。保存条说保存不了、说是哪个名字，按保存、Ctrl+S 都不写出去
+// The draft would write two lists of one name: the kernel's validation refuses them (earlier kernels took them, used the later and lost the
+// earlier one's rules). The save bar says the save cannot happen and names the name; neither the button nor Ctrl+S writes anything
+test('草稿里两个列表同名：保存条说保存不了，按保存也不写出去', async ({ page }) => {
+  await open(page)
+  const file = JSON.parse(await downloadJson(page)) as { panel: { model: Record<string, unknown> }; pipeline_select: { pipeline: string }[] }
+  // 只改 panel 里的模型，散列照旧对得上内核部分，读进来就是这份模型 / Only the model in panel changes; the hash still matches the kernel part
+  const main = file.pipeline_select.at(-1)!.pipeline
+  file.panel.model.rawPipelines = [{ id: main, rules: [] }]
+  await page.locator('input[type=file]').setInputFiles({ name: 'clash.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(file)) })
+  await expect(page.locator('.toast', { hasText: '已导入 clash.json' })).toBeVisible()
+  const bar = page.locator('.cfg__savebar')
+  await expect(bar).toContainText('保存不了')
+  await expect(bar).toContainText(`两个列表都叫「${main}」，在 JSON 里改掉一个再保存`)
+  await expect(bar.getByRole('button', { name: '校验', exact: true })).toHaveCount(0)
+  // 按保存：说一句，保存条还是「保存不了」，没走到校验那一步 / Pressing save: a line is said, the bar still reads 保存不了, and no check starts
+  await bar.getByRole('button', { name: /保存/ }).click()
+  await expect(page.locator('.toast', { hasText: `两个列表都叫「${main}」` })).toBeVisible()
+  await expect(bar).toContainText('保存不了')
+  await expect(bar).not.toContainText('第 1 步')
+})
+
+// 「默认上游」和上游组的地址一样：只写了 IP（或 TCP 的主机）的，写完（离开这一格、按回车）就按 53 补上；补不了的照旧标出来
+// 默认上游 works as an upstream group's addresses: an IP (or a TCP host) alone takes 53 once written (leaving the box, pressing Enter); one
+// that cannot be completed is still marked
+test('有高级规则时的「默认上游」只写了 IP：写完就按 53 补上，和上游组的地址一样 @responsive', async ({ page }) => {
+  await open(page)
+  // 读进来的默认上游只写了 IP：写进内核时补上 53，所以不算错 / The default upstream read in is an IP alone: it takes 53 in the kernel, so it is
+  // no mistake
   const config = { version: '1.0', settings: { default_upstream: '1.1.1.1' }, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'ads', matchers: [{ type: 'geo_site', value: 'category-ads-all' }], actions: [{ type: 'deny' }, { type: 'static_response', rcode: 'NXDOMAIN' }] }] }] }
   await page.locator('input[type=file]').setInputFiles({ name: 'raw.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
   await expect(page.locator('.toast', { hasText: '已导入 raw.json' })).toBeVisible()
@@ -216,33 +303,7 @@ test('有高级规则时的「默认上游」写错了当场标出来，说法�
   await page.locator('.settings-nav').getByRole('button', { name: /基础与监听/ }).click()
   const field = page.getByLabel('默认上游', { exact: true })
   await expect(field).toHaveValue('1.1.1.1')
-  await expect(field).toHaveAttribute('aria-invalid', 'true')
-  const error = page.locator(`#${await field.getAttribute('aria-describedby')}`)
-  await expect(error).toHaveText('第 1 个地址：UDP 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ')
-  await field.fill('1.1.1.1:53, 8.8.8.8:0')
-  await expect(error).toHaveText('第 2 个地址的端口要在 1 到 65535 之间')
-  // 清空了内核读到的是空的，一个地址都没有，整份配置不收 / Cleared, the kernel reads an empty value with no address and refuses the config
-  await field.fill('')
-  await expect(error).toHaveText('至少填一个地址')
-  await field.fill('1.1.1.1:53, https://dns.google/dns-query')
   await expect(field).not.toHaveAttribute('aria-invalid', 'true')
-  await expect(field).not.toHaveAttribute('aria-describedby', /./)
-  await expect(error).toHaveCount(0)
-})
-
-// 「默认上游」和上游组的地址一样：只写了 IP（或 TCP 的主机）的，写完（离开这一格、按回车）就按 53 补上；补不了的照旧标出来
-// 默认上游 works as an upstream group's addresses: an IP (or a TCP host) alone takes 53 once written (leaving the box, pressing Enter); one
-// that cannot be completed is still marked
-test('有高级规则时的「默认上游」只写了 IP：写完就按 53 补上，和上游组的地址一样 @responsive', async ({ page }) => {
-  await open(page)
-  const config = { version: '1.0', settings: { default_upstream: '1.1.1.1:53' }, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'ads', matchers: [{ type: 'geo_site', value: 'category-ads-all' }], actions: [{ type: 'deny' }, { type: 'static_response', rcode: 'NXDOMAIN' }] }] }] }
-  await page.locator('input[type=file]').setInputFiles({ name: 'raw.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
-  await expect(page.locator('.toast', { hasText: '已导入 raw.json' })).toBeVisible()
-  const report = page.getByRole('button', { name: '知道了', exact: true })
-  if (await report.count()) await report.click()
-  await toSection(page, '基础设置')
-  await page.locator('.settings-nav').getByRole('button', { name: /基础与监听/ }).click()
-  const field = page.getByLabel('默认上游', { exact: true })
   await field.fill('9.9.9.9, tcp://dns.example')
   await field.blur()
   await expect(field).toHaveValue('9.9.9.9:53, tcp://dns.example:53')

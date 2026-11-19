@@ -1,6 +1,6 @@
 import type { NamedCount, RuleCount } from './api/types'
 import { normalizeAddress, splitAddrs } from './config-model/kernel'
-import { kernelAddress, mainPipelineId, upstreamPipelineId, type Model, type Outcome, type Remedy, type UpstreamGroup } from './config-model/model'
+import { kernelUpstream, mainPipelineId, mappingPipelineId, upstreamPipelineId, type Model, type Outcome, type Remedy, type UpstreamGroup } from './config-model/model'
 import type { TraceNames } from './config-model/trace-names'
 
 // 概览的「请求分布」：每个请求最后去了哪。
@@ -37,8 +37,10 @@ const leaves = (list: unknown) => actionsOf(list).some((a) => typeOf(a) === 'jum
 const forwardOf = (list: unknown) => actionsOf(list).find((a) => typeOf(a) === 'forward' || typeOf(a) === 'allow')
 const rulesOf = (pipeline: KernelPipeline | undefined): KernelRule[] => (Array.isArray(pipeline?.rules) ? pipeline.rules.filter((r): r is KernelRule => Boolean(r) && typeof r === 'object') : [])
 
-// 一组地址的指纹：协议加地址，不分顺序 / A fingerprint for a set of addresses: protocol and address, order ignored
-const fingerprint = (addresses: string[]) => [...new Set(addresses.map((a) => normalizeAddress(a).toLowerCase()))].sort().join('|')
+// 一组地址的指纹：协议加地址，不分顺序；没写端口的按 53 算，和写进内核的一样（以前存下来的配置里还有不带端口的）
+// A fingerprint for a set of addresses: protocol and address, order ignored; a missing port counts as 53, as written to the kernel (configs
+// stored long ago still hold portless ones)
+const fingerprint = (addresses: string[]) => [...new Set(addresses.map((a) => normalizeAddress(kernelUpstream({ address: a, protocol: 'auto' })).toLowerCase()))].sort().join('|')
 
 // 在规则里直接回应的那些叫什么：看配置里实际用到了拦截、自定义回答中的哪几种 / What to call requests the rules answered themselves: the kinds of block and custom answer the config actually uses
 export function directLabel(model: Model): string {
@@ -64,7 +66,7 @@ export function directLabel(model: Model): string {
  */
 export function forwardGroups(pipelines: readonly KernelPipeline[], model: Model): (pipelineId: string) => UpstreamGroup | undefined {
   const byId = new Map(pipelines.filter((p) => typeof p.id === 'string').map((p) => [p.id as string, p]))
-  const groupByAddresses = new Map(model.groups.filter((g) => g.addresses.length).map((g) => [fingerprint(g.addresses.map(kernelAddress)), g]))
+  const groupByAddresses = new Map(model.groups.filter((g) => g.addresses.length).map((g) => [fingerprint(g.addresses.map(kernelUpstream)), g]))
   return (pipelineId) => {
     const own = model.groups.find((g) => upstreamPipelineId(model, g.id) === pipelineId)
     if (own) return own
@@ -76,7 +78,7 @@ export function forwardGroups(pipelines: readonly KernelPipeline[], model: Model
 /** 不属于任何上游组、自己转发的列表：概览上各占一行，查询日志的去向筛选也列出来 / Lists that forward on their own, outside any upstream group: a row each on the overview, and options in the query log's destination filter */
 export function ownForwards(pipelines: readonly KernelPipeline[], model: Model): string[] {
   const groupOf = forwardGroups(pipelines, model)
-  const mapping = model.mappingId ?? 'domain_mapping'
+  const mapping = mappingPipelineId(model)
   return pipelines.flatMap((p) => {
     if (typeof p.id !== 'string' || p.id === mapping || groupOf(p.id)) return []
     const rules = rulesOf(p)
@@ -104,6 +106,7 @@ export function requestDestinations(input: {
   const byId = new Map(pipelines.filter((p) => typeof p.id === 'string').map((p) => [p.id as string, p]))
   const groupOf = forwardGroups(pipelines, model)
   const direct = directLabel(model)
+  const mappingPipeline = mappingPipelineId(model)
   const caveats = new Set<string>()
   const rows = new Map<string, DestinationRow>()
   const place = (key: string, label: string, count: number) => {
@@ -127,7 +130,7 @@ export function requestDestinations(input: {
     const sentOn = matches.filter((m) => m.pipeline === hit.name && m.phase === 'response' && leaving.has(m.rule)).reduce((sum, m) => sum + m.count, 0)
     if (rules.some((r) => leaves(r.response_actions_on_miss))) caveats.add('回答后检查的「否则」转走或直接回应的请求，仍算在原来的上游组')
     const count = Math.max(0, hit.count - sentOn)
-    if (hit.name === (model.mappingId ?? 'domain_mapping')) { place('mapping', '域名映射', count); placed += count; continue }
+    if (hit.name === mappingPipeline) { place('mapping', '域名映射', count); placed += count; continue }
     const forward = rules.map((r) => forwardOf(r.actions)).find(Boolean)
     // 只有直接回应、不转发的列表：算进「直接回应」，由总数减出来 / A list that only answers and never forwards: it lands in the direct row, which the total works out
     if (pipeline && !forward) continue

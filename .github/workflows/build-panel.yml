@@ -26,6 +26,7 @@ on:
       - scripts/test-package-acceptance.sh
       - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
+      - tools/kernel-config-check/**
       - web/**
       - Cargo.toml
       - Cargo.lock
@@ -52,6 +53,7 @@ on:
       - scripts/test-package-acceptance.sh
       - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
+      - tools/kernel-config-check/**
       - web/**
       - Cargo.toml
       - Cargo.lock
@@ -128,6 +130,34 @@ jobs:
       - name: Checkout panel repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # 面板照内核写的编译器和测试用的执行器一起写错时，只有真内核看得出来（回答条件的 GeoSite 类型名就这样被拒了好几个版本）。
+      # 开发照最新的内核（内核仓库的 main）：这次运行时 main 指到哪个提交就取哪个提交的源码，锁文件也用它的，下面编
+      # tools/kernel-config-check 逐份校验面板编出的配置。打包的内核只管首次安装，面板跟着内核更新走
+      # When the panel's compiler and the test executor, both written after the kernel, share a mistake, only the real kernel can tell
+      # (the answer check's GeoSite type name was refused for several releases that way). Development follows the latest kernel (main of
+      # the kernel repository): the commit main points at when this run starts is fetched, with its own lock file, so
+      # tools/kernel-config-check below validates the panel's compiled configs one by one. The bundled kernel is only for first
+      # installs; the panel follows kernel updates
+      - name: Resolve the latest kernel (main)
+        id: kernel-main
+        shell: bash
+        run: |
+          commit="$(git ls-remote "https://github.com/${KIXDNS_KERNEL_REPOSITORY}" refs/heads/main | cut -f1)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          printf 'KixDNS main：%s\n' "$commit"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the latest kernel (main)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.KIXDNS_KERNEL_REPOSITORY }}
+          ref: ${{ steps.kernel-main.outputs.commit }}
+          path: .upstream/kixdns
+          persist-credentials: false
+
+      - name: Use the latest kernel's lock file
+        run: cp .upstream/kixdns/Cargo.lock tools/kernel-config-check/Cargo.lock
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
@@ -148,16 +178,25 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # 校验工具自己一个工作区，一起缓存：内核没换依赖时只重编内核这一个包 / The check tool is a workspace of its own, cached alongside: when
+      # the kernel keeps its dependencies only the kernel crate itself is rebuilt
       - name: Cache panel build
         uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
-          workspaces: . -> target
+          workspaces: |
+            . -> target
+            tools/kernel-config-check -> target
 
       - name: Verify panel server
         run: |
           cargo fmt --all -- --check
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build kernel config check
+        run: |
+          cargo fmt --manifest-path tools/kernel-config-check/Cargo.toml -- --check
+          cargo build --manifest-path tools/kernel-config-check/Cargo.toml
 
       # 这里平时靠 rust-cache 里的 ~/.cargo/bin 跳过编译，Cargo.lock 一变缓存失效就要重编约 2 分 45 秒；
       # 预编译包让两种情况都只需几秒，版本不变并校验 SHA-256。
@@ -185,6 +224,18 @@ jobs:
           python3 -I ../scripts/npm-audit.py npm-audit-allow.txt
           npm test
           npm run build
+
+      # 示例配置、每一种条件和结果、每一种上游写法、高级规则编辑器的每一种类型，再加按种子生成的一批（kernel-fixtures.test.ts），
+      # 拿最新的内核（main）的 config::validate 逐份校验，有一份不收就失败
+      # The samples, every condition and outcome kind, every way of writing an upstream, every type of the advanced rule editor and a
+      # seeded batch (kernel-fixtures.test.ts), each validated by the latest kernel's (main) config::validate; any refusal fails the job
+      - name: Check compiled configs with the latest kernel (main)
+        shell: bash
+        env:
+          KERNEL_FIXTURES: ${{ runner.temp }}/kernel-fixtures.json
+        run: |
+          (cd web && npx vitest run src/config-model/kernel-fixtures.test.ts)
+          tools/kernel-config-check/target/debug/kernel-config-check < "$KERNEL_FIXTURES"
 
       # 前端 e2e 只在 PR 改了 web/ 或这个 workflow 时跑；发布和手动触发照跑全套。
       # 推到 main 的提交在 PR 上已经按合并后的结果测过，不再重跑；只改 Rust、脚本、锁文件的 PR 也不跑。

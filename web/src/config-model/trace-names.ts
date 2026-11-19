@@ -1,4 +1,4 @@
-import { blocklistPipelineId, kernelRuleIndex, mainPipelineId, ruleGroupPipelineId, ruleTitle, upstreamPipelineId, type KernelRuleIndex, type KernelRuleRef, type Model, type Rule } from './model'
+import { blocklistPipelineId, kernelRuleIndex, mainPipelineId, mappingPipelineId, ruleGroupPipelineId, ruleTitle, upstreamPipelineId, type KernelRuleIndex, type KernelRuleRef, type Model, type Rule } from './model'
 
 // 执行路径里内核用的名字（rule-12、main、group-g1、upstream-cn）换回配置页上看到的名字。认不出的返回 null，照原样显示。
 // 规则名按所在的列表查编译时的对照表；不知道列表时，只在一个列表里出现的名字照样认得
@@ -41,6 +41,19 @@ export function findKernelRule(model: Model, label: string, pipeline: string | n
   return id === null ? undefined : allRules(model).find((r) => r.id === id)
 }
 
+/**
+ * 一句话里「」中的名字找回规则：先认规则在页面上的标题（面板自己写的句子说的是标题，只认一条时才算），再认内核里的规则名（内核报上来的原因）。
+ * 叫 rule-3 的规则和编号是 3 的没名字的规则同时在时，「rule-3」是前一条
+ * The rule behind a name written in 「」 in a sentence: first the title it shows on the page (the panel's own sentences speak of titles; it
+ * counts only when one rule has it), then the kernel's rule name (a reason the kernel reported). With a rule named rule-3 and an unnamed rule
+ * of id 3 side by side, 「rule-3」 is the former
+ */
+export function findRuleByText(model: Model, text: string, index: KernelRuleIndex = kernelRuleIndex(model)): Rule | undefined {
+  const titled = allRules(model).filter((r) => ruleTitle(r) === text)
+  if (titled.length) return titled.length === 1 ? titled[0] : undefined
+  return findKernelRule(model, text, null, index)
+}
+
 export function traceNames(model: Model): TraceNames {
   const index = kernelRuleIndex(model)
   const ownRule = (id: string): Rule | undefined => {
@@ -51,7 +64,7 @@ export function traceNames(model: Model): TraceNames {
   const blocklistId = blocklistPipelineId(model)
   const pipeline = (id: string): string | null => {
     if (id === mainPipelineId(model)) return '主列表'
-    if (id === (model.mappingId ?? 'domain_mapping')) return '域名映射'
+    if (id === mappingPipelineId(model)) return '域名映射'
     if (id === blocklistId) return '拦截列表'
     const group = model.ruleGroups.find((g) => ruleGroupPipelineId(model, g.id) === id)
     if (group) return `规则组「${group.name}」`

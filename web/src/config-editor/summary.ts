@@ -63,8 +63,8 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
     case 'response_answer_ip': return `回答的 IP 属于 ${cidr}`
     case 'response_answer_ip_geoip_country': return `回答 IP 的地区是 ${countries}`
     case 'response_answer_ip_geoip_private': return expectation(matcher, '回答的是内网地址', '回答的不是内网地址')
-    case 'response_request_domain_geosite': return `请求的域名属于 GeoSite ${geoSiteValue(matcher.value)}`
-    case 'response_request_domain_geosite_not': return `请求的域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
+    case 'response_request_domain_geo_site': return `请求的域名属于 GeoSite ${geoSiteValue(matcher.value)}`
+    case 'response_request_domain_geo_site_not': return `请求的域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
     case 'response_txt_content': return `TXT 内容${matcher.mode === 'prefix' ? '开头是' : matcher.mode === 'regex' ? '匹配正则' : '等于'} ${value}`
     default: return `${scope === 'response' ? '响应条件' : '请求条件'} ${matcher.type}`
   }

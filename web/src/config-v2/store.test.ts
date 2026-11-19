@@ -3,7 +3,7 @@ import { diffModels, differences } from '../config-model/diff'
 import { blocklistKey, compile, ruleTitle, type Model, type Rule } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
-import { appliedModel, changeCount, changesBesidesFile, newId, placeBack, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
+import { appliedModel, applyUpstreamStats, changeCount, groupHealth, changesBesidesFile, newId, placeBack, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
 
 // 保存条数出来的每一处修改，「改了哪些」里都要看得到：以前改监听标签时保存条说改了 1 处，对比却说「一样」
 // Every change the save bar counts must show in the review: setting a listener tag once read 「已修改 1 处」 while the review said nothing changed
@@ -23,6 +23,36 @@ const mutations: [string, (m: Model) => void][] = [
   ['高级入口', (m) => { m.entries = [{ pipeline: 'main', matcher_operator: 'and', matchers: [{ type: 'any' }] }] as Model['entries'] }],
   ['JSON 视图里加的顶层键', (m) => { m.extra = { note_from_json: 1 } }],
 ]
+
+describe('上游组的健康按写进内核的地址对', () => {
+  // 国内组的 223.5.5.5 没写端口，写进内核是 tcp+udp://223.5.5.5:53，KixDNS 也按这个报计数：组里要认得它
+  // 国内's 223.5.5.5 has no port; it reaches the kernel as tcp+udp://223.5.5.5:53, and KixDNS reports counts under that: the group must know it
+  it('没写端口的地址认得带 :53 的计数', () => {
+    resetTo(sampleModel())
+    const count = (upstream: string, transport: string) => ({ upstream, transport, attempts: 100, success: 90, errors: 10, rejected: 0, aborted: 0, throttled: 0, avg_latency_ms: 20, rcodes: [], tcp_fallbacks: 0, recent: null })
+    applyUpstreamStats([count('tcp+udp://223.5.5.5:53', 'tcp_udp')])
+    expect(groupHealth.value.get('cn')).toMatchObject({ success: 90, queries: 100 })
+  })
+})
+
+describe('新编号不和别的 Pipeline 撞名', () => {
+  // 编号定下规则自己那个转发的名字（rule-编号）：配置里原样保留的 Pipeline、读成上游组或规则组的已经叫 rule-n 时，新规则拿到 n，以后单独设子网就编出两个同名的
+  // An id names the rule's own forward (rule-<id>): when a verbatim pipeline, or one read as an upstream group or rule group, is already called
+  // rule-n, a new rule given n compiles to two of one name once it sets its own subnet
+  it('配置里已经有 rule-n 时，新规则不拿 n', () => {
+    const m = demoModel()
+    const next = Math.max(...[...m.rules, ...m.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => [r.id, ...r.conditions.flat().map((c) => c.id), ...r.response.conditions.map((c) => c.id)]), ...m.mappings.map((x) => x.id)) + 1
+    m.rawPipelines = [{ id: `rule-${next}`, rules: [] }, { id: `rule-${next + 1}`, rules: [] }]
+    m.groups = [...m.groups, { id: 'kept', pipelineId: `rule-${next + 2}`, name: '原样', addresses: [{ address: '9.9.9.9:53', protocol: 'auto' }], ecs: null, fallback: { group: '', onError: false, onPolluted: false } }]
+    resetTo(m)
+    const ids = [newId(), newId()]
+    expect(ids.some((id) => id >= next && id <= next + 2)).toBe(false)
+    // 拿到的编号单独设子网：编出来没有同名的 Pipeline / A taken id with its own subnet: nothing compiles to one name twice
+    const rule = { ...model.rules.find((r) => r.outcome.type === 'upstream')!, id: ids[0]!, ecs: { mode: 'clear' } as const }
+    model.rules.unshift(rule)
+    expect(() => compile(model)).not.toThrow()
+  })
+})
 
 describe('保存条的计数和「改了哪些」说的是同一件事', () => {
   beforeEach(() => resetTo(demoModel()))

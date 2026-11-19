@@ -37,3 +37,6 @@ Thumbs.db
 
 # Upstream source is fetched on demand and is never vendored.
 /.upstream/
+# The kernel config check builds against the latest kernel's (main) source and lock file, both fetched by CI.
+/tools/kernel-config-check/Cargo.lock
+/tools/kernel-config-check/target/

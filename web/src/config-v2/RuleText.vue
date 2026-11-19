@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import GlueText from './GlueText.vue'
-import { findRuleByName, model } from './store'
+import { findRuleByText, model } from './store'
 
 // KixDNS 给的原因里提到的规则名和上游组名能点：点规则打开那条规则，点组打开那个组（和现在面板的 RuntimeMessage 一样）
 // Rule and group names in a reason from KixDNS are links: a rule opens its editor, a group its drawer (like today's RuntimeMessage)
@@ -18,7 +18,8 @@ const parts = computed(() => props.text.split(/(「[^」]+」)/).map((piece) => 
   const name = /^「(.+)」$/.exec(piece)?.[1]
   if (!name) return { text: piece }
   if (props.links && Object.hasOwn(props.links, name)) return { text: piece, rule: props.links[name] }
-  const rule = findRuleByName(name)
+  // 先认页面上的标题，再认内核里的规则名（一条规则可以就叫 rule-3） / The page title first, then the kernel's rule name (a rule may be named rule-3)
+  const rule = findRuleByText(name)
   if (rule) return { text: piece, rule: rule.id }
   const group = model.groups.find((g) => g.name === name)
   return group ? { text: piece, group: group.id } : { text: piece }

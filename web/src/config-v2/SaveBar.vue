@@ -10,7 +10,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
-import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, saveBarShown, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, doc, waitingForBuild, cnameBlocked, clashNote, pipelineClash, sayClash, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, saveBarShown, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -68,6 +68,7 @@ function onKey(event: KeyboardEvent): void {
     if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
     else if (conflict.value && draftStage.value === 'failed') toast.info('这份配置在别处改过了，先重新读取')
     else if (cnameBlocked.value) sayBlocked()
+    else if (pipelineClash.value && visible.value) sayClash()
     else if (visible.value) saveDraft()
     // 域名映射行里改了还没点保存：说一句，不说「没有要保存的修改」 / A domain-mapping row edited but not committed: say so instead of 没有要保存的修改
     else if (dialogEdits.size) toast.info(`先保存${[...dialogEdits.values()][0]}，再保存配置`)
@@ -167,7 +168,7 @@ function discard(): void {
 <template>
   <Transition name="cfg-savebar">
     <!-- 恢复版本还在读：读回来的会换掉草稿，保存条也先不能按（和下面的列表一样调淡） / A restore is still reading: what comes back replaces the draft, so the bar takes no presses either (dimmed like the list) -->
-    <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :inert="rereading || undefined" :aria-busy="rereading || undefined" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) || cnameBlocked, 'savebar--wrap': draftStage === 'done' && pending }">
+    <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :inert="rereading || undefined" :aria-busy="rereading || undefined" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) || cnameBlocked || Boolean(pipelineClash), 'savebar--wrap': draftStage === 'done' && pending }">
       <p :key="draftStage === 'failed' ? `f-${note}` : 'state'" ref="statusLine" tabindex="-1" data-focus-landing class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
         <template v-if="draftStage === 'done'"><svg class="ui-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg><span class="ui-savebar__detail"><UiDotText :parts="note.split(' · ')" /></span></template>
         <!-- 保存的第 0 步、或者校验之前在等拦截列表合成：都照实写在等它，走秒 / A save's step 0, or a check, waiting for the blocklists' build: both say so, with the time running -->
@@ -185,6 +186,9 @@ function discard(): void {
         <template v-else-if="jsonError"><span class="ui-savebar__verdict">JSON 写错了</span><small><button class="ui-objlink" type="button" @click="emit('reveal', jsonError.line, jsonError.column)">第 {{ jsonError.line }} 行第 {{ jsonError.column }} 列</button> · {{ jsonError.reason }}</small></template>
         <!-- 有内核不支持的 CNAME 回答：保存不了，页面上方的提示说是哪几处 / CNAME answers the kernel does not support: saving cannot happen, and the notice above names them -->
         <template v-else-if="cnameBlocked"><span class="ui-savebar__verdict">保存不了</span><small>内核不支持 CNAME 回答，见页面上方</small></template>
+        <!-- 两个同名的列表：内核不收，保存不了，说是哪个名字（只有 JSON 里手写才会这样） / Two lists of one name: the kernel refuses them,
+             so the save cannot happen and the name is said (only a hand-written JSON gets here) -->
+        <template v-else-if="pipelineClash"><span class="ui-savebar__verdict">保存不了</span><small>{{ clashNote(pipelineClash) }}</small></template>
         <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="tight ? ['校验通过'] : ['校验通过', '可以保存']" /></span></template>
         <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave && !phone"> · {{ deferNote }}</small></span></template>
         <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave && !phone"> · {{ deferNote }}</small></span></template>
@@ -201,7 +205,7 @@ function discard(): void {
              重新读取 already sits beside it, so no second control (as on phones) -->
         <button v-if="!phone && pending && !(conflict && draftStage === 'failed')" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
         <!-- 被内核不支持的 CNAME 回答挡住时不给「校验」：按了只会把同一句提示再说一遍 / No 校验 while unsupported CNAME answers block saving: pressing it would only repeat the same toast -->
-        <button v-if="!deferSave && !conflict && pending && !cnameBlocked" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
+        <button v-if="!deferSave && !conflict && pending && !cnameBlocked && !pipelineClash" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
         <!-- 手机上冲突时不留灰掉的保存和备注：这时只能下载或重新读取，省下一整行 / On phones a conflict drops the greyed save and 备注: only download or reload can happen then, which saves a whole row -->
         <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" :aria-disabled="applying || restartingKixdns || undefined" :title="applying ? applyingNote : restartingKixdns ? RESTARTING_NOTE : undefined" @click="saveDraft"><span v-if="saving" class="ui-spin" aria-hidden="true"></span>{{ saving ? '保存中' : saveLabel }}</button>

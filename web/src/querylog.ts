@@ -1,5 +1,5 @@
 import type { QueryLogEntry, QueryLogGap, QueryLogItem, QueryLogRecord, QueryLogStep, QueryLogStepRecord } from './api/types'
-import { isIp, ruleGroupPipelineId, upstreamPipelineId, type Model } from './config-model/model'
+import { isIp, mappingPipelineId, ruleGroupPipelineId, upstreamPipelineId, type Model } from './config-model/model'
 import type { TraceNames } from './config-model/trace-names'
 import type { TextPart } from './diagnostics'
 import { clientRegionText, regionText, type RegionOf } from './ip-region'
@@ -250,7 +250,7 @@ export function destinationOptions(ctx: QueryLogContext | null): DestinationOpti
     if (ids.length) options.push({ value: `group:${g.id}`, label: `上游组「${g.name}」`, params: { pipelines: ids.join(','), outcomes: forwarded } })
   }
   if (ctx) for (const id of ownForwards(ctx.pipelines, ctx.model)) options.push({ value: `pipeline:${id}`, label: ownForwardLabel(id, ctx.model, ctx.names), params: { pipelines: id, outcomes: forwarded } })
-  const mapping = ctx?.model.mappingId ?? 'domain_mapping'
+  const mapping = ctx ? mappingPipelineId(ctx.model) : 'domain_mapping'
   // 自定义回答是域名映射以外的：只说去掉映射那个列表，不把其余每个列表都写进请求（上游组一多就超过服务端的长度上限）
   // Custom answers are those outside the domain mapping: the request names only the mapping list to leave out, rather than every other
   // list (with many upstream groups that ran past the server's length limit)
@@ -353,7 +353,7 @@ export function routeOf(entry: QueryLogEntry, ctx: QueryLogContext | null): { wh
   const rule = ruleLabel(entry, ctx)
   if (entry.outcome === 'blocked') return { where: '拦截', rule }
   if (entry.outcome === 'answered') {
-    const mapping = ctx?.model.mappingId ?? 'domain_mapping'
+    const mapping = ctx ? mappingPipelineId(ctx.model) : 'domain_mapping'
     return entry.pipeline === mapping ? { where: '域名映射', rule: null } : { where: '自定义回答', rule }
   }
   const group = ctx ? forwardGroups(ctx.pipelines, ctx.model)(entry.pipeline) : undefined
