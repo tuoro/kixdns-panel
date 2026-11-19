@@ -2052,6 +2052,8 @@ assert_not_contains "${output}" "${root}/etc/foo.json" "改过来以后再升级
 for shared_arguments in "" --panel-only-update; do
   upgrade_host_tree
   : > "${root}/etc/passwd-like"
+  # 当年的全新安装把这个目录交给面板时是 0750 / The fresh install of that time handed this directory to the panel as 0750
+  chmod 0750 "${root}/etc"
   # shellcheck disable=SC2086 # 空参数就是不带参数 / An empty argument means none
   output="$(config_directory_run ${shared_arguments})"
   label=${shared_arguments:-升级}
