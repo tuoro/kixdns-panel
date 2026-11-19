@@ -2374,6 +2374,25 @@ assert_not_contains "${output}" "已验过" "接手过以后旧位置的记录�
   { printf '断言失败：接手过以后旧位置的记录不能出现在会被信的名字上\n' >&2; exit 1; }
 assert_not_contains "${output}" "PLANNED upgrade ${root}/panel-etc/kixdns/pipeline.json" "接手过以后旧位置的记录不能用来改管副本"
 
+# 标记只在只有 root 能进的目录里才算：放记录的目录上面一层别人能写时，谁都能放一个标记，不能当作接手过
+# The marker counts only in a root-only directory: with a level above the records directory writable by others anyone
+# could put one there, so it does not mean adopted
+marker_output="$(
+  base="${WORK}/marker-chain"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/top/records"
+  chmod 0700 "${base}/top/records"
+  : > "${base}/top/records/.adopted"
+  chmod 0777 "${base}/top"
+  ROOT_CHAIN_TOP=${base}
+  ROOT_RECORDS="${base}/top/records"
+  ROOT_UID="$(id -u)"
+  adoption_done && printf 'ADOPTED\n' || printf 'NOT-ADOPTED\n'
+  chmod 0755 "${base}/top"
+  adoption_done && printf 'ADOPTED\n' || printf 'NOT-ADOPTED\n'
+)"
+assert_equals "$(tr '\n' ' ' <<< "${marker_output}")" "NOT-ADOPTED ADOPTED " "放记录的目录上面一层别人能写时，标记不能算数"
+
 # 回归（S-F）：状态目录单独挂一个文件系统时，记录没法一次 rename 挪过去，以前安装、卸载都停下，还留下一个空的记录目录。现在面板
 # 停了以后在原地验过、复制过去、验过复制的那份，再删原来的。
 # Regression (S-F): with the state directory on a filesystem of its own the records cannot be renamed across, and install

@@ -1838,6 +1838,19 @@ output="$(
   PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes
 )"
 [[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：交给 root 之前应删掉旧位置的记录名字\n' >&2; exit 1; }
+# 记录名字下面不是普通文件的东西（这里是命名管道）删文件时删不掉，目录也就不空：要按名字整个删掉，不能交给 root
+# What is under a record name and is no regular file (a named pipe here) survives the file sweep, so the directory is not
+# empty either: it must go by name, whole, and never to root
+kept_host "${host}"
+mkdir -p "${host}/state/resolved-stub"
+mkfifo "${host}/state/resolved-stub/pipe"
+: > "${chown_log}"
+output="$(
+  secure_root_records() { :; }
+  PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes
+)"
+[[ ! -e ${host}/state/resolved-stub ]] || { printf '断言失败：记录名字下面别的东西也应随名字删掉\n' >&2; exit 1; }
+assert_not_contains "$(cat "${chown_log}")" "resolved-stub" "记录名字不能交给 root"
 assert_not_contains "$(cat "${chown_log}")" "external-backup" "旧位置的记录名字不能交给 root"
 [[ ! -e ${crafted} ]] || { printf '断言失败：带空格的 Geo 路径不能留下\n' >&2; exit 1; }
 assert_equals "$(cat "${host}/state/geo/site-abc.dat" 2>/dev/null || printf missing)" "geosite" "配置里写着的真的 GeoSite 应留下"
@@ -1932,6 +1945,27 @@ assert_not_contains "${output}" "已验过" "接手过以后旧位置的记录�
 [[ ! -e ${host}/units/pwn.service && ! -e ${host}/records/external-backup ]] ||
   { printf '断言失败：接手过以后旧位置的记录不能用\n' >&2; exit 1; }
 assert_not_contains "$(cat "${systemctl_log}")" "pwn.service" "接手过以后旧位置的记录不能用来启动 unit"
+
+# S1：照记录停下时（KEEP_PANEL_STOPPED）卸载器也不重启面板和 helper / S1: after a stop over a record (KEEP_PANEL_STOPPED)
+# the uninstaller restarts neither the panel nor the helper either
+kept_stopped="$(
+  (
+    systemctl() { printf 'systemctl %s\n' "$*"; [[ $1 == is-active ]]; }
+    stop_panel_processes() { :; }
+    quiesce_for_records
+    refuse_with_panel_held "记录不对"
+  ) 2>&1
+)" || true
+assert_contains "${kept_stopped}" "面板和它账号的进程这时都停着" "照记录停下时卸载器应说明面板停着"
+assert_equals "$(grep -c '^systemctl start' <<< "${kept_stopped}" || true)" "0" "照记录停下时卸载器不能重启面板和 helper"
+restarted="$(
+  (
+    systemctl() { printf 'systemctl %s\n' "$*"; [[ $1 == is-active ]]; }
+    stop_panel_processes() { :; }
+    quiesce_for_records
+  ) 2>&1
+)" || true
+assert_contains "${restarted}" "systemctl start kixdns-panel.service" "没真的开始卸载就退出时应照原样重启面板"
 
 # 结构 3：卸载器一开头拿锁；先停在线更新和 helper，再停面板 / Structural change 3: the uninstaller takes the lock first thing;
 # the online update and the helper stop before the panel
