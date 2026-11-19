@@ -17,14 +17,15 @@ set -Eeuo pipefail
 #     files with one link each. One that fails leaves every trusted name at once (into the root-only quarantine, its name
 #     stamped with the time) and is never used by this run or a later one; the refusal names the copy, the reason and
 #     what to do.
-# R2：面板账号还有任何进程时，root 不碰它能写的路径。先停面板，再以它的身份 kill -KILL -1，一直到 kill -0 -1 说一个都不剩（换 PID、
-#     改成不可转储都躲不掉）；面板一直停着，直到这些路径上的事全做完，回滚也一样：放回文件和属主、删这次建的目录和账号，都在重启旧
-#     面板之前。在线更新（--panel-only-update）走同一条路。
+# R2：面板账号还有任何进程时，root 不碰它能写的路径。先停面板，再以它的身份 kill -KILL -1，一直到 /proc 里没有一个归它（真实、
+#     有效或保存的 UID）的活进程，再发一次（换 PID、改成不可转储都躲不掉）；面板一直停着，直到这些路径上的事全做完，回滚也一样：
+#     放回文件和属主、删这次建的目录和账号，都在重启旧面板之前。在线更新（--panel-only-update）走同一条路。
 # R2: root never touches a path the panel account can write while any process of that account exists. The panel is
-#     stopped, then kill -KILL -1 runs as the account until kill -0 -1 says none is left (changing PIDs or turning
-#     non-dumpable does not escape it); the panel stays stopped until every root operation on such paths is finished,
-#     the rollback included: files and owners put back, this run's directories and accounts removed, all before the old
-#     panel restarts. The online update (--panel-only-update) takes the same path.
+#     stopped, then kill -KILL -1 runs as the account until /proc shows no live process of it (real, effective or saved
+#     UID), and once more (changing PIDs or turning non-dumpable does not escape it); the panel stays stopped until every
+#     root operation on such paths is finished, the rollback included: files and owners put back, this run's directories
+#     and accounts removed, all before the old panel restarts. The online update (--panel-only-update) takes the same
+#     path.
 # R3：面板能写的路径上，root 从不跟着符号链接走：chown 用 -h；chmod 只用在照 R2 停了以后、lstat 查过不是符号链接的目录或普通文件上；
 #     已有的、面板能写的目录不用 install -d；这些路径上的重定向、sed -i、cp、mv、rm -rf、find -exec 都要先这样查过。
 # R3: on panel-writable paths root never follows a symlink: chown with -h; chmod only on a directory or regular file checked
@@ -637,7 +638,10 @@ account_signal() {
 # zombie. The Uid line of status is read, not the owner of /proc/<pid> (root for a non-dumpable process). kill -0 -1
 # cannot tell: on Linux it succeeds whenever any other process exists. Argument: the UID.
 account_live_processes() {
-  cat /proc/[0-9]*/status 2>/dev/null | awk -v uid="$1" '
+  # 列出来的进程在 cat 读到之前就退出了，cat 会返回 1；开着 pipefail 时整条管道就跟着说「没有」，不管 awk 看到了什么
+  # A process the glob listed may exit before cat reads it, and cat then returns 1; with pipefail the whole pipeline would
+  # say "none" whatever awk saw
+  { cat /proc/[0-9]*/status 2>/dev/null || true; } | awk -v uid="$1" '
     $1 == "Name:" { if (live && !dead) found = 1; live = 0; dead = 0 }
     $1 == "State:" && ($2 == "Z" || $2 == "X") { dead = 1 }
     $1 == "Uid:" && ($2 == uid || $3 == uid || $4 == uid) { live = 1 }
@@ -1181,7 +1185,7 @@ hand_back_directory() {
   esac
   [[ -d ${directory} && ! -L ${directory} ]] || return 0
   panel_owned "${directory}" || return 0
-  chown root:root -- "${directory}"
+  chown -h root:root -- "${directory}"
   chmod 0755 -- "${directory}"
 }
 
@@ -1522,7 +1526,7 @@ hand_kept_kixdns_to_root() {
   done < <(find "${state}" \( -type f -o -type l \) -print0)
   find "${state}" -mindepth 1 -depth -type d -empty ! -path "${state}/bin" -delete
   while IFS= read -r -d '' path; do
-    [[ -d ${path} ]] || plain_single_file "${path}" || continue
+    [[ -d ${path} && ! -L ${path} ]] || plain_single_file "${path}" || continue
     chown -h "root:${group}" -- "${path}"
     if [[ -d ${path} || ${path} == "${state}/bin/kixdns" ]]; then
       chmod "${directory_mode}" -- "${path}"
@@ -1542,13 +1546,16 @@ hand_kept_kixdns_to_root() {
       chown -h "root:${group}" -- "${config}"
       chmod "${mode}" -- "${config}"
     fi
-    if [[ ${directory} == "${PANEL_CONFIG_DIRECTORY}"/* ]] ||
+    if [[ ! -d ${directory} || -L ${directory} ]]; then
+      # 配置所在的目录换成了符号链接：不跟着它改（R3）/ The config's directory became a symlink: not followed (R3)
+      :
+    elif [[ ${directory} == "${PANEL_CONFIG_DIRECTORY}"/* ]] ||
       { panel_owned "${directory}" && [[ -z $(find "${directory}" -mindepth 1 -maxdepth 1 ! -name "${config##*/}" -print -quit) ]]; }; then
       # 只放着这份配置的目录（包括迁移副本的目录）：交给 unit 运行用的组 / A directory holding this config alone (the
       # migration copy's included): handed to the group the unit runs as
       chown -h "root:${group}" -- "${directory}"
       chmod "${directory_mode}" -- "${directory}"
-      if [[ ${directory} == "${PANEL_CONFIG_DIRECTORY}"/* ]]; then
+      if [[ ${directory} == "${PANEL_CONFIG_DIRECTORY}"/* && -d ${PANEL_CONFIG_DIRECTORY} && ! -L ${PANEL_CONFIG_DIRECTORY} ]]; then
         chown -h "root:${group}" -- "${PANEL_CONFIG_DIRECTORY}"
         chmod "${directory_mode}" -- "${PANEL_CONFIG_DIRECTORY}"
       fi

@@ -234,6 +234,8 @@ ROOT_CHAIN_TOP=${WORK}
 # 停面板账号的进程（R2）只在专门的用例里真的去发信号，别处一律当作已经没有进程 / Stopping the panel account's processes
 # (R2) really sends signals only in its own case; everywhere else no process is left
 ! declare -F account_signal > /dev/null || eval "real_account_signal() $(declare -f account_signal | tail -n +2)"
+! declare -F account_live_processes > /dev/null ||
+  eval "real_account_live_processes() $(declare -f account_live_processes | tail -n +2)"
 account_signal() { :; }
 account_live_processes() { return 1; }
 # 交还原配置时会按名字在 systemd 的搜索路径上找原来的 unit；指向不存在的目录，免得读到开发机上真实安装的 KixDNS。
@@ -1648,10 +1650,16 @@ rollback_owners() {
     # 刚起来的面板写的查询日志 / The query log the panel wrote once started
     mkdir -p "${root}/state/querylog"
     : > "${root}/state/querylog/state.json"
+    # 刚起来的面板在运行目录里留下的 socket：状态目录有 sweep_new_panel_files 删，运行目录只有 remove_owned_by 会删
+    # The socket the panel left in its runtime directory once started: the state directory is swept by
+    # sweep_new_panel_files, the runtime directory only by remove_owned_by
+    mkdir -p "${root}/run-panel"
+    : > "${root}/run-panel/panel.sock"
     rollback_install 1
   ) > /dev/null 2>&1 || true
   printf 'MODES=%s\n' "$(stat -c '%a' "${root}/state" "${root}/state/bin" "${root}/state/geo" "${root}/etc-kixdns" | tr '\n' ' ')"
   [[ -e ${root}/state/querylog ]] && printf 'QUERYLOG-LEFT\n'
+  [[ -e ${root}/run-panel/panel.sock ]] && printf 'RUNTIME-LEFT\n'
   [[ -e ${root}/state/versions ]] && printf 'VERSIONS-LEFT\n'
   [[ -f ${root}/state/bin/kixdns ]] || printf 'PROGRAM-LOST\n'
   grep -E "^chown -h [0-9]+:[0-9]+ -- ${root}/state$" "${root}/calls" > /dev/null && printf 'STATE-OWNER-RESTORED\n'
@@ -1661,6 +1669,7 @@ output="$(rollback_owners)"
 assert_contains "${output}" "MODES=751 751 751 751 " "回滚以后本来就有的目录权限不变"
 assert_contains "${output}" "STATE-OWNER-RESTORED" "回滚应放回状态目录原来的属主"
 assert_not_contains "${output}" "QUERYLOG-LEFT" "回滚应删掉这次建的账号写下的东西"
+assert_not_contains "${output}" "RUNTIME-LEFT" "回滚应删掉这次建的账号在状态目录以外写下的东西"
 assert_not_contains "${output}" "VERSIONS-LEFT" "回滚应删掉这次新建的目录"
 assert_not_contains "${output}" "PROGRAM-LOST" "回滚不能删掉本来就有的 KixDNS 程序"
 assert_contains "${output}" "USERDEL=1" "回滚应删掉这次建的面板账号"
@@ -1790,6 +1799,9 @@ config_directory_run() {
     # SEPARATE_FILESYSTEM=true：状态目录在别的文件系统上 / The state directory on a filesystem of its own
     if [[ ${SEPARATE_FILESYSTEM:-} == true ]]; then
       same_filesystem() { [[ $1 != "${root}/state" && $2 != "${root}/state" ]]; }
+      # 跨文件系统的 mv 不是一次 rename：记下来，看有没有直接挪到会被信的名字上 / Across filesystems mv is no single rename:
+      # it is logged, to see whether anything moves straight onto a trusted name
+      mv() { printf 'mv %s\n' "$*" >> "${root}/mv.log"; command mv "$@"; }
     fi
     ROOT_CHAIN_TOP=${root}
     chown() { printf 'chown %s\n' "$*"; }
@@ -1993,7 +2005,7 @@ for legacy_arguments in "" --panel-only-update; do
   assert_not_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/etc"$'\n' "不能再把原配置的目录交给面板（${label}）"
   assert_contains "${output}" "install -o kixdns-panel -g kixdns -m 0640 -- ${root}/etc/foo.json ${root}/panel-etc/kixdns/pipeline.json" \
     "应把原配置复制成副本（${label}）"
-  assert_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "原配置的目录应交还 root（${label}）"
+  assert_contains "${output}" "chown -h root:root -- ${root}/etc"$'\n' "原配置的目录应交还 root（${label}）"
   assert_contains "${output}" "chmod 0755 -- ${root}/etc"$'\n' "原配置的目录应是 0755（${label}）"
   assert_contains "${output}" "chown -h root:1001 -- ${root}/etc/foo.json" "原配置应归 root、组是原来的 KixDNS 运行用的组（${label}）"
   assert_contains "${output}" "chmod 0640 -- ${root}/etc/foo.json" "原配置应是 0640（${label}）"
@@ -2032,7 +2044,7 @@ assert_contains "${output}" "  ${root}/etc/foo.json：" "改了的配置照旧�
 # The admin already gave the directory back to root (no longer the panel's): it stays as he set it, not handed back as 0755.
 legacy_host_tree 'User=kxu\n'
 output="$(REPAIRED_DIRECTORY="${root}/etc" config_directory_run)"
-assert_not_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "不归面板的目录不能再交还"
+assert_not_contains "${output}" "chown -h root:root -- ${root}/etc"$'\n' "不归面板的目录不能再交还"
 assert_equals "$(stat -c '%a' "${root}/etc")" "750" "不归面板的目录的权限照管理员改的留着"
 assert_not_contains "${output}" "  ${root}/etc：" "没交还的目录不能列出"
 
@@ -2190,6 +2202,59 @@ assert_contains "${output}" "${root}/state/external-backup 不能信（它是符
   { printf '断言失败：符号链接冒充的记录不能留在会被信的名字上\n' >&2; exit 1; }
 [[ -f ${root}/fake-record/install.env ]] || { printf '断言失败：符号链接指着的东西不能动\n' >&2; exit 1; }
 
+# R1：放记录的目录要是 0700，它上面每一层也要归 root、别人写不进、不是符号链接：上面一层别人能写，就能把整个目录换掉。哪一处
+# 不对，所有记录都不能信，停下。
+# R1: the records directory must be 0700, and every level above must be root's, not writable by others and no symlink:
+# with a level above writable by others the whole directory can be swapped. When any of it is wrong, no record can be
+# trusted and the run stops.
+for chain_case in writable symlink mode; do
+  output="$(
+    base="${WORK}/chain"
+    rm -rf -- "${base}"
+    mkdir -p "${base}/real/records/external-backup"
+    chmod 0700 "${base}/real/records" "${base}/real/records/external-backup"
+    printf 'KIXDNS_SERVICE_UNIT=kixdns.service\n' > "${base}/real/records/external-backup/install.env"
+    case ${chain_case} in
+      writable)
+        mv -- "${base}/real" "${base}/top"
+        chmod 0777 "${base}/top"
+        ;;
+      symlink) ln -s real "${base}/top" ;;
+      mode)
+        mv -- "${base}/real" "${base}/top"
+        chmod 0755 "${base}/top/records"
+        ;;
+    esac
+    ROOT_CHAIN_TOP=${base}
+    ROOT_RECORDS="${base}/top/records"
+    ROOT_UID="$(id -u)"
+    fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+    trusted_record external-backup && printf 'TRUSTED\n'
+  )" || true
+  assert_contains "${output}" "FAILED ${WORK}/chain/top/records 不是只有 root 能进的目录" "放记录的目录不对时不能信（${chain_case}）"
+  assert_not_contains "${output}" "TRUSTED" "放记录的目录不对时不能信（${chain_case}）"
+done
+# R1：记录目录归 root 还不够，里面每个文件也要归 root（这里让 stat 说 install.env 归别的 UID）。
+# R1: the record directory being root's is not enough; every file in it must be root's too (here stat says install.env
+# belongs to another UID).
+output="$(
+  record="${WORK}/entry-owner/external-backup"
+  rm -rf -- "${WORK}/entry-owner"
+  mkdir -p "${record}"
+  chmod 0700 "${record}"
+  printf 'KIXDNS_SERVICE_UNIT=kixdns.service\n' > "${record}/install.env"
+  ROOT_UID="$(id -u)"
+  stat() {
+    if [[ $1 == -c && $2 == %u && ${*: -1} == "${record}/install.env" ]]; then
+      printf '4711\n'
+    else
+      command stat "$@"
+    fi
+  }
+  record_problem "${record}" external-backup
+)"
+assert_equals "${output}" "里面的 install.env 不是 root 建的" "记录里有不归 root 的文件时不能信"
+
 # R1：每读一次记录都先验。只有 root 能进的目录里那份坏了（这里是别人能写），哪个地方先读到它，都挪走它、停下，不会照它做事。
 # R1: every read of a record checks it first. When the copy in the root-only directory is bad (here: writable by others),
 # whichever site reads it first moves it away and stops, never acting on it.
@@ -2270,8 +2335,11 @@ assert_contains "${output}" "PLANNED upgrade ${root}/panel-etc/kixdns/pipeline.j
 # place, copied, the copy checked, and then the original removed.
 legacy_host_tree 'User=kxu\n'
 cp -- "${root}/state/external-backup/kixdns.service" "${root}/separate-before"
+rm -f -- "${root}/mv.log"
 output="$(SEPARATE_FILESYSTEM=true config_directory_run)"
 assert_not_contains "${output}" "不在同一个文件系统" "状态目录在别的文件系统上时也应挪过去"
+assert_not_contains "$(cat -- "${root}/mv.log" 2>/dev/null || true)" "mv -T -- ${root}/state/external-backup ${root}/records/external-backup" \
+  "跨文件系统时要先复制、验过复制的那份，不能直接挪到会被信的名字上"
 assert_contains "${output}" "旧版放在 ${root}/state/external-backup 的记录已验过，挪到只有 root 能进的 ${root}/records/external-backup。" \
   "复制过去以后应说明"
 [[ ! -e ${root}/state/external-backup ]] || { printf '断言失败：复制过去以后应删掉原来的\n' >&2; exit 1; }
@@ -2440,6 +2508,18 @@ accounts_line="$(grep -n 'create_accounts' <<< "${main_body}" | head -n 1 | cut 
 directories_line="$(grep -n 'create_panel_directories' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
 second_stop="$(sed -n "${accounts_line},${directories_line}p" <<< "${main_body}" | grep -c 'stop_panel_processes' || true)"
 assert_equals "${second_stop}" "1" "建了面板账号以后、建目录之前应再停一次它的进程"
+# R4：安装器一开头就查 panel.env 能不能信，在读它定任何路径、挪任何记录之前。
+# R4: the installer checks whether panel.env can be trusted first thing, before reading it for any path or moving any
+# record.
+trust_line="$(grep -n 'check_panel_env_trust' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+records_line="$(grep -n 'secure_root_records' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+settings_line="$(grep -n 'load_existing_panel_settings' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${trust_line} && -n ${records_line} && -n ${settings_line} && ${trust_line} -lt ${records_line} &&
+  ${trust_line} -lt ${settings_line} ]] || {
+  printf '断言失败：安装器要先查 panel.env 能不能信，再挪记录、读设置（trust=%s records=%s settings=%s）\n' \
+    "${trust_line}" "${records_line}" "${settings_line}" >&2
+  exit 1
+}
 # R2：要停的 UID 里有面板能写的路径的属主里已经没有账号的那些（旧面板账号删掉以后它的进程可能还在）。
 # R2: the UIDs to stop include owners of panel-writable paths that no longer have an account (the processes of a deleted
 # old panel account may live on).
@@ -2450,18 +2530,45 @@ freed_uids="$(
   panel_process_uids "${WORK}"
 )"
 assert_equals "${freed_uids}" "4711" "面板能写的路径归一个已经没有账号的 UID 时，它的进程也要停"
+# R2：还有没有进程看 /proc 里每个进程 status 的 Uid 行（真实、有效、保存的 UID）：跑测试的用户这时就有进程，一个没人用的 UID 没有。
+# R2: whether processes are left is read from the Uid line (real, effective, saved UID) of every process's status in
+# /proc: the user running the tests has processes right now, an unused UID has none.
+real_account_live_processes "$(id -u)" ||
+  { printf '断言失败：跑测试的用户还有进程时应看得出来\n' >&2; exit 1; }
+! real_account_live_processes 2147480000 ||
+  { printf '断言失败：没有进程的 UID 不能算还有进程\n' >&2; exit 1; }
+# 列出来的进程有一个在 cat 读到之前就退出了（cat 返回 1，这里让它一定这样）：开着 pipefail 也不能因此说没有进程了。
+# A process the glob listed exited before cat read it (cat returns 1, made certain here): with pipefail on, that must not
+# turn into "no process left".
+(
+  cat() { command cat "$@"; return 1; }
+  real_account_live_processes "$(id -u)"
+) || { printf '断言失败：有进程中途退出时也应看得出还有进程\n' >&2; exit 1; }
 # R2：开头为了挪旧版的记录停了面板，没真的开始安装就退出时照原样重启它；没开头停过的照常看 systemd。
 # R2: when the panel was stopped at the start to move older records and the run ends before the install really starts, it
 # is restarted as it was; otherwise systemd is asked as usual.
 early_restart="$(
   (
-    systemctl() { printf 'systemctl %s\n' "$*"; [[ $1 == is-active ]]; }
-    stop_panel_processes() { :; }
+    stopped="${WORK}/early-stopped"
+    rm -f -- "${stopped}"
+    # 停了以后 systemd 说它不在运行 / Once stopped, systemd says it is not running
+    systemctl() {
+      printf 'systemctl %s\n' "$*"
+      case $1 in
+        stop) : > "${stopped}" ;;
+        is-active) [[ ! -e ${stopped} ]] ;;
+      esac
+    }
+    # 记下怎么停下（参数由 quiesce_for_records 传）/ Records how it stops (quiesce_for_records passes the argument)
+    # shellcheck disable=SC2120
+    stop_panel_processes() { printf 'STOP-PROCESSES %s\n' "$*"; }
     quiesce_for_records
     panel_was_running && printf 'WAS-RUNNING\n'
   )
-)"
+)" || true
 assert_contains "${early_restart}" "systemctl stop kixdns-panel.service" "挪旧版的记录之前应停面板"
+assert_contains "$(sed -n '/systemctl stop kixdns-panel.service/,$p' <<< "${early_restart}")" "STOP-PROCESSES fail" \
+  "挪旧版的记录之前、停了面板以后，应停光面板账号的进程"
 assert_contains "${early_restart}" "systemctl start kixdns-panel.service" "没真的开始安装就退出时应重启开头停下的面板"
 assert_contains "${early_restart}" "WAS-RUNNING" "开头停过面板时，看的是停之前它在不在运行"
 # R3：内核包的身份目录已经有时不用 install -d；里面的文件先删掉同名的再写。/ R3: an existing bundle directory gets no
@@ -2565,7 +2672,7 @@ for shared_arguments in "" --panel-only-update; do
   assert_contains "${output}" "install -o kixdns-panel -g kixdns -m 0640 -- ${root}/etc/foo.json ${root}/etc-kixdns/pipeline.json" \
     "应把配置复制到新位置（${label}）"
   [[ ! -e ${root}/etc/foo.json ]] || { printf '断言失败：挪走以后公共目录里不能留着旧配置（%s）\n' "${label}" >&2; exit 1; }
-  assert_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "公共目录应交还 root（${label}）"
+  assert_contains "${output}" "chown -h root:root -- ${root}/etc"$'\n' "公共目录应交还 root（${label}）"
   assert_contains "${output}" "chmod 0755 -- ${root}/etc"$'\n' "公共目录应是 0755（${label}）"
   assert_contains "${output}" "ReadWritePaths=${root}/etc-kixdns /var/lib/kixdns-panel" "面板 unit 只能写新的配置目录（${label}）"
   assert_contains "${output}" "配置：从 ${root}/etc/foo.json 挪到 ${root}/etc-kixdns/pipeline.json；${root}/etc 里还放着别的文件，面板不再写它" \
@@ -2595,7 +2702,7 @@ config_directory_tree
 printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
 output="$(CONFIG_DIRECTORY_UNIT="${root}/etc/foo.json" config_directory_run)"
 assert_contains "${output}" "PLANNED reclaim ${root}/etc-kixdns/pipeline.json" "接回面板的 KixDNS 时公共目录里的配置也应挪走"
-assert_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "接回时公共目录应交还 root"
+assert_contains "${output}" "chown -h root:root -- ${root}/etc"$'\n' "接回时公共目录应交还 root"
 assert_not_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/etc"$'\n' "接回时不能再把公共目录交给面板"
 # 换配置位置以后安装失败：回滚放回原配置（内容、权限）、它所在目录的权限、补记之前的外部备份，删掉副本或新位置的配置。
 # The install fails after the config moved: rollback puts back the original config (content, mode), its directory's mode and

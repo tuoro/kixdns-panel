@@ -1603,6 +1603,50 @@ output="$(PANEL_OWNED=true ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}
 [[ ! -e ${host}/state/panel.db ]] || { printf '断言失败：配置里写着 panel.db 也不能把面板的数据库留下\n' >&2; exit 1; }
 [[ -f ${host}/state/geo/site-abc.dat ]] || { printf '断言失败：保留的 KixDNS 要读的 GeoSite 应留下\n' >&2; exit 1; }
 
+# R3：保留 KixDNS、删除面板数据时，配置所在的目录交给 root 之前也要查过不是符号链接。旧版的 /etc/kixdns-panel 归面板，面板能把
+# 迁移副本的目录换成指向别处的符号链接，chmod 就跟着改到别处去了。
+# R3: keeping KixDNS and removing the panel data, the config's directory is checked not to be a symlink before it goes to
+# root too. An older version's /etc/kixdns-panel is the panel's, which can swap the migration copy's directory for a
+# symlink to elsewhere, and chmod would follow it there.
+kept_host "${host}"
+mkdir -p "${host}/elsewhere"
+mv -- "${host}/etc-kixdns/pipeline.json" "${host}/elsewhere/pipeline.json"
+rm -rf -- "${host}/etc-kixdns"
+ln -s "${host}/elsewhere" "${host}/etc-kixdns"
+chmod 0700 "${host}/elsewhere"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true \
+  uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_equals "$(stat -c '%a' "${host}/elsewhere")" "700" "配置所在的目录是符号链接时不能跟着它改权限"
+rm -f -- "${host}/etc-kixdns"
+
+# R3：交给 root 时 chmod 只用在查过不是符号链接的目录和普通文件上。find 列出以后那个目录被换成指向别处的符号链接（这里让 find
+# 直接列出一个符号链接来模拟），chmod 不能跟着改到别处去。
+# R3: handing to root, chmod only touches a directory or plain file checked not to be a symlink. A directory swapped for a
+# symlink to elsewhere after find listed it (simulated here by find listing a symlink) must not lead chmod elsewhere.
+output="$(
+  base="${scratch}/kept-swap"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/state/bin" "${base}/elsewhere"
+  chmod 0700 "${base}/elsewhere"
+  PANEL_STATE_DIRECTORY="${base}/state"
+  kept_unit_files() { :; }
+  original_config_access() { printf 'kixdns 0640\n'; }
+  kept_kixdns_config() { :; }
+  chown() { :; }
+  find() {
+    if [[ " $* " == *" ! -type l -print0 "* ]]; then
+      ln -s "${base}/elsewhere" "${base}/state/swapped"
+      printf '%s\0' "${base}/state" "${base}/state/swapped"
+      return 0
+    fi
+    command find "$@"
+  }
+  hand_kept_kixdns_to_root > /dev/null 2>&1 || true
+  printf 'ELSEWHERE=%s\n' "$(stat -c '%a' "${base}/elsewhere")"
+)"
+assert_contains "${output}" "ELSEWHERE=700" "交给 root 时不能跟着换成符号链接的目录改权限"
+
 # 回归（S-D，R4）：panel.env 所在的目录面板能写时，它记的归属、待删的账号都不能信：照 KixDNS 的 unit 认，认不出的就保留，不删。
 # Regression (S-D, R4): when panel.env's directory is writable by the panel, what it records about ownership and accounts
 # left to remove cannot be trusted: the KixDNS unit decides, and what cannot be told is kept, not removed.
@@ -1614,6 +1658,20 @@ output="$(ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} uninstall_scratch_hos
 assert_contains "${output}" "${host}/panel-etc/panel.env 面板能改，它记的不能信" "panel.env 不能信时应说明"
 assert_equals "$(account_calls)" "userdel kixdns-panel;" "不能信的 panel.env 里记的待删账号不能删"
 [[ -f ${host}/etc-kixdns/pipeline.json ]] || { printf '断言失败：不能信的 panel.env 不能让卸载器删 /etc/kixdns\n' >&2; exit 1; }
+# R4：panel.env 不能信、它记的配置又和 unit 对得上时，只照它认 KixDNS 的配置和 unit；归属照 unit 定（unit 跑的是面板的程序、用的是
+# 这份配置，就是面板的），它写的「KixDNS 不归面板管」不认。
+# R4: when panel.env cannot be trusted but the config it records matches the unit, only the KixDNS config and unit are
+# taken from it; ownership follows the unit (running the panel's program on this config, it is the panel's), and its word
+# that the KixDNS is not the panel's is not taken.
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+printf 'KIXDNS_MANAGEMENT_ENABLED=false\n' >> "${host}/panel-etc/panel.env"
+chmod 0777 "${host}/panel-etc"
+: > "${account_log}"
+output="$(ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "panel.env 不能信、配置和 unit 对得上时卸载不应失败"
+[[ ! -e ${host}/units/kixdns.service ]] ||
+  { printf '断言失败：不能信的 panel.env 说 KixDNS 不归面板管也不认，照 unit 认出的面板的 KixDNS 要移除\n' >&2; exit 1; }
+chmod 0755 "${host}/panel-etc" 2>/dev/null || true
 
 # 状态目录单独挂载时删不掉挂载点：里面清空了就留着、说一声，不算卸载失败（S-F 的主机卸载时就是这样）。
 # A state directory mounted on its own cannot lose its mount point: once emptied it stays, this is said, and the uninstall
@@ -1633,10 +1691,59 @@ output="$(
   fail() { printf 'FAILED %s\n' "$*"; exit 1; }
   remove_state_directory "${mounted}"
   printf 'LEFT=%s\n' "$(find "${mounted}" -mindepth 1 | wc -l)"
-)"
+)" || true
 assert_contains "${output}" "是单独挂载的文件系统：里面已经清空，挂载点留着。" "单独挂载的状态目录清空后应说明"
 assert_contains "${output}" "LEFT=0" "单独挂载的状态目录里应清空"
 assert_not_contains "${output}" "FAILED" "单独挂载的状态目录不算卸载失败"
+
+# R1：卸载器每读一次记录都先验它：迁移前的备份（backup_value、external_backup_present）和 resolved 的记录（restore_resolved_stub）。
+# 只有 root 能进的目录里那份坏了（这里是别人能写），就挪走它、停下，不照它做事。
+# R1: the uninstaller checks a record at every read: the pre-migration backup (backup_value, external_backup_present) and
+# the resolved record (restore_resolved_stub). When the copy in the root-only directory is bad (here: writable by others),
+# it is moved away and the run stops, never acting on it.
+for reader in value present resolved; do
+  output="$(
+    base="${scratch}/record-reader"
+    rm -rf -- "${base}"
+    mkdir -p "${base}/records/external-backup" "${base}/records/resolved-stub" "${base}/etc"
+    chmod 0700 "${base}/records"
+    chmod 0770 "${base}/records/external-backup" "${base}/records/resolved-stub"
+    printf 'KIXDNS_SERVICE_UNIT=pwn.service\n' > "${base}/records/external-backup/install.env"
+    printf 'RESOLV_CONF_KIND=file\n' > "${base}/records/resolved-stub/install.env"
+    printf 'nameserver 192.0.2.1\n' > "${base}/records/resolved-stub/resolv.conf"
+    ROOT_CHAIN_TOP=${base}
+    ROOT_RECORDS="${base}/records"
+    EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+    RESOLVED_STATE="${ROOT_RECORDS}/resolved-stub"
+    RESOLVED_DROPIN="${base}/etc/resolved.conf.d/kixdns-panel.conf"
+    RESOLV_CONF="${base}/etc/resolv.conf"
+    KIXDNS_ACTION=remove
+    ROOT_UID="$(id -u)"
+    install() { mkdir -p "${@: -1}"; chmod 0700 "${@: -1}"; }
+    systemctl() { :; }
+    fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+    case ${reader} in
+      value)
+        record=${EXTERNAL_BACKUP}
+        printf 'VALUE=%s\n' "$(backup_value KIXDNS_SERVICE_UNIT)"
+        ;;
+      present)
+        record=${EXTERNAL_BACKUP}
+        external_backup_present && printf 'PRESENT\n'
+        ;;
+      resolved)
+        record=${RESOLVED_STATE}
+        restore_resolved_stub
+        ;;
+    esac
+    [[ ! -e ${record} ]] || printf 'STILL-TRUSTED-NAME\n'
+  )" || true
+  assert_contains "${output}" "不能信（别人能往里写）" "读记录（${reader}）之前应先验它"
+  assert_not_contains "${output}" "VALUE=pwn.service" "验不过的记录不能给出它记的值（${reader}）"
+  assert_not_contains "${output}" "PRESENT" "验不过的备份不能算数（${reader}）"
+  assert_not_contains "${output}" "已恢复原样" "验不过的 resolved 记录不能照着恢复（${reader}）"
+  assert_not_contains "${output}" "STILL-TRUSTED-NAME" "验不过的记录不能还留在会被信的名字上（${reader}）"
+done
 
 # 规则写在脚本开头 / The rules are written at the top of the script
 for rule in R1 R2 R3 R4; do
