@@ -344,4 +344,26 @@ download_argv="$(cat -- "${STUB_ARGV}")"
 assert_contains "${download_argv}" "--progress-bar" "终端下载应显示进度条"
 assert_not_contains " ${download_argv} " " --silent " "终端下载不应使用 --silent"
 
+# 回归（P1）：一键安装读的 Token 在面板的状态目录里，面板账号能把它换成指向 root 才能读的文件的符号链接；按文件属主的身份去读。
+# Regression (P1): the token one-click installs read lives in the panel's state directory, where the panel account can swap
+# it for a symlink to a file only root may read; it is read as the file's owner.
+token_dir="${WORK}/token"
+mkdir -p "${token_dir}"
+printf 'ghp_fromfile\n' > "${token_dir}/github-token"
+chmod 0600 "${token_dir}/github-token"
+sed -e "s|^readonly GITHUB_TOKEN_FILE=.*|readonly GITHUB_TOKEN_FILE=\"${token_dir}/github-token\"|" "${ONE_CLICK}" > "${token_dir}/one-click.sh"
+output="$(bash -c "
+  source '${token_dir}/one-click.sh'
+  TEMP_DIRECTORY='${token_dir}'
+  stat() { case \$2 in %u | %g) printf '990\\n' ;; *) command stat \"\$@\" ;; esac; }
+  setpriv() { printf 'setpriv %s\\n' \"\$*\" >&2; printf 'ghp_fromsetpriv\\n'; }
+  # timeout 是外部命令，跑不到上面的替身 / timeout is an external command and would miss the stand-in above
+  timeout() { shift; \"\$@\"; }
+  prepare_github_api_config
+  cat \"\${GITHUB_API_CONFIG}\"
+" 2>&1 || true)"
+assert_contains "${output}" "setpriv --reuid=990 --regid=990 --clear-groups -- head -c 300 -- ${token_dir}/github-token" \
+  "一键安装应按 Token 文件属主的身份读它"
+assert_contains "${output}" "Bearer ghp_fromsetpriv" "一键安装用的是按属主身份读到的 Token"
+
 printf '一键安装策略检查通过。\n'

@@ -156,6 +156,24 @@ cleanup() {
   fi
 }
 
+# Token 文件放在面板的状态目录里，面板账号能在检查和读取之间把它换成指向别处的符号链接或管道。按文件属主的身份去读（换了也只能
+# 读到那个身份本来就能读的），最多等 5 秒、最多读 300 字节。
+# The token file lives in the panel's state directory, where the panel account can swap it between the check and the read
+# for a symlink elsewhere or a pipe. It is read as the file's owner (a swap then only reaches what that owner could read
+# anyway), waiting 5 s and reading 300 bytes at most.
+read_token_file() {
+  local file=$1
+  local owner
+  local group
+  owner="$(stat -c '%u' -- "${file}")"
+  group="$(stat -c '%g' -- "${file}")"
+  if [[ ${owner} == "$(id -u)" ]]; then
+    timeout 5 head -c 300 -- "${file}"
+  else
+    timeout 5 setpriv --reuid="${owner}" --regid="${group}" --clear-groups -- head -c 300 -- "${file}"
+  fi
+}
+
 prepare_github_api_config() {
   local mode
   local token
@@ -165,7 +183,7 @@ prepare_github_api_config() {
   [[ ${mode} =~ ^[0-7]{3,4}$ ]] || fail "GitHub Token 文件权限无效"
   (((8#${mode} & 8#077) == 0)) || fail "GitHub Token 文件权限必须为 0600"
   [[ $(stat -c '%s' -- "${GITHUB_TOKEN_FILE}") -le 257 ]] || fail "GitHub Token 文件过大"
-  token="$(<"${GITHUB_TOKEN_FILE}")"
+  token="$(read_token_file "${GITHUB_TOKEN_FILE}")" || fail "GitHub Token 读取失败"
   [[ ${token} =~ ^(github_pat_|gh[pousr]_)[A-Za-z0-9_-]+$ ]] || fail "GitHub Token 格式无效"
   GITHUB_API_CONFIG="${TEMP_DIRECTORY}/github-api.conf"
   (umask 077; printf 'header = "Authorization: Bearer %s"\n' "${token}" > "${GITHUB_API_CONFIG}")

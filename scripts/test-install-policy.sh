@@ -2635,4 +2635,29 @@ assert_equals "$(jq -r '.message | length' "${online_update_root}/status/status.
 output="$(online_update_status "exit 0" "${latest_release}")"
 assert_equals "${output}" "complete 面板已更新到 v3.1.2" "安装器成功时状态应为完成"
 
+# 回归（P1）：Token 文件在面板的状态目录里，面板账号能在检查和读取之间把它换成指向 root 才能读的文件的符号链接。按文件属主的
+# 身份去读（换了也只能读到那个身份本来就能读的），最多等 5 秒。
+# Regression (P1): the token file lives in the panel's state directory, where the panel account can swap it between the
+# check and the read for a symlink to a file only root may read. It is read as the file's owner (a swap then only reaches
+# what that owner could read anyway), waiting 5 s at most.
+token_read_by() {
+  printf 'ghp_fromfile\n' > "${online_update_root}/github-token"
+  chmod 0600 "${online_update_root}/github-token"
+  bash -c "
+    source '${online_update_root}/updater.sh'
+    stat() { case \$2 in %u | %g) printf '990\\n' ;; *) command stat \"\$@\" ;; esac; }
+    setpriv() { printf 'setpriv %s\\n' \"\$*\" >&2; printf 'ghp_fromsetpriv\\n'; }
+    # timeout 是外部命令，跑不到上面的替身 / timeout is an external command and would miss the stand-in above
+    timeout() { shift; \"\$@\"; }
+    prepare_github_api_config
+    cat \"\${GITHUB_API_CONFIG}\"
+  " 2>&1 || true
+  rm -f -- "${online_update_root}/github-token" "${online_update_root}"/status/.github-api.*
+}
+output="$(token_read_by)"
+assert_contains "${output}" "setpriv --reuid=990 --regid=990 --clear-groups -- head -c 300 -- ${online_update_root}/github-token" \
+  "在线更新应按 Token 文件属主的身份读它"
+assert_contains "${output}" "Bearer ghp_fromsetpriv" "在线更新用的是按属主身份读到的 Token"
+
+
 printf '安装策略检查通过。\n'
