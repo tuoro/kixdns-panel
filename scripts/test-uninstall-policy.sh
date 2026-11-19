@@ -550,7 +550,8 @@ INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 # 卸载器单独分发、不能 source 安装器，这几个函数各有一份，必须一字不差：哪边改了另一边没跟上，这里就失败。
 # The uninstaller ships on its own and cannot source the installer, so these functions exist twice and must match
 # exactly: when one side changes without the other, this fails.
-for shared_function in wait_for_service_stable port_accepts_connection; do
+for shared_function in wait_for_service_stable port_accepts_connection owner_and_mode hand_back_directory \
+  unit_service_setting original_config_access hand_back_original_config panel_written_config_file; do
   installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}")"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   [[ -n ${installer_copy} && ${installer_copy} == "${uninstaller_copy}" ]] || {
@@ -924,6 +925,9 @@ inplace_host() {
     "${root}/state/bin/kixdns" "${root}/etc/kixdns.json" > "${root}/units/kixdns.service"
   printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
   chmod 0755 "${root}/state/bin/kixdns"
+  # 旧版原地迁移把原配置的目录和文件交给了面板 / The older in-place migration handed the original's directory and file to the panel
+  chmod 0750 "${root}/etc"
+  chmod 0640 "${root}/etc/kixdns.json"
 }
 inplace_host "${host}"
 output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
@@ -931,6 +935,36 @@ assert_not_contains "${output}" "RUN-FAILED" "原地迁移的主机卸载不应�
 assert_equals "$(cat "${host}/etc/kixdns.json" 2>/dev/null || printf missing)" '{"edited":true}' "原地迁移的主机卸载时不动它的配置"
 assert_contains "${output}" "它用的配置 ${host}/etc/kixdns.json 是面板最后保存的内容：旧版安装器迁移时直接改用了这个文件，迁移前的内容没有留底。" \
   "原地迁移的主机卸载时应说明配置是面板改过的"
+# 同类（I1）：没升级过、直接卸载恢复的旧版原地迁移主机，原配置和它的目录还归面板（kixdns-panel:kixdns，面板账号删掉以后就归了
+# 一个不存在的 UID；以非 root 账号运行的原来的 KixDNS 还读不到它）。恢复时和升级时一样交还：目录 root:root 0755，文件归 root、
+# 组是原来的 unit 运行用的组（这里以 root 运行：0600），并列出改了什么。
+# Sibling (I1): on a host an older version migrated in place and restored straight away without an upgrade, the original
+# config and its directory still belonged to the panel (kixdns-panel:kixdns, a UID that no longer exists once the panel
+# account is removed; an original KixDNS running as a non-root account could not even read it). The restore hands them back
+# as an upgrade does: the directory root:root 0755, the file owned by root with the group the original unit runs as (root
+# here: 0600), and lists what changed.
+assert_equals "$(stat -c '%a' "${host}/etc")" "755" "恢复时原配置的目录应交还、谁都能进"
+assert_equals "$(stat -c '%a' "${host}/etc/kixdns.json")" "600" "原来的 KixDNS 以 root 运行时原配置只留给 root"
+assert_contains "${output}" "旧版迁移时把原配置交给了面板，没有记下它原来的属主和权限，交还给原来的 KixDNS 时改成：" "恢复时应说明为什么改属主"
+assert_contains "${output}" "  ${host}/etc：" "恢复时应列出改了的目录"
+assert_contains "${output}" "  ${host}/etc/kixdns.json：" "恢复时应列出改了的文件"
+# 升级时已经改管副本的旧版原地迁移主机：恢复时删副本、放回原 unit，原配置里是升级那时面板保存的内容，要照实说。
+# A host an older version migrated in place and an upgrade moved onto a copy: the restore removes the copy and puts the
+# original unit back, and the original holds what the panel had saved at that upgrade, which is said as it is.
+inplace_host "${host}"
+mkdir -p "${host}/panel-etc/kixdns"
+printf '{"after-upgrade":true}\n' > "${host}/panel-etc/kixdns/pipeline.json"
+sed -i "s|^KIXDNS_CONFIG=.*|KIXDNS_CONFIG=${host}/panel-etc/kixdns/pipeline.json|" "${host}/panel-etc/panel.env"
+printf '%s\n' "KIXDNS_MANAGED_CONFIG=${host}/panel-etc/kixdns/pipeline.json" KIXDNS_LEGACY_IN_PLACE=true \
+  >> "${host}/state/external-backup/install.env"
+chmod 0755 "${host}/etc"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "改管副本以后的旧主机卸载不应失败"
+assert_contains "${output}" "它用的配置 ${host}/etc/kixdns.json 是升级到新版那时面板保存的内容（旧版安装器迁移时直接改用了这个文件，迁移前的内容没有留底），之后改的副本已删除。" \
+  "改管副本以后的旧主机恢复时应照实说原配置里是什么"
+assert_not_contains "${output}" "它用的是迁移前的配置" "改管副本以后的旧主机，原配置不是迁移前的"
+assert_not_contains "${output}" "没有记下它原来的属主和权限" "升级时已经交还过，恢复时不用再交还"
+[[ ! -e ${host}/panel-etc/kixdns ]] || { printf '断言失败：恢复时应删掉副本\n' >&2; exit 1; }
 
 # 原来的 KixDNS 的配置本来就在副本的位置、被原地接管：那是它自己的配置，不是副本，移除增强版时不能删。
 # The original KixDNS's config already sat where the copy goes and was managed in place: it is its own config, not a copy,

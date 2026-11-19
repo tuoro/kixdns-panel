@@ -30,9 +30,20 @@ PANEL_ENV=/etc/kixdns-panel/panel.env
 # on uninstall still runs the pre-migration one. uninstall.sh recognises the copy by the same location.
 MIGRATED_KIXDNS_CONFIG_DIRECTORY=/etc/kixdns-panel/kixdns
 MIGRATED_KIXDNS_CONFIG=/etc/kixdns-panel/kixdns/pipeline.json
-# 迁移前原来的 KixDNS 的配置；只在面板改管它的副本时有值。
-# The original KixDNS's config from before migration; set only when the panel manages a copy of it.
+# 迁移前原来的 KixDNS 的配置；只在面板改管它的副本时有值。升级时换配置位置（CONFIG_CONVERSION）时，是面板这次起不再写的那份。
+# The original KixDNS's config from before migration; set only when the panel manages a copy of it. When an upgrade moves the
+# config (CONFIG_CONVERSION), it is the one the panel stops writing from this run on.
 ORIGINAL_KIXDNS_CONFIG_PATH=""
+# 升级时把面板不该写的配置目录交还：legacy 是 v4.3.4 及更早原地迁移的主机，改管副本、原配置交还原来的 KixDNS；shared 是 #288
+# 以前全新安装把配置放进公共目录（比如 /etc）的主机，配置挪到 /etc/kixdns。空的时候不换。
+# On upgrade, hand back a config directory the panel should not write: legacy is a host migrated in place by v4.3.4 or
+# earlier, moved onto a copy with the original handed back to the original KixDNS; shared is a host whose fresh install before
+# #288 put the config in a shared directory (/etc, say), with the config moved to /etc/kixdns. Empty means no change.
+CONFIG_CONVERSION=""
+# 换配置位置时改了属主和权限的路径和改之前的样子，每项「路径|属主:属组 权限」，安装结果里列出来。
+# The paths whose owner and mode the move changed, with how they were before, each "path|owner:group mode", listed in the
+# install result.
+CONVERSION_BEFORE=()
 # 受管 KixDNS 的服务沙箱看不到的目录：deploy/systemd/kixdns.service 的 ProtectHome 和 PrivateTmp。
 # Directories the managed KixDNS's service sandbox cannot see: ProtectHome and PrivateTmp in deploy/systemd/kixdns.service.
 KIXDNS_HIDDEN_DIRECTORIES=(/home /root /run/user /tmp /var/tmp)
@@ -499,7 +510,12 @@ determine_install_kind() {
   else
     INSTALL_KIND=fresh
   fi
-  if [[ ${INSTALL_KIND} == upgrade || ${INSTALL_KIND} == migrate || ${INSTALL_KIND} == reclaim ]]; then
+  # 只有全新安装让 KixDNS 保持停止、不开机自启；别的都保持原来的状态。仅更新面板一般不动 KixDNS，可升级时换了配置位置
+  # （CONFIG_CONVERSION），unit 要改指新的配置、按原状态重启。
+  # Only a fresh install leaves KixDNS stopped and not enabled at boot; every other kind keeps its state. A panel-only update
+  # normally leaves KixDNS alone, but when the config moves on upgrade (CONFIG_CONVERSION) the unit is re-pointed at it and
+  # restarted as it was.
+  if [[ ${INSTALL_KIND} != fresh ]]; then
     PRESERVE_KIXDNS_STATE=true
   fi
 }
@@ -531,21 +547,18 @@ print_reclaim_backup_note() {
 refuse_unfinished_restore() {
   local marker=${EXTERNAL_BACKUP}/restore-incomplete
   local options
-  local unit
   [[ -f ${marker} ]] || return 0
   options="$(head -n 1 -- "${marker}")"
   [[ ${options} =~ ^--(keep|remove)-config$ ]] || options=--keep-config
-  unit="$(state_file_value "${EXTERNAL_BACKUP}/install.env" KIXDNS_SERVICE_UNIT || true)"
-  [[ ${unit} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${unit} != *..* ]] || unit=${KIXDNS_SERVICE_UNIT}
-  fail "上次卸载没有把原来的 KixDNS 恢复完，迁移前的备份还在 ${EXTERNAL_BACKUP}。先查明原因（journalctl -u ${unit} -n 50 --no-pager），再用同样的选项重新运行卸载，恢复做完以后再安装：
+  fail "上次卸载没有把原来的 KixDNS 恢复完，迁移前的备份还在 ${EXTERNAL_BACKUP}。先查明原因（journalctl -u ${KIXDNS_SERVICE_UNIT} -n 50 --no-pager），再用同样的选项重新运行卸载，恢复做完以后再安装：
   curl -fsSL ${UNINSTALL_URL} | sudo bash -s -- --remove-kixdns ${options} --yes
 不再恢复原来的 KixDNS 的话，删掉这份备份再安装：sudo rm -rf ${EXTERNAL_BACKUP}"
 }
 
 validate_install_mode() {
   local config_parent
-  refuse_unfinished_restore
   validate_unit
+  refuse_unfinished_restore
   validate_absolute_path "KixDNS 配置路径" "${KIXDNS_CONFIG_PATH}"
   validate_absolute_path "KixDNS 二进制路径" "${KIXDNS_BINARY_PATH}"
   validate_absolute_path "KixDNS 控制 Socket 路径" "${KIXDNS_CONTROL_SOCKET}"
@@ -562,23 +575,203 @@ validate_install_mode() {
   EXISTING_KIXDNS_BINARY_PATH=${KIXDNS_BINARY_PATH}
   KIXDNS_BINARY_PATH=${MANAGED_KIXDNS_BINARY}
   plan_migrated_config
+  plan_config_conversion
+}
+
+# 面板在配置目录里写的文件：配置本身，和面板写到一半留下的临时文件（.kixdns-panel- 加 6 个字母或数字，见 panel-server 的
+# temporaries.rs）。参数：文件名，配置的文件名。和 uninstall.sh 的同名函数一字不差（scripts/test-uninstall-policy.sh 校对）。
+# The files the panel writes in the config directory: the config itself, and the temporary files a write cut short leaves
+# (.kixdns-panel- and 6 letters or digits, see panel-server's temporaries.rs). Arguments: the file name, the config's name.
+# Identical to uninstall.sh's function of the same name (checked by scripts/test-uninstall-policy.sh).
+panel_written_config_file() {
+  [[ $1 == "$2" || $1 =~ ^\.kixdns-panel-[A-Za-z0-9]{6}$ ]]
+}
+
+# v4.3.4 及更早原地迁移的主机：外部备份在，备份里原配置就是 panel.env 记的这份，也还没记下副本（新的迁移都记）。配置本来就在
+# 副本位置的不算，那是原地管理。
+# A host migrated in place by v4.3.4 or earlier: the external backup is there, its original config is the very one panel.env
+# records, and it has no copy recorded yet (every new migration records one). A config already where the copy goes does not
+# count, being managed in place.
+legacy_in_place_migration() {
+  local recorded
+  external_backup_present || return 1
+  recorded="$(environment_value KIXDNS_CONFIG || true)"
+  [[ -n ${recorded} && ${recorded} != "${MIGRATED_KIXDNS_CONFIG}" ]] || return 1
+  [[ $(state_file_value "${EXTERNAL_BACKUP}/install.env" KIXDNS_CONFIG || true) == "${recorded}" ]] || return 1
+  [[ -z $(state_file_value "${EXTERNAL_BACKUP}/install.env" KIXDNS_MANAGED_CONFIG || true) ]]
+}
+
+# 记下的配置所在的目录还放着配置以外的东西：#288 以前全新安装可以把配置放进 /etc 这样的公共目录。面板固定的 /etc/kixdns 和副本
+# 的目录不算，面板写到一半的临时文件也不算。
+# The recorded config's directory holds more than the config: before #288 a fresh install could put the config in a shared
+# directory such as /etc. The panel's fixed /etc/kixdns and the copy's directory do not count, nor do temporary files the
+# panel was half way through writing.
+shared_config_directory() {
+  local directory
+  local name
+  directory="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+  [[ ${directory} != "${KIXDNS_CONFIG_DIRECTORY}" && ${directory} != "${MIGRATED_KIXDNS_CONFIG_DIRECTORY}" &&
+    -d ${directory} && ! -L ${directory} ]] || return 1
+  while IFS= read -r -d '' name; do
+    panel_written_config_file "${name}" "${KIXDNS_CONFIG_PATH##*/}" || return 0
+  done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
+  return 1
+}
+
+# 升级时面板不该再写的配置目录：在改动主机之前定下怎么换、记下要改的属主和权限原来的样子（见 CONFIG_CONVERSION）。
+# On upgrade, a config directory the panel should no longer write: decide how it moves and record how the owners and modes to
+# change were before, all before the host is touched (see CONFIG_CONVERSION).
+plan_config_conversion() {
+  local directory
+  local target=${KIXDNS_CONFIG_DIRECTORY}/pipeline.json
+  # 升级、仅更新面板，以及接回卸载时保留的面板自带 KixDNS：它跑的配置也可能是旧版交给面板的那份
+  # Upgrades, panel-only updates, and taking back the panel's own KixDNS kept by an uninstall: the config it runs may be the
+  # one an older version handed to the panel too
+  [[ ${EXISTING_PANEL} == true || ${INSTALL_KIND} == reclaim ]] || return 0
+  directory="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+  if legacy_in_place_migration; then
+    # install -d 会顺着符号链接改目标的属主和权限 / install -d would change the owner and mode of a symlink's target
+    [[ ! -L ${PANEL_CONFIG_DIRECTORY} && ! -L ${MIGRATED_KIXDNS_CONFIG_DIRECTORY} ]] ||
+      fail "${PANEL_CONFIG_DIRECTORY} 和 ${MIGRATED_KIXDNS_CONFIG_DIRECTORY} 不能是符号链接"
+    CONFIG_CONVERSION=legacy
+    ORIGINAL_KIXDNS_CONFIG_PATH=${KIXDNS_CONFIG_PATH}
+    KIXDNS_CONFIG_PATH=${MIGRATED_KIXDNS_CONFIG}
+    CONVERSION_BEFORE=("${directory}|$(owner_and_mode "${directory}")")
+    if [[ -f ${ORIGINAL_KIXDNS_CONFIG_PATH} ]]; then
+      CONVERSION_BEFORE+=("${ORIGINAL_KIXDNS_CONFIG_PATH}|$(owner_and_mode "${ORIGINAL_KIXDNS_CONFIG_PATH}")")
+    fi
+  elif ! external_backup_present && shared_config_directory; then
+    [[ ! -L ${KIXDNS_CONFIG_DIRECTORY} ]] || fail "${KIXDNS_CONFIG_DIRECTORY} 不能是符号链接"
+    [[ ! -e ${target} && ! -L ${target} ]] ||
+      fail "KixDNS 配置在 ${directory} 里，这个目录还放着别的文件，不能再交给面板写。安装器要把配置挪到 ${target}，可那里已经有文件。
+先把 ${target} 移走再重新运行；现有安装未作修改。"
+    CONFIG_CONVERSION=shared
+    ORIGINAL_KIXDNS_CONFIG_PATH=${KIXDNS_CONFIG_PATH}
+    KIXDNS_CONFIG_PATH=${target}
+    CONVERSION_BEFORE=("${directory}|$(owner_and_mode "${directory}")")
+  fi
+}
+
+# 下面这几个函数和 uninstall.sh 的同名函数一字不差（scripts/test-uninstall-policy.sh 校对）：卸载器单独分发，不能 source 安装器。
+# The functions below are identical to uninstall.sh's of the same names (checked by scripts/test-uninstall-policy.sh): the
+# uninstaller ships on its own and cannot source the installer.
+
+# 「属主:属组 权限」，权限写成四位八进制 / "owner:group mode", the mode as four octal digits
+owner_and_mode() {
+  local mode
+  mode="$(stat -c '%a' -- "$1")"
+  printf '%s %04o\n' "$(stat -c '%U:%G' -- "$1")" "$((8#${mode}))"
+}
+
+# 把一个面板用过、现在要交还的目录改归 root:root、权限 0755。面板自己的目录（面板配置目录、状态目录和它们下面的）不交还。
+# Hands a directory the panel used back to root:root with mode 0755. The panel's own directories (its config and state
+# directories and what lies below them) are not handed back.
+hand_back_directory() {
+  local directory=$1
+  case ${directory} in
+    "${PANEL_CONFIG_DIRECTORY}" | "${PANEL_CONFIG_DIRECTORY}"/* | "${PANEL_STATE_DIRECTORY}" | "${PANEL_STATE_DIRECTORY}"/*) return 0 ;;
+  esac
+  [[ -d ${directory} && ! -L ${directory} ]] || return 0
+  chown root:root -- "${directory}"
+  chmod 0755 -- "${directory}"
+}
+
+# unit 文件（主文件和它的 drop-in，按 systemd 的顺序给）里 [Service] 的一项，最后写的算数。
+# A [Service] setting of a unit (the main file and its drop-ins, in systemd's order), the last one written winning.
+unit_service_setting() {
+  local key=$1
+  shift
+  awk -v key="${key}" '
+    FNR == 1 { section = "" }
+    /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section); next }
+    section == "[Service]" && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+    }
+    END { print value }
+  ' "$@"
+}
+
+# 原配置交还以后的属组和权限，输出「组 权限」。原来的 KixDNS 以 root 运行：只留给 root（0600）；以别的账号运行：给它运行用的组读
+# （Group=，没写就是账号的主组，0640）；看不出来（没有备份的 unit、DynamicUser、写着说明符、账号或组不存在）：谁都能读（0644）。
+# The group and mode the original config gets back, printed as "group mode". The original KixDNS ran as root: root alone
+# (0600); as another account: readable by the group it ran as (Group=, or else the account's primary group, 0640); when it
+# cannot be told (no unit backed up, DynamicUser, specifiers, a missing account or group): readable by anyone (0644).
+original_config_access() {
+  local files=()
+  local file
+  local user
+  local group
+  local dynamic
+  for file in "$@"; do
+    [[ ! -f ${file} ]] || files+=("${file}")
+  done
+  if [[ ${#files[@]} -eq 0 ]]; then
+    printf 'root 0644\n'
+    return 0
+  fi
+  user="$(unit_service_setting User "${files[@]}")"
+  group="$(unit_service_setting Group "${files[@]}")"
+  dynamic="$(unit_service_setting DynamicUser "${files[@]}")"
+  case ${dynamic,,} in
+    1 | yes | true | on)
+      printf 'root 0644\n'
+      return 0
+      ;;
+  esac
+  if [[ ${user} == *%* || ${group} == *%* ]]; then
+    printf 'root 0644\n'
+  elif [[ -z ${user} || ${user} == root || ${user} == 0 ]]; then
+    printf 'root 0600\n'
+  elif [[ -n ${group} ]]; then
+    if getent group "${group}" >/dev/null 2>&1; then
+      printf '%s 0640\n' "${group}"
+    else
+      printf 'root 0644\n'
+    fi
+  else
+    group="$(getent passwd "${user}" 2>/dev/null | cut -d: -f4 || true)"
+    if [[ -n ${group} ]]; then
+      printf '%s 0640\n' "${group}"
+    else
+      printf 'root 0644\n'
+    fi
+  fi
+}
+
+# 把旧版原地迁移交给面板的原配置和它所在的目录交还给原来的 KixDNS：目录 root:root 0755，文件按 original_config_access。旧版的
+# 备份没记下原来的属主和权限，只能这样定。参数：原配置，原来的 unit 的文件（主文件和 drop-in）。
+# Hands the original config an older in-place migration gave the panel, and its directory, back to the original KixDNS: the
+# directory root:root 0755, the file as original_config_access says. The older backup never recorded the original owner and
+# mode, so this is all there is to go on. Arguments: the original config, the files of the original unit (main and drop-ins).
+hand_back_original_config() {
+  local config=$1
+  local group
+  local mode
+  shift
+  hand_back_directory "$(dirname -- "${config}")"
+  [[ -f ${config} && ! -L ${config} ]] || return 0
+  read -r group mode < <(original_config_access "$@")
+  chown "root:${group}" -- "${config}"
+  chmod "${mode}" -- "${config}"
 }
 
 # 面板原子写配置（同一目录里写临时文件再改名），所以 install_configuration 把配置所在的目录交给它：改归 kixdns-panel、
 # 权限 0750，面板 unit 的 ReadWritePaths 放开它。安装器不改、也不让面板写它没建的目录，所以这个目录只能是：panel.env 记下的、
-# 或者主机上已有 KixDNS 的 unit 写着的配置所在的目录（以前就交给了面板，照旧：v4.3.4 及更早原地迁移的主机因此照常升级）；
-# 还不存在、由安装器新建的目录；面板固定的 /etc/kixdns 和迁移副本的目录。除了记录里的，放着 panel.env 的面板配置目录即使
-# 还不存在也不行：面板能改 panel.env，下次以 root 运行的安装器就会照着它改别的目录。要在 validate_install_mode 之后、
-# 改动主机之前调用：迁移时检查的是副本，不是原配置。
+# 或者主机上已有 KixDNS 的 unit 写着的配置所在的目录（以前就交给了面板，照旧；旧版原地迁移交出去的公共目录，validate_install_mode
+# 已经换走了，见 plan_config_conversion）；还不存在、由安装器新建的目录；面板固定的 /etc/kixdns 和迁移副本的目录。除了记录里的，
+# 放着 panel.env 的面板配置目录即使还不存在也不行：面板能改 panel.env，下次以 root 运行的安装器就会照着它改别的目录。要在
+# validate_install_mode 之后、改动主机之前调用：迁移时检查的是副本，不是原配置。
 # The panel writes its config atomically (a temporary file in the same directory, then a rename), so install_configuration
 # hands it the config's directory: owner kixdns-panel, mode 0750, opened by the panel unit's ReadWritePaths. The installer
 # neither changes nor opens for the panel a directory it did not create, so that directory may only be: the directory of
-# the config panel.env records or the existing KixDNS's unit names (handed to the panel before and kept as it is, which keeps
-# hosts migrated in place by v4.3.4 and earlier upgrading); one that does not exist yet, which the installer creates; the
-# panel's fixed /etc/kixdns or the migration copy's directory. Unless recorded, the panel's config directory, which holds
-# panel.env, does not qualify even before it exists: a panel that could rewrite panel.env would steer the next installer run,
-# as root, onto other directories. Call it after validate_install_mode and before the host is touched: on migration the copy
-# is checked, not the original.
+# the config panel.env records or the existing KixDNS's unit names (handed to the panel before and kept as it is; a shared
+# directory an older in-place migration gave away has been moved off by validate_install_mode, see plan_config_conversion);
+# one that does not exist yet, which the installer creates; the panel's fixed /etc/kixdns or the migration copy's directory.
+# Unless recorded, the panel's config directory, which holds panel.env, does not qualify even before it exists: a panel that
+# could rewrite panel.env would steer the next installer run, as root, onto other directories. Call it after
+# validate_install_mode and before the host is touched: on migration the copy is checked, not the original.
 require_dedicated_config_directory() {
   local config_parent
   local recorded
@@ -732,6 +925,16 @@ note_panel_unreadable_files() {
   done < <(original_config_geo_files || true)
 }
 
+# 安装包的 unit，或者仅更新面板时已装的那份（只改配置路径，别的照旧）。/ The package's unit, or the installed one on a
+# panel-only update (only the config path changes, the rest stays as it is).
+kixdns_unit_template() {
+  if [[ ${INSTALL_KIND} == panel-only && -f ${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT} ]]; then
+    printf '%s\n' "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}"
+  else
+    printf '%s\n' "${PACKAGE_ROOT}/deploy/systemd/kixdns.service"
+  fi
+}
+
 render_kixdns_unit() {
   awk -v config_path="${KIXDNS_CONFIG_PATH}" -v control_socket="${KIXDNS_CONTROL_SOCKET}" '
     /^ConditionPathExists=/ { print "ConditionPathExists=" config_path; next }
@@ -740,7 +943,7 @@ render_kixdns_unit() {
       next
     }
     { print }
-  ' "${PACKAGE_ROOT}/deploy/systemd/kixdns.service"
+  ' "$(kixdns_unit_template)"
 }
 
 file_sha256() {
@@ -752,11 +955,14 @@ plan_kixdns_changes() {
   KIXDNS_BINARY_CHANGED=false
   KIXDNS_UNIT_CHANGED=false
   KIXDNS_RESTART=false
-  [[ ${INSTALL_KIND} != panel-only ]] || return 0
+  # 仅更新面板不换程序；只在升级时换了配置位置（CONFIG_CONVERSION）时改 unit 里的配置路径。
+  # A panel-only update never replaces the program; it changes the config path in the unit only when the config moves on
+  # upgrade (CONFIG_CONVERSION).
+  [[ ${INSTALL_KIND} != panel-only || -n ${CONFIG_CONVERSION} ]] || return 0
   # 同一个 KixDNS 重装时不停服务：DNS 中断只在程序或 unit 真的变了时才值得。
   # Reinstalling the same KixDNS does not stop it: a DNS outage is only worth it when the binary or unit really changed.
-  if [[ ! -f ${MANAGED_KIXDNS_BINARY} ]] ||
-    [[ $(file_sha256 "${PACKAGE_ROOT}/bin/kixdns") != "$(file_sha256 "${MANAGED_KIXDNS_BINARY}")" ]]; then
+  if [[ ${INSTALL_KIND} != panel-only ]] && { [[ ! -f ${MANAGED_KIXDNS_BINARY} ]] ||
+    [[ $(file_sha256 "${PACKAGE_ROOT}/bin/kixdns") != "$(file_sha256 "${MANAGED_KIXDNS_BINARY}")" ]]; }; then
     KIXDNS_BINARY_CHANGED=true
   fi
   if [[ ! -f ${unit_file} ]] || [[ $(render_kixdns_unit) != "$(<"${unit_file}")" ]]; then
@@ -767,8 +973,10 @@ plan_kixdns_changes() {
   fi
 }
 
+# 仅更新面板时两个都是 false，除非换了配置位置（plan_kixdns_changes）/ Both are false on a panel-only update unless the config
+# moves (plan_kixdns_changes)
 kixdns_replaced() {
-  [[ ${INSTALL_KIND} != panel-only && (${KIXDNS_BINARY_CHANGED} == true || ${KIXDNS_UNIT_CHANGED} == true) ]]
+  [[ ${KIXDNS_BINARY_CHANGED} == true || ${KIXDNS_UNIT_CHANGED} == true ]]
 }
 
 # 输出 KixDNS 要监听的「协议 地址」；配置里没写时按上游默认的 0.0.0.0:53。
@@ -1177,10 +1385,11 @@ rollback_install() {
     [[ ${KIXDNS_UNIT_CHANGED} == false ]] ||
       restore_path "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}" kixdns-service
   fi
-  if [[ ${INSTALL_KIND} != panel-only ]]; then
-    restore_path /var/lib/kixdns-panel/bundle bundled-metadata
+  [[ ${INSTALL_KIND} == panel-only ]] || restore_path /var/lib/kixdns-panel/bundle bundled-metadata
+  if [[ ${INSTALL_KIND} != panel-only || -n ${CONFIG_CONVERSION} ]]; then
     restore_managed_config
   fi
+  restore_original_config
   restore_path "${PANEL_SERVER_BINARY}" panel-server
   restore_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
   restore_path "${LIBEXEC_DIRECTORY}/kixdns-panel-one-click-install" panel-one-click-install
@@ -1317,6 +1526,34 @@ restore_managed_config() {
   fi
 }
 
+# 换配置位置时面板不再写的那份配置：回滚要放回它的内容、属主和权限（cp -a 原样带着），还有它所在目录的属主和权限；旧版原地迁移
+# 的主机上还有这次补记了副本的外部备份。
+# The config the panel stops writing when the config moves: rollback puts back its content, owner and mode (cp -a carries
+# them as they were) and the owner and mode of its directory; on a host an older version migrated in place, also the external
+# backup this run added the copy to.
+backup_original_config() {
+  local directory
+  [[ -n ${CONFIG_CONVERSION} ]] || return 0
+  directory="$(dirname -- "${ORIGINAL_KIXDNS_CONFIG_PATH}")"
+  backup_path "${ORIGINAL_KIXDNS_CONFIG_PATH}" original-config
+  stat -c '%u %g %a' -- "${directory}" > "${BACKUP_ROOT}/original-config-directory.meta"
+  [[ ${CONFIG_CONVERSION} != legacy ]] || backup_path "${EXTERNAL_BACKUP}/install.env" external-backup-environment
+}
+
+restore_original_config() {
+  local directory
+  local owner
+  local group
+  local mode
+  [[ -n ${CONFIG_CONVERSION} && -f ${BACKUP_ROOT}/original-config-directory.meta ]] || return 0
+  directory="$(dirname -- "${ORIGINAL_KIXDNS_CONFIG_PATH}")"
+  restore_path "${ORIGINAL_KIXDNS_CONFIG_PATH}" original-config
+  read -r owner group mode < "${BACKUP_ROOT}/original-config-directory.meta"
+  chown "${owner}:${group}" -- "${directory}"
+  chmod "${mode}" -- "${directory}"
+  [[ ${CONFIG_CONVERSION} != legacy ]] || restore_path "${EXTERNAL_BACKUP}/install.env" external-backup-environment
+}
+
 preserve_external_install() {
   [[ ${INSTALL_KIND} == migrate ]] || return 0
   # 卸载时选了保留、留下来的面板自带 KixDNS（跑的是面板状态目录里的程序）不是外部安装：重装后接着管它，不备份成
@@ -1393,9 +1630,14 @@ prepare_rollback() {
   if [[ ${INSTALL_KIND} != panel-only ]]; then
     backup_path "${MANAGED_KIXDNS_BINARY}" kixdns
     backup_path /var/lib/kixdns-panel/bundle bundled-metadata
+  fi
+  # 仅更新面板也会在换配置位置时改 KixDNS 的 unit 和配置 / A panel-only update changes the KixDNS unit and config too when
+  # the config moves
+  if [[ ${INSTALL_KIND} != panel-only || -n ${CONFIG_CONVERSION} ]]; then
     backup_path "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}" kixdns-service
     backup_managed_config
   fi
+  backup_original_config
   backup_path "${PANEL_SERVER_BINARY}" panel-server
   backup_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
   backup_path "${LIBEXEC_DIRECTORY}/kixdns-panel-one-click-install" panel-one-click-install
@@ -1651,6 +1893,7 @@ install_configuration() {
     chown "${PANEL_USER}:${KIXDNS_GROUP}" -- "${KIXDNS_CONFIG_PATH}"
     chmod 0640 -- "${KIXDNS_CONFIG_PATH}"
   fi
+  hand_back_config_directory
   if [[ ! -e ${PANEL_ENV} ]]; then
     sed -e "s/^KIXDNS_INSTALLED_SOURCE=.*/KIXDNS_INSTALLED_SOURCE=${KIXDNS_SOURCE}/" \
       -e "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${KIXDNS_BUILD_COMMIT}/" \
@@ -1661,6 +1904,36 @@ install_configuration() {
     chmod 0640 "${PANEL_ENV}"
   fi
   update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
+}
+
+# 升级时换了配置位置：面板不再写原来那份，把它（和它所在的目录）交还。旧版原地迁移的主机，原配置一字不动地留给原来的 KixDNS，
+# 外部备份补记副本，卸载恢复时就和新的迁移一样删副本、放回原 unit；公共目录里的配置已经复制到 /etc/kixdns，删掉旧的。
+# The config moved on upgrade: the panel no longer writes the old one, so it (and its directory) is handed back. On a host
+# an older version migrated in place, the original stays exactly as it is for the original KixDNS and the external backup
+# gains the copy, so an uninstall restore removes the copy and puts the original unit back as for a new migration; a config
+# in a shared directory has been copied to /etc/kixdns, and the old one goes.
+hand_back_config_directory() {
+  local temporary
+  case ${CONFIG_CONVERSION} in
+    legacy)
+      hand_back_original_config "${ORIGINAL_KIXDNS_CONFIG_PATH}" "${EXTERNAL_BACKUP}/kixdns.service" \
+        "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}.d"/*.conf
+      temporary="$(mktemp "${EXTERNAL_BACKUP}/.install.env.XXXXXX")"
+      {
+        grep -v -E '^KIXDNS_(MANAGED_CONFIG|LEGACY_IN_PLACE)=' -- "${EXTERNAL_BACKUP}/install.env" || true
+        printf 'KIXDNS_MANAGED_CONFIG=%s\n' "${KIXDNS_CONFIG_PATH}"
+        # 原配置里留的是升级这时面板保存的内容，不是迁移前的；卸载恢复时照实说 / The original holds what the panel had saved
+        # at this upgrade, not the pre-migration content; an uninstall restore says so
+        printf 'KIXDNS_LEGACY_IN_PLACE=true\n'
+      } > "${temporary}"
+      chmod 0600 -- "${temporary}"
+      mv -fT -- "${temporary}" "${EXTERNAL_BACKUP}/install.env"
+      ;;
+    shared)
+      rm -f -- "${ORIGINAL_KIXDNS_CONFIG_PATH}"
+      hand_back_directory "$(dirname -- "${ORIGINAL_KIXDNS_CONFIG_PATH}")"
+      ;;
+  esac
 }
 
 install_bundled_metadata() {
@@ -1691,7 +1964,7 @@ install_services() {
   panel_uid="$(id -u "${PANEL_USER}")"
   panel_temporary="$(mktemp /etc/systemd/system/.kixdns-panel.XXXXXX)"
   helper_temporary="$(mktemp /etc/systemd/system/.kixdns-panel-helper.XXXXXX)"
-  if [[ ${INSTALL_KIND} != panel-only && ${KIXDNS_UNIT_CHANGED} == true ]]; then
+  if [[ ${KIXDNS_UNIT_CHANGED} == true ]]; then
     kixdns_temporary="$(mktemp /etc/systemd/system/.kixdns.XXXXXX)"
     render_kixdns_unit > "${kixdns_temporary}"
     install -o root -g root -m 0644 "${kixdns_temporary}" "${kixdns_unit}"
@@ -1821,6 +2094,31 @@ print_port53_notice() {
   esac
 }
 
+# 升级时换了配置位置：说清配置现在在哪、原来那份怎样了，列出改了属主和权限的路径（改之前 → 现在）。
+# The config moved on upgrade: say where it is now and what became of the old one, listing the paths whose owner and mode
+# changed (before → now).
+print_conversion_summary() {
+  local entry
+  local path
+  case ${CONFIG_CONVERSION} in
+    legacy)
+      printf '配置：改为管理副本 %s，以后在面板里改的都写进副本；原配置 %s 留着升级这时的内容，交还给原来的 KixDNS\n' \
+        "${KIXDNS_CONFIG_PATH}" "${ORIGINAL_KIXDNS_CONFIG_PATH}"
+      printf '旧版迁移时把原配置交给了面板，没有记下它原来的属主和权限，这次改成：\n'
+      ;;
+    shared)
+      printf '配置：从 %s 挪到 %s；%s 里还放着别的文件，面板不再写它\n' "${ORIGINAL_KIXDNS_CONFIG_PATH}" \
+        "${KIXDNS_CONFIG_PATH}" "$(dirname -- "${ORIGINAL_KIXDNS_CONFIG_PATH}")"
+      ;;
+    *) return 0 ;;
+  esac
+  for entry in "${CONVERSION_BEFORE[@]}"; do
+    path=${entry%%|*}
+    [[ -e ${path} ]] || continue
+    printf '  %s：%s → %s\n' "${path}" "${entry#*|}" "$(owner_and_mode "${path}")"
+  done
+}
+
 print_summary() {
   local panel_url=$1
   local package_label
@@ -1871,9 +2169,16 @@ print_summary() {
       fi
       ;;
     panel-only)
-      printf 'KixDNS：未替换，配置与运行状态保持不变\n'
+      if ! kixdns_replaced; then
+        printf 'KixDNS：未替换，配置与运行状态保持不变\n'
+      elif [[ ${KIXDNS_RESTART} == true ]]; then
+        printf 'KixDNS：程序未替换，unit 改用新的配置路径，已按原状态重启（运行中）\n'
+      else
+        printf 'KixDNS：程序未替换，unit 改用新的配置路径，保持原状态（已停止）\n'
+      fi
       ;;
   esac
+  print_conversion_summary
   print_port53_notice
   if [[ ${TRUSTED_PROXIES_NOTICE} == true ]]; then
     printf '反向代理：panel.env 还信任本机代理（旧版的默认值 127.0.0.1/32,::1/128）；这台主机上没有反向代理时，清空它更安全：\n'
@@ -1959,7 +2264,8 @@ main() {
     KIXDNS_BUILD_COMMIT="$(environment_value KIXDNS_INSTALLED_COMMIT || true)"
     KIXDNS_SOURCE_ID="$(environment_value KIXDNS_INSTALLED_SOURCE_ID || true)"
     KIXDNS_SOURCE="$(environment_value KIXDNS_INSTALLED_SOURCE || true)"
-  elif kixdns_replaced; then
+  fi
+  if kixdns_replaced; then
     if [[ ${KIXDNS_RESTART} == true ]]; then
       printf '正在停止 %s 以替换 KixDNS，完成后恢复原状态。\n' "${KIXDNS_SERVICE_UNIT}"
       systemctl stop "${KIXDNS_SERVICE_UNIT}"
@@ -1984,7 +2290,7 @@ main() {
   install_web
   install_builtin_geo
   install_bundled_metadata
-  if [[ ${INSTALL_KIND} == panel-only ]]; then
+  if [[ ${INSTALL_KIND} == panel-only && -z ${CONFIG_CONVERSION} ]]; then
     update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
   else
     install_configuration

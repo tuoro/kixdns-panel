@@ -422,7 +422,12 @@ assert_equals "$(install_kind_of false false true)" "migrate true" "已有非面
 assert_equals "$(install_kind_of false false true "${MANAGED_KIXDNS_BINARY}")" "reclaim true" \
   "上次卸载时保留的面板自带 KixDNS 是接回来，保持状态"
 assert_equals "$(install_kind_of false true true)" "upgrade true" "已有面板是升级并保持状态"
-assert_equals "$(install_kind_of true true true)" "panel-only false" "仅更新面板不碰 KixDNS 状态"
+# 仅更新面板一般不动 KixDNS（下面 plan_of panel-only 断言程序、unit 都不变、不重启）；可升级时换了配置位置（I1），unit 要改指
+# 新的配置，这时得按原来的状态重启它，不能当成全新安装停掉、禁用。以前这里断言 false，是因为那时仅更新面板从不改 unit。
+# A panel-only update normally leaves KixDNS alone (plan_of panel-only below asserts no binary or unit change and no
+# restart); but when the config moves on upgrade (I1) the unit is re-pointed at it, and KixDNS must then restart as it was,
+# not be stopped and disabled as on a fresh install. This asserted false before, when a panel-only update never touched the unit.
+assert_equals "$(install_kind_of true true true)" "panel-only true" "仅更新面板改 unit 时也保持 KixDNS 原来的状态"
 
 package_fixture="${WORK}/package"
 mkdir -p "${package_fixture}/bin" "${package_fixture}/deploy/systemd" "${WORK}/units" "${WORK}/managed"
@@ -1461,8 +1466,18 @@ config_directory_run() {
     chmod() { printf 'chmod %s\n' "$*"; }
     rm() { [[ ${*: -1} != "${root}"/* ]] || command rm "$@"; }
     id() { printf '990\n'; }
+    # 原来的 KixDNS 以 kxu 账号运行时，它的主组是 1001；还有个 staff 组 / When the original KixDNS runs as the kxu account, its
+    # primary group is 1001; there is a staff group too
+    getent() {
+      case "$1 $2" in
+        "passwd kxu") printf 'kxu:x:1001:1001::/nonexistent:/usr/sbin/nologin\n' ;;
+        "group staff") printf 'staff:x:50:\n' ;;
+        *) return 2 ;;
+      esac
+    }
     mktemp() { local file="${root}/temporary.${RANDOM}"; : > "${file}"; printf '%s\n' "${file}"; }
     update_panel_environment() { :; }
+    PANEL_STATE_DIRECTORY="${root}/state"
     parse_arguments "$@"
     load_existing_panel_settings
     # 没有 unit 时不检测：主机上 PATH 里或 /usr/local/bin 下有 kixdns 会把这里变成迁移。
@@ -1477,9 +1492,12 @@ config_directory_run() {
     validate_install_mode
     require_dedicated_config_directory
     plan_kixdns_changes
-    printf 'PLANNED %s %s\n' "${INSTALL_KIND}" "${KIXDNS_CONFIG_PATH}"
+    printf 'PLANNED %s %s restart=%s unit=%s\n' "${INSTALL_KIND}" "${KIXDNS_CONFIG_PATH}" "${KIXDNS_RESTART}" \
+      "${KIXDNS_UNIT_CHANGED}"
     install_configuration
     install_services
+    printf 'UNIT=%s\n' "$(render_kixdns_unit | grep '^ExecStart=')"
+    print_summary http://192.168.1.20:5738
   ) 2>&1 || true
 }
 # 改动了这个目录或它里面那份配置的属主、权限的命令。/ The commands that changed the owner or mode of this directory or of the config in it.
@@ -1550,17 +1568,143 @@ assert_contains "${output}" "安装失败：KixDNS 配置不能放在 ${root}/pa
 assert_contains "${output}" "${config_directory_message}" "拒绝时应说明换到哪里"
 assert_not_contains "${output}" "PLANNED" "配置放在面板配置目录时应在改动主机之前拒绝"
 
-# 升级沿用 panel.env 记下的路径：v4.3.4 及更早原地迁移、配置所在目录已经归面板的主机照旧，不在升级时拒绝。
-# An upgrade keeps the path panel.env records: hosts migrated in place by v4.3.4 and earlier, whose config directory is the
-# panel's already, carry on as before and are not refused on upgrade.
-config_directory_tree
-mkdir -p "${root}/panel-etc"
-printf 'KIXDNS_CONFIG=%s\n' "${root}/etc/foo.json" > "${root}/panel-etc/panel.env"
-: > "${root}/panel-server"
-chmod 0755 "${root}/panel-server"
+# 全新安装时自己建的配置目录（只放着这份配置）：升级沿用 panel.env 记下的路径，照旧交给面板。
+# A config directory a fresh install created for itself (holding this config only): an upgrade keeps the path panel.env
+# records and hands it to the panel as before.
+upgrade_host_tree() {
+  config_directory_tree
+  mkdir -p "${root}/panel-etc"
+  printf 'KIXDNS_CONFIG=%s\nKIXDNS_SERVICE_UNIT=kixdns.service\n' "${root}/etc/foo.json" > "${root}/panel-etc/panel.env"
+  : > "${root}/panel-server"
+  chmod 0755 "${root}/panel-server"
+  (
+    PACKAGE_ROOT="${root}/package"
+    KIXDNS_CONFIG_PATH="${root}/etc/foo.json"
+    render_kixdns_unit > "${root}/units/kixdns.service"
+  )
+}
+upgrade_host_tree
 output="$(config_directory_run)"
 assert_contains "${output}" "PLANNED upgrade ${root}/etc/foo.json" "升级应沿用 panel.env 记下的配置路径"
-assert_contains "${output}" "ReadWritePaths=${root}/etc /var/lib/kixdns-panel" "升级时旧主机的面板 unit 照旧"
+assert_contains "${output}" "ReadWritePaths=${root}/etc /var/lib/kixdns-panel" "只放着这份配置的目录照旧交给面板"
+assert_not_contains "${output}" "配置：" "没换配置位置时不应说配置"
+
+# 回归（I1）：v4.3.4 及更早原地迁移的主机，原配置所在的目录（比如 /etc）一直归面板（kixdns-panel:kixdns 0750，面板 unit 的
+# ReadWritePaths 放开它，等于 root），每次重装还重新交一遍。以前这里断言的「升级时旧主机的面板 unit 照旧」（ReadWritePaths 是
+# 原配置的目录）断言的正是这个错。现在升级时改成新迁移的样子：复制到副本、panel.env 和 unit 改指副本、备份记下副本，原配置和
+# 它的目录交还给原来的 KixDNS：目录 root:root 0755，文件归 root、组是原来的 unit 运行用的组、0640。
+# Regression (I1): on hosts migrated in place by v4.3.4 and earlier, the original config's directory (/etc, say) stayed the
+# panel's (kixdns-panel:kixdns 0750, opened by the panel unit's ReadWritePaths, as good as root), handed over again on every
+# reinstall. The "old host's panel unit unchanged on upgrade" asserted here before (ReadWritePaths on the original's
+# directory) asserted exactly that bug. An upgrade now turns it into what a new migration makes: a copy, panel.env and the
+# unit pointing at it, the backup recording it, and the original and its directory handed back to the original KixDNS: the
+# directory root:root 0755, the file owned by root with the group the original unit runs as, 0640.
+legacy_host_tree() {
+  upgrade_host_tree
+  : > "${root}/etc/passwd-like"
+  mkdir -p "${root}/external-backup"
+  printf '%s\n' KIXDNS_SERVICE_UNIT=kixdns.service "KIXDNS_CONFIG=${root}/etc/foo.json" KIXDNS_BINARY=/usr/local/bin/kixdns \
+    KIXDNS_WAS_ACTIVE=true KIXDNS_WAS_ENABLED=true > "${root}/external-backup/install.env"
+  printf '[Unit]\nDescription=x\n[Service]\n%bExecStart=/usr/local/bin/kixdns run --config %s\n' "${1:-}" "${root}/etc/foo.json" \
+    > "${root}/external-backup/kixdns.service"
+}
+for legacy_arguments in "" --panel-only-update; do
+  legacy_host_tree 'User=kxu\n'
+  # shellcheck disable=SC2086 # 空参数就是不带参数 / An empty argument means none
+  output="$(config_directory_run ${legacy_arguments})"
+  label=${legacy_arguments:-升级}
+  assert_contains "${output}" "${root}/panel-etc/kixdns/pipeline.json restart=false unit=true" "旧版原地迁移的主机应改管副本、换 unit（${label}）"
+  assert_contains "${output}" "ReadWritePaths=${root}/panel-etc/kixdns /var/lib/kixdns-panel" "面板 unit 只能写副本的目录（${label}）"
+  assert_not_contains "${output}" "ReadWritePaths=${root}/etc " "面板 unit 不能再写原配置的目录（${label}）"
+  assert_not_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/etc"$'\n' "不能再把原配置的目录交给面板（${label}）"
+  assert_contains "${output}" "install -o kixdns-panel -g kixdns -m 0640 -- ${root}/etc/foo.json ${root}/panel-etc/kixdns/pipeline.json" \
+    "应把原配置复制成副本（${label}）"
+  assert_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "原配置的目录应交还 root（${label}）"
+  assert_contains "${output}" "chmod 0755 -- ${root}/etc"$'\n' "原配置的目录应是 0755（${label}）"
+  assert_contains "${output}" "chown root:1001 -- ${root}/etc/foo.json" "原配置应归 root、组是原来的 KixDNS 运行用的组（${label}）"
+  assert_contains "${output}" "chmod 0640 -- ${root}/etc/foo.json" "原配置应是 0640（${label}）"
+  assert_contains "${output}" "UNIT=ExecStart=/var/lib/kixdns-panel/bin/kixdns run --config ${root}/panel-etc/kixdns/pipeline.json" \
+    "KixDNS 的 unit 应改指副本（${label}）"
+  backup="$(cat "${root}/external-backup/install.env")"
+  assert_contains "${backup}" "KIXDNS_CONFIG=${root}/etc/foo.json" "备份里原配置的路径不变（${label}）"
+  assert_contains "${backup}" "KIXDNS_MANAGED_CONFIG=${root}/panel-etc/kixdns/pipeline.json" "备份应记下副本（${label}）"
+  assert_contains "${backup}" "KIXDNS_LEGACY_IN_PLACE=true" "备份应记下原配置留着的是升级时面板保存的内容（${label}）"
+  assert_contains "${output}" "配置：改为管理副本 ${root}/panel-etc/kixdns/pipeline.json，以后在面板里改的都写进副本；原配置 ${root}/etc/foo.json 留着升级这时的内容，交还给原来的 KixDNS" \
+    "安装结果应说明改管副本、原配置留着升级时的内容（${label}）"
+  assert_contains "${output}" "旧版迁移时把原配置交给了面板，没有记下它原来的属主和权限，这次改成：" "安装结果应说明为什么要改属主（${label}）"
+  assert_contains "${output}" "  ${root}/etc：" "安装结果应列出改了的目录（${label}）"
+  assert_contains "${output}" "  ${root}/etc/foo.json：" "安装结果应列出改了的文件（${label}）"
+done
+assert_contains "${output}" "KixDNS：程序未替换，unit 改用新的配置路径，保持原状态（已停止）" "仅更新面板时应说明只换了 unit"
+# 原来的 KixDNS 以 root 运行：原配置只留给 root；看不出以谁运行（DynamicUser）：谁都能读。
+# The original KixDNS ran as root: the original config is left to root alone; when it cannot be told (DynamicUser): anyone may read it.
+for legacy_case in "|0600|root:root" 'DynamicUser=yes\n|0644|root:root' 'User=kxu\nGroup=staff\n|0640|root:staff'; do
+  IFS='|' read -r legacy_lines legacy_mode legacy_owner <<< "${legacy_case}"
+  legacy_host_tree "${legacy_lines}"
+  output="$(config_directory_run)"
+  assert_contains "${output}" "chown ${legacy_owner} -- ${root}/etc/foo.json" "原配置的属主应按原来的 unit 定（${legacy_lines:-root}）"
+  assert_contains "${output}" "chmod ${legacy_mode} -- ${root}/etc/foo.json" "原配置的权限应按原来的 unit 定（${legacy_lines:-root}）"
+done
+# 已经改管副本的主机再升级：备份里有副本的记录，不再动原配置。/ A host already on the copy upgrades again: the backup records
+# the copy, and the original is not touched again.
+legacy_host_tree 'User=kxu\n'
+config_directory_run > /dev/null
+printf 'KIXDNS_CONFIG=%s\nKIXDNS_SERVICE_UNIT=kixdns.service\n' "${root}/panel-etc/kixdns/pipeline.json" > "${root}/panel-etc/panel.env"
+output="$(config_directory_run)"
+assert_contains "${output}" "PLANNED upgrade ${root}/panel-etc/kixdns/pipeline.json" "改过来以后再升级照旧管副本"
+assert_not_contains "${output}" "${root}/etc/foo.json" "改过来以后再升级不能再动原配置"
+
+# 同类（I1）：#288 以前全新安装可以把配置放进 /etc 这样的公共目录，这个目录就归了面板。没有外部备份、记下的配置目录不是
+# /etc/kixdns、里面还放着配置以外的东西时，升级把配置挪到 /etc/kixdns/pipeline.json，目录交还 root:root 0755。那里已经有文件时
+# 在改动主机之前停下。
+# Sibling (I1): before #288 a fresh install could put the config in a shared directory such as /etc, which then became the
+# panel's. Without an external backup, with the recorded config directory other than /etc/kixdns and holding anything besides
+# the config, an upgrade moves the config to /etc/kixdns/pipeline.json and hands the directory back as root:root 0755. A
+# file already there stops it before the host is touched.
+for shared_arguments in "" --panel-only-update; do
+  upgrade_host_tree
+  : > "${root}/etc/passwd-like"
+  # shellcheck disable=SC2086 # 空参数就是不带参数 / An empty argument means none
+  output="$(config_directory_run ${shared_arguments})"
+  label=${shared_arguments:-升级}
+  assert_contains "${output}" "${root}/etc-kixdns/pipeline.json restart=false unit=true" "公共目录里的配置应挪到 /etc/kixdns（${label}）"
+  assert_contains "${output}" "install -o kixdns-panel -g kixdns -m 0640 -- ${root}/etc/foo.json ${root}/etc-kixdns/pipeline.json" \
+    "应把配置复制到新位置（${label}）"
+  [[ ! -e ${root}/etc/foo.json ]] || { printf '断言失败：挪走以后公共目录里不能留着旧配置（%s）\n' "${label}" >&2; exit 1; }
+  assert_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "公共目录应交还 root（${label}）"
+  assert_contains "${output}" "chmod 0755 -- ${root}/etc"$'\n' "公共目录应是 0755（${label}）"
+  assert_contains "${output}" "ReadWritePaths=${root}/etc-kixdns /var/lib/kixdns-panel" "面板 unit 只能写新的配置目录（${label}）"
+  assert_contains "${output}" "配置：从 ${root}/etc/foo.json 挪到 ${root}/etc-kixdns/pipeline.json；${root}/etc 里还放着别的文件，面板不再写它" \
+    "安装结果应说明配置挪到哪（${label}）"
+  assert_contains "${output}" "  ${root}/etc：" "安装结果应列出交还的目录（${label}）"
+done
+# 同类（I1）：旧版原地迁移的主机用 --keep-kixdns 卸载过，留下的增强版跑的还是公共目录里的原配置；接回它时也一样挪走，不再把
+# 公共目录交给面板。
+# Sibling (I1): a host an older version migrated in place, uninstalled with --keep-kixdns, leaves the enhanced KixDNS running
+# the original config in the shared directory; taking it back moves the config just the same instead of handing the shared
+# directory to the panel again.
+config_directory_tree
+: > "${root}/etc/passwd-like"
+printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
+output="$(CONFIG_DIRECTORY_UNIT="${root}/etc/foo.json" config_directory_run)"
+assert_contains "${output}" "PLANNED reclaim ${root}/etc-kixdns/pipeline.json" "接回面板的 KixDNS 时公共目录里的配置也应挪走"
+assert_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "接回时公共目录应交还 root"
+assert_not_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/etc"$'\n' "接回时不能再把公共目录交给面板"
+# 面板写到一半的临时文件不算别的东西 / A temporary file the panel was half way through writing does not count as anything else
+upgrade_host_tree
+: > "${root}/etc/.kixdns-panel-Ab12Cd"
+output="$(config_directory_run)"
+assert_contains "${output}" "PLANNED upgrade ${root}/etc/foo.json" "只多了面板的临时文件时目录照旧"
+upgrade_host_tree
+: > "${root}/etc/passwd-like"
+mkdir -p "${root}/etc-kixdns"
+printf '{"other":true}\n' > "${root}/etc-kixdns/pipeline.json"
+output="$(config_directory_run)"
+assert_contains "${output}" "安装失败：KixDNS 配置在 ${root}/etc 里，这个目录还放着别的文件，不能再交给面板写。安装器要把配置挪到 ${root}/etc-kixdns/pipeline.json，可那里已经有文件。" \
+  "新位置已经有文件时应停下并说明"
+assert_contains "${output}" "先把 ${root}/etc-kixdns/pipeline.json 移走再重新运行；现有安装未作修改。" "停下时应说明怎么办"
+assert_not_contains "${output}" "PLANNED" "新位置已经有文件时应在改动主机之前停下"
+[[ -f ${root}/etc/foo.json ]] || { printf '断言失败：停下时不能动原来的配置\n' >&2; exit 1; }
 
 # 上次卸载保留下来的面板自带 KixDNS：接回来（不是迁移，以前这里断言的 migrate 正是 I5 的错），配置按它的 unit 记下的路径
 # 原地管理，照旧；带不带 --replace-existing 都一样。

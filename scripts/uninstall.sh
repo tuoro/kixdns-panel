@@ -40,6 +40,12 @@ KIXDNS_KEPT_EARLIER=false
 # (recorded in the backup): removed with the panel data on a restore
 ORIGINAL_USER_CREATED=false
 ORIGINAL_GROUP_CREATED=false
+# 升级时已经从旧版的原地迁移改管副本（KIXDNS_LEGACY_IN_PLACE）：原配置里是那时面板保存的内容 / An upgrade already moved this
+# host from an older in-place migration onto a copy (KIXDNS_LEGACY_IN_PLACE): the original holds what the panel had saved then
+ORIGINAL_LEGACY_IN_PLACE=false
+# 恢复时交还原配置改了的属主和权限，每行「  路径：改之前 → 现在」/ The owners and modes changed handing the original config
+# back on restore, one "  path：before → now" per line
+HANDED_BACK=""
 # KixDNS 已不归面板管时，保留的 panel.env 记下的待删的东西：面板自己的 KixDNS 已移除、它的配置和 kixdns 账号留着
 # （KIXDNS_REMOVED），或者迁移建的 kixdns 账号、组（KIXDNS_USER_CREATED、KIXDNS_GROUP_CREATED）。删除面板数据时一起删。
 # What the kept panel.env records as left to remove once the KixDNS is no longer the panel's: the panel's own KixDNS was
@@ -411,6 +417,7 @@ load_external_backup() {
   ORIGINAL_CONFIG="$(backup_value KIXDNS_CONFIG || true)"
   [[ $(backup_value KIXDNS_USER_CREATED || true) != true ]] || ORIGINAL_USER_CREATED=true
   [[ $(backup_value KIXDNS_GROUP_CREATED || true) != true ]] || ORIGINAL_GROUP_CREATED=true
+  [[ $(backup_value KIXDNS_LEGACY_IN_PLACE || true) != true ]] || ORIGINAL_LEGACY_IN_PLACE=true
   # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
   # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
   [[ ${ORIGINAL_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${ORIGINAL_UNIT} != *..* ]] ||
@@ -573,6 +580,94 @@ hand_back_directory() {
   chmod 0755 -- "${directory}"
 }
 
+# 「属主:属组 权限」，权限写成四位八进制 / "owner:group mode", the mode as four octal digits
+owner_and_mode() {
+  local mode
+  mode="$(stat -c '%a' -- "$1")"
+  printf '%s %04o\n' "$(stat -c '%U:%G' -- "$1")" "$((8#${mode}))"
+}
+
+# unit 文件（主文件和它的 drop-in，按 systemd 的顺序给）里 [Service] 的一项，最后写的算数。
+# A [Service] setting of a unit (the main file and its drop-ins, in systemd's order), the last one written winning.
+unit_service_setting() {
+  local key=$1
+  shift
+  awk -v key="${key}" '
+    FNR == 1 { section = "" }
+    /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section); next }
+    section == "[Service]" && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+    }
+    END { print value }
+  ' "$@"
+}
+
+# 原配置交还以后的属组和权限，输出「组 权限」。原来的 KixDNS 以 root 运行：只留给 root（0600）；以别的账号运行：给它运行用的组读
+# （Group=，没写就是账号的主组，0640）；看不出来（没有备份的 unit、DynamicUser、写着说明符、账号或组不存在）：谁都能读（0644）。
+# The group and mode the original config gets back, printed as "group mode". The original KixDNS ran as root: root alone
+# (0600); as another account: readable by the group it ran as (Group=, or else the account's primary group, 0640); when it
+# cannot be told (no unit backed up, DynamicUser, specifiers, a missing account or group): readable by anyone (0644).
+original_config_access() {
+  local files=()
+  local file
+  local user
+  local group
+  local dynamic
+  for file in "$@"; do
+    [[ ! -f ${file} ]] || files+=("${file}")
+  done
+  if [[ ${#files[@]} -eq 0 ]]; then
+    printf 'root 0644\n'
+    return 0
+  fi
+  user="$(unit_service_setting User "${files[@]}")"
+  group="$(unit_service_setting Group "${files[@]}")"
+  dynamic="$(unit_service_setting DynamicUser "${files[@]}")"
+  case ${dynamic,,} in
+    1 | yes | true | on)
+      printf 'root 0644\n'
+      return 0
+      ;;
+  esac
+  if [[ ${user} == *%* || ${group} == *%* ]]; then
+    printf 'root 0644\n'
+  elif [[ -z ${user} || ${user} == root || ${user} == 0 ]]; then
+    printf 'root 0600\n'
+  elif [[ -n ${group} ]]; then
+    if getent group "${group}" >/dev/null 2>&1; then
+      printf '%s 0640\n' "${group}"
+    else
+      printf 'root 0644\n'
+    fi
+  else
+    group="$(getent passwd "${user}" 2>/dev/null | cut -d: -f4 || true)"
+    if [[ -n ${group} ]]; then
+      printf '%s 0640\n' "${group}"
+    else
+      printf 'root 0644\n'
+    fi
+  fi
+}
+
+# 把旧版原地迁移交给面板的原配置和它所在的目录交还给原来的 KixDNS：目录 root:root 0755，文件按 original_config_access。旧版的
+# 备份没记下原来的属主和权限，只能这样定。参数：原配置，原来的 unit 的文件（主文件和 drop-in）。
+# Hands the original config an older in-place migration gave the panel, and its directory, back to the original KixDNS: the
+# directory root:root 0755, the file as original_config_access says. The older backup never recorded the original owner and
+# mode, so this is all there is to go on. Arguments: the original config, the files of the original unit (main and drop-ins).
+hand_back_original_config() {
+  local config=$1
+  local group
+  local mode
+  shift
+  hand_back_directory "$(dirname -- "${config}")"
+  [[ -f ${config} && ! -L ${config} ]] || return 0
+  read -r group mode < <(original_config_access "$@")
+  chown "root:${group}" -- "${config}"
+  chmod "${mode}" -- "${config}"
+}
+
 remove_panel_components() {
   stop_unit kixdns-panel-update.service
   wait_for_unit_inactive kixdns-panel-update.service
@@ -620,6 +715,7 @@ remove_managed_kixdns() {
       install -o root -g root -m 0644 "${EXTERNAL_BACKUP}/kixdns.service" \
         "${SYSTEMD_UNIT_DIRECTORY}/${ORIGINAL_UNIT}"
     fi
+    hand_back_in_place_config
     RESTORED_EXTERNAL=true
   else
     # 面板自己的 KixDNS 已经移除：保留的 panel.env 不能再说它归面板管，否则以后用户装上同名的 KixDNS，再运行卸载器会把它当成
@@ -818,6 +914,39 @@ wait_for_service_stable() {
   return 1
 }
 
+# 旧版安装器原地迁移、还没升级改管副本就直接恢复的主机：原配置和它所在的目录还归面板（kixdns-panel 账号删掉以后就归了一个不存在
+# 的 UID，以非 root 账号运行的原来的 KixDNS 也读不到）。启动原来的 KixDNS 之前，像升级时那样交还给它（hand_back_original_config），
+# 记下改了什么。面板自己目录里的不动。
+# A host an older installer migrated in place and restored without an upgrade having moved it onto a copy: the original
+# config and its directory still belong to the panel (to a UID that no longer exists once the kixdns-panel account goes, and
+# out of reach of an original KixDNS running as a non-root account). Before the original KixDNS starts, hand them back to it
+# as an upgrade does (hand_back_original_config) and record what changed. Nothing in the panel's own directory is touched.
+hand_back_in_place_config() {
+  local directory
+  local path
+  local before
+  local paths=()
+  local befores=()
+  [[ -n ${ORIGINAL_CONFIG} && ${ORIGINAL_CONFIG} == "${MANAGED_CONFIG}" ]] || return 0
+  [[ -z $(backup_value KIXDNS_MANAGED_CONFIG || true) ]] || return 0
+  case ${ORIGINAL_CONFIG} in
+    "${PANEL_CONFIG_DIRECTORY}"/* | "${PANEL_STATE_DIRECTORY}"/*) return 0 ;;
+  esac
+  directory="$(dirname -- "${ORIGINAL_CONFIG}")"
+  for path in "${directory}" "${ORIGINAL_CONFIG}"; do
+    [[ -e ${path} ]] || continue
+    paths+=("${path}")
+    befores+=("$(owner_and_mode "${path}")")
+  done
+  hand_back_original_config "${ORIGINAL_CONFIG}" "${EXTERNAL_BACKUP}/kixdns.service" \
+    "${SYSTEMD_UNIT_DIRECTORY}/${ORIGINAL_UNIT}.d"/*.conf
+  for path in "${!paths[@]}"; do
+    before=${befores[${path}]}
+    [[ ${before} != "$(owner_and_mode "${paths[${path}]}")" ]] || continue
+    HANDED_BACK+="  ${paths[${path}]}：${before} → $(owner_and_mode "${paths[${path}]}")"$'\n'
+  done
+}
+
 restore_external_state() {
   [[ ${RESTORED_EXTERNAL} == true ]] || return 0
   if [[ ${ORIGINAL_ENABLED} == true ]]; then
@@ -848,6 +977,15 @@ restore_external_state() {
     # A host an older installer migrated in place: the panel edited the original config itself and the pre-migration
     # content was never kept, so it must not read as restored.
     printf '它用的配置 %s 是面板最后保存的内容：旧版安装器迁移时直接改用了这个文件，迁移前的内容没有留底。\n' "${ORIGINAL_CONFIG}"
+    if [[ -n ${HANDED_BACK} ]]; then
+      printf '旧版迁移时把原配置交给了面板，没有记下它原来的属主和权限，交还给原来的 KixDNS 时改成：\n%s' "${HANDED_BACK}"
+    fi
+  elif [[ ${ORIGINAL_LEGACY_IN_PLACE} == true ]] && managed_config_is_copy && [[ -f ${ORIGINAL_CONFIG} ]]; then
+    # 升级时才从旧版的原地迁移改管副本：原配置里留的是那时面板保存的内容，同样不是迁移前的。
+    # Moved onto a copy only at an upgrade from an older in-place migration: the original holds what the panel had saved
+    # then, which is not the pre-migration content either.
+    printf '它用的配置 %s 是升级到新版那时面板保存的内容（旧版安装器迁移时直接改用了这个文件，迁移前的内容没有留底），之后改的副本已删除。\n' \
+      "${ORIGINAL_CONFIG}"
   elif managed_config_is_copy && [[ -f ${ORIGINAL_CONFIG} ]]; then
     printf '它用的是迁移前的配置 %s，面板改过的副本已删除。\n' "${ORIGINAL_CONFIG}"
   fi
