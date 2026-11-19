@@ -3021,6 +3021,7 @@ assert_not_contains "${render_output}" "RENDERED" "要写的值不合格式时�
 # Backslashes and control characters in paths: awk -v and systemd both decode backslashes; systemd also takes quotes as
 # quotes, % as a specifier and $ as a variable (it reads the unit's Exec lines, ReadWritePaths and panel.env), so the path
 # written would not be the one the installer made
+# shellcheck disable=SC2016 # 要的就是没展开的 $ / The unexpanded $ is the point
 for bad_path in '/etc/kixdns/a\nb.json' "/etc/kixdns/a"$'\t'"b.json" "/etc/kixdns/a"$'\x01'"b.json" '/etc/kixdns/%h.json' \
   '/etc/kixdns/$HOME.json' '/etc/kixdns/${HOME}.json' '/etc/kixdns/a"b.json' "/etc/kixdns/a'b.json"; do
   output="$(path_verdict "${bad_path}")"
