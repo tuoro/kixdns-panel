@@ -614,7 +614,7 @@ for shared_function in wait_for_service_stable port_accepts_connection owner_and
   ensure_root_records root_only_path record_problem same_filesystem quarantine_record refuse_record trusted_record \
   old_records_present adopt_old_records secure_root_records panel_process_uids account_signal account_live_processes \
   quiesce_panel_account refuse_with_panel_held adoption_done mark_adoption_done discard_old_records take_root_lock \
-  panel_env_trusted managed_unit_config original_unit_files panel_owned; do
+  panel_env_trusted managed_unit_config original_unit_files panel_owned root_lock_holder root_lock_file_ready drop_privileges; do
   installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   [[ -n ${installer_copy} && ${installer_copy} == "${uninstaller_copy}" ]] || {

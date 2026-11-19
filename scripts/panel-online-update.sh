@@ -12,9 +12,14 @@ readonly GITHUB_TOKEN_FILE="/var/lib/kixdns-panel/github-token"
 # The lock the installer, the uninstaller and the online updater share (take_root_lock in install.sh); a scratch file in the
 # policy tests
 ROOT_LOCK="/run/kixdns-panel-root/lock"
-# SHOULD 2：两把锁都在只有 root 能进的目录里，面板打不开、也就拿不住它们 / SHOULD 2: both locks live in a directory only root
-# can enter, so the panel can neither open nor hold them
+# SHOULD 2：两把锁都在只有 root 能进的目录里，都是 root 的 0600（root_lock_file_ready），降了权的子进程不带着它们的描述符
+# （drop_privileges）/ SHOULD 2: both locks live in a directory only root can enter, both root's 0600 (root_lock_file_ready),
+# and children that drop privileges carry none of their descriptors (drop_privileges)
 LOCK_DIRECTORY="${ROOT_LOCK%/*}"
+# root 的 UID 和 GID：在线更新以 root 运行；策略测试里是跑测试的用户 / root's UID and GID: the online update runs as root;
+# the user running the tests in the policy tests
+ROOT_UID="$(id -u)"
+ROOT_GID="$(id -g)"
 UPDATE_LOCK="${LOCK_DIRECTORY}/update.lock"
 TARGET_VERSION=""
 GITHUB_API_CONFIG=""
@@ -66,6 +71,47 @@ run_step() {
   return "${status}"
 }
 
+# SHOULD 2：锁文件是 root 的 0600：没有就照 0600 建，已有的是 root 的普通文件就改成 0600；是符号链接、不是普通文件或不归 root
+# 时不用它。放锁的目录只有 root 能进（打开之前查过），这里查到的就是会打开的那一个。参数：锁文件。
+# SHOULD 2: a lock file is root's 0600: created 0600 when missing, an existing regular file of root's made 0600; a symlink,
+# a non-regular file or one not root's is not used. The lock directory only root can enter (checked before the open), so
+# what is checked here is what gets opened. Argument: the lock file.
+root_lock_file_ready() {
+  local file=$1
+  [[ -e ${file} || -L ${file} ]] || (umask 077 && : >> "${file}")
+  [[ -f ${file} && ! -L ${file} && $(stat -c '%u %g' -- "${file}") == "${ROOT_UID} ${ROOT_GID}" ]] || return 1
+  [[ $(stat -c '%a' -- "${file}") == 600 ]] || chmod 0600 -- "${file}"
+  [[ $(stat -c '%u %g %a' -- "${file}") == "${ROOT_UID} ${ROOT_GID} 600" ]]
+}
+
+# SHOULD 2：以别的身份运行一条命令，参数原样交给 setpriv；--timeout N 时由 root 的 timeout 限时（降了权的那个身份停不掉它）。
+# 降权之前先关掉 2 以上的每一个文件描述符：锁、管道和打开的文件都不跟着过去，那个身份就没法经 /proc/<pid>/fd 或 pidfd_getfd
+# 拿到它们。每一个降权的子进程都经这里。参数：[--timeout 秒数]、setpriv 的参数和命令。
+# SHOULD 2: run a command under another identity, the arguments going to setpriv as they are; with --timeout N, root's
+# timeout bounds it (the dropped identity cannot stop it). Every descriptor above 2 is closed before privileges drop: no
+# lock, pipe or open file goes along, so that identity cannot reach them through /proc/<pid>/fd or pidfd_getfd. Every
+# child that drops privileges goes through here. Arguments: [--timeout seconds], setpriv's arguments and the command.
+drop_privileges() {
+  local seconds=""
+  if [[ $1 == --timeout ]]; then
+    seconds=$2
+    shift 2
+  fi
+  (
+    for fd in /proc/"${BASHPID}"/fd/*; do
+      fd=${fd##*/}
+      if [[ ${fd} =~ ^[0-9]+$ ]] && ((fd > 2)) && [[ -e /proc/${BASHPID}/fd/${fd} ]]; then
+        exec {fd}>&-
+      fi
+    done
+    if [[ -n ${seconds} ]]; then
+      timeout "${seconds}" setpriv "$@"
+    else
+      setpriv "$@"
+    fi
+  )
+}
+
 # Token 文件放在面板的状态目录里，面板账号能在检查和读取之间把它换成指向别处的符号链接或管道。按文件属主的身份去读（换了也只能
 # 读到那个身份本来就能读的），最多等 5 秒、最多读 300 字节。
 # The token file lives in the panel's state directory, where the panel account can swap it between the check and the read
@@ -80,7 +126,7 @@ read_token_file() {
   if [[ ${owner} == "$(id -u)" ]]; then
     timeout 5 head -c 300 -- "${file}"
   else
-    timeout 5 setpriv --reuid="${owner}" --regid="${group}" --clear-groups -- head -c 300 -- "${file}"
+    drop_privileges --timeout 5 --reuid="${owner}" --regid="${group}" --clear-groups -- head -c 300 -- "${file}"
   fi
 }
 
@@ -178,8 +224,9 @@ main() {
   trusted_root_executable "${INSTALLER}" || fail_because "一键安装器 ${INSTALLER} 不是 root 所有或可被他人改写"
   trusted_root_executable "${PANEL_SERVER}" || fail_because "面板程序 ${PANEL_SERVER} 不是 root 所有或可被他人改写"
   [[ -e ${LOCK_DIRECTORY} || -L ${LOCK_DIRECTORY} ]] || install -d -o root -g root -m 0700 "${LOCK_DIRECTORY}"
-  [[ -d ${LOCK_DIRECTORY} && ! -L ${LOCK_DIRECTORY} && $(stat -c '%u %a' -- "${LOCK_DIRECTORY}") == "$(id -u) 700" ]] ||
+  [[ -d ${LOCK_DIRECTORY} && ! -L ${LOCK_DIRECTORY} && $(stat -c '%u %a' -- "${LOCK_DIRECTORY}") == "${ROOT_UID} 700" ]] ||
     fail_because "${LOCK_DIRECTORY} 不是只有 root 能进的目录，锁不能放在那里"
+  root_lock_file_ready "${UPDATE_LOCK}" || fail_because "${UPDATE_LOCK} 不是 root 的普通文件，锁不能用它"
   exec 9>> "${UPDATE_LOCK}"
   flock -n 9 || {
     # 另一个更新正在写状态文件；这里再写一份失败会盖掉它的进度。
@@ -191,6 +238,7 @@ main() {
   # 整个更新都拿着安装器、卸载器也用的那把锁：它们正在运行时不更新；安装器从 KIXDNS_PANEL_ROOT_LOCK_FD 认出这一把，接着用
   # The whole update holds the lock the installer and uninstaller use too: no update while either runs; the installer
   # recognises this one from KIXDNS_PANEL_ROOT_LOCK_FD and carries on with it
+  root_lock_file_ready "${ROOT_LOCK}" || fail_because "${ROOT_LOCK} 不是 root 的普通文件，锁不能用它"
   exec 8>> "${ROOT_LOCK}"
   flock -n 8 || fail_because "安装器或卸载器正在运行，这次不更新；等它结束再试"
   export KIXDNS_PANEL_ROOT_LOCK_FD=8

@@ -2855,6 +2855,33 @@ lock_output="$(
   stat -c '%a' "${base}/locks"
 )" || true
 assert_equals "${lock_output}" "700" "放锁的目录应建成只有 root 能进的"
+# 回归（第六轮 SHOULD 2）：锁文件照 umask 建成 0644，面板的进程拿到一个继承来的描述符以后，能经 /proc/<pid>/fd 重新打开它、一直拿着。
+# 现在锁文件每次打开之前都查过是 root 的 0600：没有就照 0600 建，已有的改成 0600，是符号链接或不是普通文件就停下。
+# Regression (sixth review, SHOULD 2): the lock file was created 0644 by the umask, so a panel process holding an inherited
+# descriptor could reopen it through /proc/<pid>/fd and keep it. Now the lock file is checked to be root's 0600 before
+# every open: created 0600 when missing, an existing one made 0600, a symlink or non-regular file stopping the run.
+for lock_case in missing wide symlink; do
+  lock_output="$(
+    umask 022
+    base="${WORK}/lock-file"
+    rm -rf -- "${base}"
+    mkdir -p "${base}/locks"
+    chmod 0700 "${base}/locks"
+    ROOT_LOCK="${base}/locks/lock"
+    case ${lock_case} in
+      wide) : > "${ROOT_LOCK}" && chmod 0644 "${ROOT_LOCK}" ;;
+      symlink) : > "${base}/elsewhere" && ln -s -- "${base}/elsewhere" "${ROOT_LOCK}" ;;
+    esac
+    unset KIXDNS_PANEL_ROOT_LOCK_FD
+    fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+    take_root_lock
+    stat -c '%a' -- "${ROOT_LOCK}"
+  )" || true
+  case ${lock_case} in
+    symlink) assert_contains "${lock_output}" "FAILED ${WORK}/lock-file/locks/lock 不是 root 的普通文件，锁不能用它" "锁文件是符号链接时应停下" ;;
+    *) assert_equals "${lock_output}" "600" "锁文件应是只有 root 能读写的 0600（${lock_case}）" ;;
+  esac
+done
 lock_output="$(
   ROOT_LOCK=${lock_file}
   KIXDNS_PANEL_ROOT_LOCK_FD=7
@@ -3197,6 +3224,43 @@ for script_name in install uninstall; do
     exit 1
   fi
 done
+
+# 回归（第六轮 SHOULD 2）：在线更新器以 Token 文件属主（面板账号）的身份读 Token 时，那个 head 继承了锁的描述符 8 和 9，面板经
+# /proc/<head>/fd/8 重新打开 root 的锁、一直拿着（ptrace_scope 为 0 时 pidfd_getfd 也行）。现在每一个降了权限的子进程都经同一个
+# drop_privileges：降权之前先关掉 2 以上的每一个描述符。四个脚本里的这个函数一字不差，别处不直接调用 setpriv。
+# Regression (sixth review, SHOULD 2): reading the token as its owner (the panel account), the online updater's head
+# inherited the lock descriptors 8 and 9, and the panel reopened root's lock through /proc/<head>/fd/8 and kept it
+# (pidfd_getfd too with ptrace_scope 0). Now every child that drops privileges goes through one drop_privileges, which
+# closes every descriptor above 2 before the drop. The function is the same in all four scripts, and nothing else calls
+# setpriv directly.
+helper_body="$(declare -f drop_privileges 2>/dev/null || true)"
+[[ -n ${helper_body} ]] || { printf '断言失败：install.sh 里应有 drop_privileges\n' >&2; exit 1; }
+for script_name in uninstall panel-online-update one-click-install; do
+  other_body="$(bash -c "source '${PACKAGE_ROOT}/scripts/${script_name}.sh' && declare -f drop_privileges" 2>/dev/null || true)"
+  [[ ${other_body} == "${helper_body}" ]] ||
+    { printf '断言失败：%s.sh 的 drop_privileges 应和 install.sh 的一字不差\n' "${script_name}" >&2; exit 1; }
+done
+for script_name in install uninstall panel-online-update one-click-install; do
+  direct="$(grep -v '^[[:space:]]*#' "${PACKAGE_ROOT}/scripts/${script_name}.sh" | grep -n 'setpriv' |
+    grep -vE 'type -P setpriv|setpriv "\$@"|系统缺少 setpriv' || true)"
+  [[ -z ${direct} ]] || { printf '断言失败：%s.sh 里还有不经 drop_privileges 的 setpriv：%s\n' "${script_name}" "${direct}" >&2; exit 1; }
+done
+drop_output="$(
+  exec 7>> "${WORK}/drop-fd"
+  setpriv() {
+    while [[ $1 != -- ]]; do shift; done
+    shift
+    "$@"
+  }
+  timeout() { shift; "$@"; }
+  # shellcheck disable=SC2016 # 内层 bash 展开 / Expanded by the inner bash
+  drop_privileges --reuid=1 --regid=1 --clear-groups -- bash -c '[[ -e /proc/$$/fd/7 ]] && echo LEAKED || echo CLOSED'
+  # shellcheck disable=SC2016 # 同上 / As above
+  drop_privileges --timeout 5 --reuid=1 --regid=1 --clear-groups -- bash -c '[[ -e /proc/$$/fd/7 ]] && echo LEAKED || echo CLOSED'
+  [[ -e /proc/${BASHPID}/fd/7 ]] && echo PARENT-KEPT
+)"
+assert_equals "${drop_output}" $'CLOSED\nCLOSED\nPARENT-KEPT' "降权的子进程不能带着 2 以上的描述符，自己这边照旧开着"
+assert_not_contains "$(cat "${PACKAGE_ROOT}/docs/deployment.md")" "面板打不开它" "文档不能说面板打不开锁：说的要是真的"
 
 # R3：内核包的身份目录已经有时不用 install -d；里面的文件先删掉同名的再写。/ R3: an existing bundle directory gets no
 # install -d; its files are removed by name before being written.
@@ -4092,6 +4156,11 @@ chmod 0755 "${online_update_root}/locks"
 output="$(online_update_status "exit 0" "${latest_release}")"
 chmod 0700 "${online_update_root}/locks"
 assert_contains "${output}" "不是只有 root 能进的目录，锁不能放在那里" "在线更新放锁的目录不对时应停下"
+# 回归（第六轮 SHOULD 2）：在线更新的两把锁也是 root 的 0600 / Regression (sixth review, SHOULD 2): the online update's two
+# locks are root's 0600 too
+output="$(online_update_status "exit 0" "${latest_release}")"
+assert_equals "$(stat -c '%a' -- "${online_update_root}/locks/lock" "${online_update_root}/locks/update.lock" | tr '\n' ' ')" "600 600 " \
+  "在线更新的锁文件应是只有 root 能读写的 0600"
 
 # 结构 3：安装器或卸载器拿着锁时，在线更新停下并说明，不查新版、不调安装器；拿到锁的更新把它传给安装器。
 # Structural change 3: with the installer or uninstaller holding the lock, the online update stops and says so, neither

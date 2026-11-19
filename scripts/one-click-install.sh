@@ -161,6 +161,34 @@ cleanup() {
   fi
 }
 
+# SHOULD 2：以别的身份运行一条命令，参数原样交给 setpriv；--timeout N 时由 root 的 timeout 限时（降了权的那个身份停不掉它）。
+# 降权之前先关掉 2 以上的每一个文件描述符：锁、管道和打开的文件都不跟着过去，那个身份就没法经 /proc/<pid>/fd 或 pidfd_getfd
+# 拿到它们。每一个降权的子进程都经这里。参数：[--timeout 秒数]、setpriv 的参数和命令。
+# SHOULD 2: run a command under another identity, the arguments going to setpriv as they are; with --timeout N, root's
+# timeout bounds it (the dropped identity cannot stop it). Every descriptor above 2 is closed before privileges drop: no
+# lock, pipe or open file goes along, so that identity cannot reach them through /proc/<pid>/fd or pidfd_getfd. Every
+# child that drops privileges goes through here. Arguments: [--timeout seconds], setpriv's arguments and the command.
+drop_privileges() {
+  local seconds=""
+  if [[ $1 == --timeout ]]; then
+    seconds=$2
+    shift 2
+  fi
+  (
+    for fd in /proc/"${BASHPID}"/fd/*; do
+      fd=${fd##*/}
+      if [[ ${fd} =~ ^[0-9]+$ ]] && ((fd > 2)) && [[ -e /proc/${BASHPID}/fd/${fd} ]]; then
+        exec {fd}>&-
+      fi
+    done
+    if [[ -n ${seconds} ]]; then
+      timeout "${seconds}" setpriv "$@"
+    else
+      setpriv "$@"
+    fi
+  )
+}
+
 # Token 文件放在面板的状态目录里，面板账号能在检查和读取之间把它换成指向别处的符号链接或管道。按文件属主的身份去读（换了也只能
 # 读到那个身份本来就能读的），最多等 5 秒、最多读 300 字节。
 # The token file lives in the panel's state directory, where the panel account can swap it between the check and the read
@@ -175,7 +203,7 @@ read_token_file() {
   if [[ ${owner} == "$(id -u)" ]]; then
     timeout 5 head -c 300 -- "${file}"
   else
-    timeout 5 setpriv --reuid="${owner}" --regid="${group}" --clear-groups -- head -c 300 -- "${file}"
+    drop_privileges --timeout 5 --reuid="${owner}" --regid="${group}" --clear-groups -- head -c 300 -- "${file}"
   fi
 }
 

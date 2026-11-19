@@ -24,16 +24,17 @@ set -Eeuo pipefail
 # R2：面板账号还有任何进程时，root 不碰它能写的路径。先停面板，再以它的身份 kill -KILL -1，一直到 /proc 里没有一个归它（真实、
 #     有效或保存的 UID）的活进程，再发一次（换 PID、改成不可转储都躲不掉）；面板一直停着，直到这些路径上的事全做完，回滚也一样：
 #     放回文件和属主、删这次建的目录和账号，都在重启旧面板之前。在线更新（--panel-only-update）走同一条路。面板停下之前先停
-#     helper（面板能请它以 root 起在线更新），安装器、卸载器和在线更新器同一时间只跑一个（同一把锁，放在只有 root 能进的目录里，
-#     整个运行都拿着）。
+#     helper（面板能请它以 root 起在线更新），安装器、卸载器和在线更新器同一时间只跑一个（同一把锁，root 的 0600，放在只有 root
+#     能进的目录里，整个运行都拿着）；降了权的子进程一律经 drop_privileges，先关掉 2 以上的文件描述符，锁不会落到别的身份手里。
 # R2: root never touches a path the panel account can write while any process of that account exists. The panel is
 #     stopped, then kill -KILL -1 runs as the account until /proc shows no live process of it (real, effective or saved
 #     UID), and once more (changing PIDs or turning non-dumpable does not escape it); the panel stays stopped until every
 #     root operation on such paths is finished, the rollback included: files and owners put back, this run's directories
 #     and accounts removed, all before the old panel restarts. The online update (--panel-only-update) takes the same
 #     path. The helper stops before the panel (the panel can ask it to start an online update as root), and the
-#     installer, the uninstaller and the online updater run one at a time (one lock in a directory only root can enter,
-#     held for the whole run).
+#     installer, the uninstaller and the online updater run one at a time (one lock, root's 0600 file in a directory only
+#     root can enter, held for the whole run); every child that drops privileges goes through drop_privileges, which closes
+#     every descriptor above 2 first, so the lock never reaches another identity.
 # R3：面板能写的路径上，root 从不跟着符号链接走：chown 用 -h；chmod 只用在照 R2 停了以后、lstat 查过不是符号链接的目录或普通文件上；
 #     已有的、面板能写的目录不用 install -d；这些路径上的重定向、sed -i、cp、mv、rm -rf、find -exec 都要先这样查过。
 # R3: on panel-writable paths root never follows a symlink: chown with -h; chmod only on a directory or regular file checked
@@ -732,16 +733,59 @@ take_root_lock() {
   if [[ ${fd} =~ ^[0-9]+$ && $(readlink -- "/proc/$$/fd/${fd}" 2>/dev/null) == "${ROOT_LOCK}" ]] && flock -n "${fd}"; then
     return 0
   fi
-  # SHOULD 2：锁放在只有 root 能进的目录里：面板打不开它，也就拿不住它（以前 0644 的锁文件面板能只读打开、一直拿着共享锁）
-  # SHOULD 2: the lock lives in a directory only root can enter: the panel cannot open it, so it cannot hold it (the 0644
-  # lock file before could be opened read-only by the panel and held with a shared lock)
+  # SHOULD 2：锁放在只有 root 能进的目录里，锁文件是 root 的 0600，面板没法照路径打开它；降了权的子进程不带着描述符
+  # （drop_privileges），它也拿不到别人开着的那个
+  # SHOULD 2: the lock lives in a directory only root can enter as root's 0600 file, so the panel cannot open it by path;
+  # children that drop privileges carry no descriptor (drop_privileges), so it cannot get hold of one open elsewhere either
   [[ -e ${directory} || -L ${directory} ]] || install -d -o root -g root -m 0700 "${directory}"
   [[ -d ${directory} && ! -L ${directory} && $(stat -c '%u %a' -- "${directory}") == "${ROOT_UID} 700" ]] ||
     fail "${directory} 不是只有 root 能进的目录，锁不能放在那里；先查看它是怎么来的"
+  root_lock_file_ready "${ROOT_LOCK}" || fail "${ROOT_LOCK} 不是 root 的普通文件，锁不能用它；先查看它是怎么来的"
   exec {ROOT_LOCK_FD}>> "${ROOT_LOCK}"
   flock -n "${ROOT_LOCK_FD}" ||
     fail "另一个安装、卸载或在线更新正在运行（同一时间只能有一个$(root_lock_holder)）；等它结束再运行。"
   export KIXDNS_PANEL_ROOT_LOCK_FD=${ROOT_LOCK_FD}
+}
+
+# SHOULD 2：锁文件是 root 的 0600：没有就照 0600 建，已有的是 root 的普通文件就改成 0600；是符号链接、不是普通文件或不归 root
+# 时不用它。放锁的目录只有 root 能进（打开之前查过），这里查到的就是会打开的那一个。参数：锁文件。
+# SHOULD 2: a lock file is root's 0600: created 0600 when missing, an existing regular file of root's made 0600; a symlink,
+# a non-regular file or one not root's is not used. The lock directory only root can enter (checked before the open), so
+# what is checked here is what gets opened. Argument: the lock file.
+root_lock_file_ready() {
+  local file=$1
+  [[ -e ${file} || -L ${file} ]] || (umask 077 && : >> "${file}")
+  [[ -f ${file} && ! -L ${file} && $(stat -c '%u %g' -- "${file}") == "${ROOT_UID} ${ROOT_GID}" ]] || return 1
+  [[ $(stat -c '%a' -- "${file}") == 600 ]] || chmod 0600 -- "${file}"
+  [[ $(stat -c '%u %g %a' -- "${file}") == "${ROOT_UID} ${ROOT_GID} 600" ]]
+}
+
+# SHOULD 2：以别的身份运行一条命令，参数原样交给 setpriv；--timeout N 时由 root 的 timeout 限时（降了权的那个身份停不掉它）。
+# 降权之前先关掉 2 以上的每一个文件描述符：锁、管道和打开的文件都不跟着过去，那个身份就没法经 /proc/<pid>/fd 或 pidfd_getfd
+# 拿到它们。每一个降权的子进程都经这里。参数：[--timeout 秒数]、setpriv 的参数和命令。
+# SHOULD 2: run a command under another identity, the arguments going to setpriv as they are; with --timeout N, root's
+# timeout bounds it (the dropped identity cannot stop it). Every descriptor above 2 is closed before privileges drop: no
+# lock, pipe or open file goes along, so that identity cannot reach them through /proc/<pid>/fd or pidfd_getfd. Every
+# child that drops privileges goes through here. Arguments: [--timeout seconds], setpriv's arguments and the command.
+drop_privileges() {
+  local seconds=""
+  if [[ $1 == --timeout ]]; then
+    seconds=$2
+    shift 2
+  fi
+  (
+    for fd in /proc/"${BASHPID}"/fd/*; do
+      fd=${fd##*/}
+      if [[ ${fd} =~ ^[0-9]+$ ]] && ((fd > 2)) && [[ -e /proc/${BASHPID}/fd/${fd} ]]; then
+        exec {fd}>&-
+      fi
+    done
+    if [[ -n ${seconds} ]]; then
+      timeout "${seconds}" setpriv "$@"
+    else
+      setpriv "$@"
+    fi
+  )
 }
 
 # 拿着锁的是谁：从 /proc/locks 按锁文件的设备号和 inode 找出进程，写成「：PID n，程序 x，unit y」；找不到时什么也不输出。
@@ -795,7 +839,7 @@ panel_process_uids() {
 # R2: signal a UID's processes as that UID: kill -1 has the kernel send it to all of them at once, so changing PIDs or
 # turning non-dumpable does not escape it, nor does a fork under way at that moment. Arguments: UID, GID, signal.
 account_signal() {
-  setpriv --reuid="$1" --regid="$2" --clear-groups -- bash -c "kill -$3 -1" 2>/dev/null
+  drop_privileges --reuid="$1" --regid="$2" --clear-groups -- bash -c "kill -$3 -1" 2>/dev/null
 }
 
 # R2：这个 UID 还有没死的进程：/proc 里任何一个进程的真实、有效或保存的 UID 是它，又不是僵尸。看的是 status 里的 Uid 行，不是
