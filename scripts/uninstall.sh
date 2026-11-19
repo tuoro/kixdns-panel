@@ -24,24 +24,29 @@ set -Eeuo pipefail
 # R2：面板账号还有任何进程时，root 不碰它能写的路径。先停面板，再以它的身份 kill -KILL -1，一直到 /proc 里没有一个归它（真实、
 #     有效或保存的 UID）的活进程，再发一次（换 PID、改成不可转储都躲不掉）；面板一直停着，直到这些路径上的事全做完，回滚也一样：
 #     放回文件和属主、删这次建的目录和账号，都在重启旧面板之前。在线更新（--panel-only-update）走同一条路。面板停下之前先停
-#     helper（面板能请它以 root 起在线更新），安装器、卸载器和在线更新器同一时间只跑一个（同一把锁，整个运行都拿着）。
+#     helper（面板能请它以 root 起在线更新），安装器、卸载器和在线更新器同一时间只跑一个（同一把锁，放在只有 root 能进的目录里，
+#     整个运行都拿着）。
 # R2: root never touches a path the panel account can write while any process of that account exists. The panel is
 #     stopped, then kill -KILL -1 runs as the account until /proc shows no live process of it (real, effective or saved
 #     UID), and once more (changing PIDs or turning non-dumpable does not escape it); the panel stays stopped until every
 #     root operation on such paths is finished, the rollback included: files and owners put back, this run's directories
 #     and accounts removed, all before the old panel restarts. The online update (--panel-only-update) takes the same
 #     path. The helper stops before the panel (the panel can ask it to start an online update as root), and the
-#     installer, the uninstaller and the online updater run one at a time (one lock, held for the whole run).
+#     installer, the uninstaller and the online updater run one at a time (one lock in a directory only root can enter,
+#     held for the whole run).
 # R3：面板能写的路径上，root 从不跟着符号链接走：chown 用 -h；chmod 只用在照 R2 停了以后、lstat 查过不是符号链接的目录或普通文件上；
 #     已有的、面板能写的目录不用 install -d；这些路径上的重定向、sed -i、cp、mv、rm -rf、find -exec 都要先这样查过。
 # R3: on panel-writable paths root never follows a symlink: chown with -h; chmod only on a directory or regular file checked
 #     by lstat, under R2, to be no symlink; never install -d on an existing directory the panel can write; no redirection,
 #     sed -i, cp, mv, rm -rf, find -exec or tar on such paths without the same check.
 # R4：panel.env（和 root 读来定路径的别的东西）只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才
-#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认。
+#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认；重写时它里面的一项也不带过来。写进 panel.env
+#     的每一项都照它的格式验过；panel.env、备份、unit 和 KixDNS 配置里来的值经 ENVIRON 交给 awk，不插进 sed、printf 的格式或 eval。
 # R4: panel.env (and anything else root reads to decide paths) is trusted only when it and every directory above it are
 #     root's and not writable by others; otherwise the KixDNS config path is taken from the KixDNS unit only root can
-#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it.
+#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it; a rewrite carries
+#     nothing of it over. Every value written into panel.env passes its key's format; values from panel.env, a record, a
+#     unit or the KixDNS config reach awk through ENVIRON and are never put into a sed script, a printf format or eval.
 
 PANEL_CONFIG_DIRECTORY=/etc/kixdns-panel
 PANEL_STATE_DIRECTORY=/var/lib/kixdns-panel
@@ -92,8 +97,12 @@ KEEP_PANEL_STOPPED=false
 declare -A USED_PANEL_CONFIGS=()
 # 和 install.sh 同一把锁（take_root_lock）；/proc 的位置，策略测试里换成临时目录 / The same lock as install.sh's
 # (take_root_lock); where /proc is, a scratch directory in the policy tests
-ROOT_LOCK=/run/kixdns-panel-root.lock
+ROOT_LOCK=/run/kixdns-panel-root/lock
 PROC_ROOT=/proc
+# root 的 GID；策略测试里换成跑测试的用户的 / root's GID; the policy tests put the test user's here
+ROOT_GID=0
+# quarantine_record 把东西挪去了哪里（删掉时为空）/ Where quarantine_record moved something (empty when it was deleted)
+QUARANTINED_TO=""
 RESOLVED_DROPIN=/etc/systemd/resolved.conf.d/kixdns-panel.conf
 RESOLV_CONF=/etc/resolv.conf
 KIXDNS_MANAGED=false
@@ -225,14 +234,22 @@ environment_value() {
       *) return 1 ;;
     esac
   fi
-  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
+  AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
 }
 
-# 迁移前的备份里的一项；每次都先验（R1）/ A setting from the pre-migration backup, checked every time (R1)
+# 迁移前的备份里的一项；每次都先验（R1）。它在命令替换里读，所以这里只验、不挪也不停下（NIT 4）：调用它的地方先在自己的 shell 里
+# trusted_record，不能信时在那里挪走、停下；这里验不过只是什么也不给。
+# A setting from the pre-migration backup, checked every time (R1). It is read inside command substitutions, so it only
+# checks, never moving or stopping (NIT 4): each caller first runs trusted_record in its own shell, where an untrusted
+# record is moved away and the run stops; failing the check here just yields nothing.
 backup_value() {
   local key=$1
-  trusted_record external-backup || return 1
-  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${EXTERNAL_BACKUP}/install.env"
+  [[ -e ${EXTERNAL_BACKUP} || -L ${EXTERNAL_BACKUP} ]] || return 1
+  root_only_path "${ROOT_RECORDS}" && [[ $(stat -c '%a' -- "${ROOT_RECORDS}") == 700 ]] || return 1
+  [[ -z "$(record_problem "${EXTERNAL_BACKUP}" external-backup)" ]] || return 1
+  AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${EXTERNAL_BACKUP}/install.env"
 }
 
 # R4：panel.env 不能信时，它记的 KixDNS 配置要和 root 才能改的 unit 里写的一样，才照它的配置路径和 unit 名认 KixDNS；对不上就当作
@@ -268,7 +285,7 @@ check_panel_env_trust() {
 unit_runs_managed_binary() {
   local file=$1
   [[ -f ${file} && ! -L ${file} ]] || return 1
-  awk -v binary="${PANEL_STATE_DIRECTORY}/bin/kixdns" '
+  AWK_BINARY="${PANEL_STATE_DIRECTORY}/bin/kixdns" awk 'BEGIN { binary = ENVIRON["AWK_BINARY"] }
     /^[[:space:]]*ExecStart[[:space:]]*=/ && index($0, binary) { found = 1 }
     END { exit !found }
   ' "${file}"
@@ -302,7 +319,7 @@ managed_binary_present() {
 # A unit the panel wrote carries the panel's Documentation= line or the ExecStart shape the installer renders.
 unit_created_by_panel() {
   local file=$1
-  awk -v binary="${PANEL_STATE_DIRECTORY}/bin/kixdns" '
+  AWK_BINARY="${PANEL_STATE_DIRECTORY}/bin/kixdns" awk 'BEGIN { binary = ENVIRON["AWK_BINARY"] }
     /^Documentation=https:\/\/github\.com\/tuoro\/kixdns-panel[[:space:]]*$/ { found = 1 }
     $1 == "ExecStart=" binary && $2 == "run" && $3 == "--config" && $4 ~ /^\// &&
       $5 == "--admin-socket" && $6 ~ /^\// && NF == 6 { found = 1 }
@@ -459,7 +476,17 @@ record_problem() {
     return 0
   fi
   while IFS= read -r -d '' entry; do
-    if [[ -L ${entry} || ! -f ${entry} ]]; then
+    # 接手旧位置的记录时（第三个参数是 links），v4.3.4 用 systemctl link 装的 unit 备份成的符号链接可以照它指着的文件算
+    # Adopting a record from the old place (third argument links), a symlink v4.3.4 backed up for a unit installed with
+    # systemctl link may count by the file it points at
+    if [[ ${3:-} == links && -L ${entry} ]] && trusted_record_link "${entry}"; then
+      continue
+    fi
+    if [[ -L ${entry} ]]; then
+      printf '里面的 %s 是符号链接，指着的文件或它上面的目录不是只有 root 能改\n' "${entry##*/}"
+      return 0
+    fi
+    if [[ ! -f ${entry} ]]; then
       printf '里面的 %s 不是普通文件\n' "${entry##*/}"
       return 0
     fi
@@ -479,6 +506,35 @@ record_problem() {
   fi
 }
 
+# R1、(b)：记录里的符号链接能不能照它指着的文件算：链接本身归 root，指着的是普通文件、只有一个链接，它和上面每一层目录都归 root、
+# 别人写不进。参数：链接。
+# R1, (b): whether a symlink in a record may count by the file it points at: the link itself root's, pointing at a regular
+# file with one link that, with every directory above it, is root's and not writable by others. Argument: the link.
+trusted_record_link() {
+  local link=$1
+  local target
+  [[ -L ${link} && $(stat -c '%u' -- "${link}") == "${ROOT_UID}" ]] || return 1
+  target="$(readlink -f -- "${link}")" || return 1
+  [[ -f ${target} && ! -L ${target} && $(stat -c '%h' -- "${target}") == 1 ]] || return 1
+  root_only_path "${target}"
+}
+
+# (b)：把复制过来的记录里能信的符号链接换成它指着的文件的内容（普通文件，只有 root 能读写），接手以后记录里就只有普通文件。
+# 不能信的链接留着，后面的检查会拒绝它。参数：复制过来的记录。
+# (b): replace each trusted symlink in a copied record with the content of the file it points at (a regular file only root
+# can read and write), so the adopted record holds regular files only. An untrusted link stays for the check after to
+# refuse. Argument: the copied record.
+materialize_record_links() {
+  local entry
+  while IFS= read -r -d '' entry; do
+    trusted_record_link "${entry}" || continue
+    rm -f -- "${entry}.material"
+    cp -L -- "${entry}" "${entry}.material"
+    chmod 0600 -- "${entry}.material"
+    mv -fT -- "${entry}.material" "${entry}"
+  done < <(find "$1" -mindepth 1 -maxdepth 1 -type l -print0)
+}
+
 # 两个目录在不在同一个文件系统：在才能一次 rename 挪过去。/ Whether two directories are on one filesystem: only then can one
 # rename move a thing across.
 same_filesystem() {
@@ -494,17 +550,23 @@ quarantine_record() {
   local record=$1
   local name=$2
   local destination
-  # 输出的只有去处，别的都不往标准输出写 / Only the destination goes to standard output
-  ensure_root_records > /dev/null
+  QUARANTINED_TO=""
+  # NIT 4：不在命令替换里调用：这里照记录停下时（ensure_root_records），停下的是这次运行本身，面板也照样停着
+  # NIT 4: never called inside a command substitution: a stop over a record here (ensure_root_records) stops the run
+  # itself, with the panel kept stopped as said
+  ensure_root_records
   [[ -d ${ROOT_RECORDS}/quarantine && ! -L ${ROOT_RECORDS}/quarantine ]] ||
-    install -d -o root -g root -m 0700 "${ROOT_RECORDS}/quarantine" > /dev/null
+    install -d -o root -g root -m 0700 "${ROOT_RECORDS}/quarantine"
   destination="${ROOT_RECORDS}/quarantine/${name}.$(date -u +%Y%m%dT%H%M%SZ).$$"
   if same_filesystem "$(dirname -- "${record}")" "${ROOT_RECORDS}/quarantine"; then
     mv -T -- "${record}" "${destination}"
-    printf '%s\n' "${destination}"
+    # NIT 5：挪进来的整个交给 root（不跟着链接），面板账号删掉以后不留归空 UID 的东西
+    # NIT 5: what moved in goes to root as a whole (no link followed), so nothing is left owned by a freed UID once the
+    # panel account is gone
+    chown -hR "${ROOT_UID}:${ROOT_GID}" -- "${destination}"
+    QUARANTINED_TO=${destination}
   else
     rm -rf -- "${record}"
-    printf '\n'
   fi
 }
 
@@ -515,7 +577,8 @@ quarantine_record() {
 refuse_record() {
   local destination
   local where
-  destination="$(quarantine_record "$1" "$2")"
+  quarantine_record "$1" "$2"
+  destination=${QUARANTINED_TO}
   if [[ -n ${destination} ]]; then
     where="已经挪到只有 root 能进的 ${destination}，这次和以后都不会再用；查看以后确认不要了就删掉：sudo rm -rf ${destination}"
   else
@@ -599,7 +662,8 @@ discard_old_records() {
   for name in external-backup resolved-stub; do
     old=${PANEL_STATE_DIRECTORY}/${name}
     [[ -e ${old} || -L ${old} ]] || continue
-    destination="$(quarantine_record "${old}" "${name}")"
+    quarantine_record "${old}" "${name}"
+    destination=${QUARANTINED_TO}
     where="已删掉"
     [[ -z ${destination} ]] || where="挪到了 ${destination}"
     printf '%s 不用（%s）：这台主机已经接手过旧版的记录，之后这里再有的都不是 root 写的。\n' "${old}" "${where}"
@@ -629,26 +693,32 @@ adopt_old_records() {
     [[ -e ${old} || -L ${old} ]] || continue
     if [[ -e ${new} || -L ${new} ]]; then
       trusted_record "${name}"
-      destination="$(quarantine_record "${old}" "${name}")"
+      quarantine_record "${old}" "${name}"
+      destination=${QUARANTINED_TO}
       where="已删掉"
       [[ -z ${destination} ]] || where="挪到了 ${destination}"
       printf '%s 没有用（%s）：只有 root 能进的 %s 里已经有一份，用的是那份。\n' "${old}" "${where}" "${new}"
       continue
     fi
-    problem="$(record_problem "${old}" "${name}")"
+    problem="$(record_problem "${old}" "${name}" links)"
     if [[ -n ${problem} ]]; then
-      destination="$(quarantine_record "${old}" "${name}")"
+      quarantine_record "${old}" "${name}"
+      destination=${QUARANTINED_TO}
       where="已删掉"
       [[ -z ${destination} ]] || where="挪到了 ${destination}"
       printf '%s 不能信（%s），没有用它（%s）；这台主机就当作没有这份记录。\n' "${old}" "${problem}" "${where}"
+      [[ -z ${destination} || ${problem} != *符号链接* ]] ||
+        printf '确认它就是迁移前的备份的话：把里面的符号链接换成它指着的那个文件（sudo cp --remove-destination 指着的文件 那个链接），再 sudo mv %s %s，然后再运行一次。\n' \
+          "${destination}" "${new}"
       continue
     fi
     ensure_root_records
-    if same_filesystem "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}"; then
+    if same_filesystem "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}" && [[ -z "$(find "${old}" -mindepth 1 -type l -print -quit)" ]]; then
       mv -T -- "${old}" "${new}"
     else
       rm -rf -- "${new}.incoming"
       cp -a -- "${old}" "${new}.incoming"
+      materialize_record_links "${new}.incoming"
       problem="$(record_problem "${new}.incoming" "${name}")"
       if [[ -n ${problem} ]]; then
         rm -rf -- "${new}.incoming"
@@ -688,13 +758,43 @@ secure_root_records() {
 # asks the helper for therefore cannot get in, and cannot restart the panel half way through this run.
 take_root_lock() {
   local fd=${KIXDNS_PANEL_ROOT_LOCK_FD:-}
+  local directory=${ROOT_LOCK%/*}
   if [[ ${fd} =~ ^[0-9]+$ && $(readlink -- "/proc/$$/fd/${fd}" 2>/dev/null) == "${ROOT_LOCK}" ]] && flock -n "${fd}"; then
     return 0
   fi
+  # SHOULD 2：锁放在只有 root 能进的目录里：面板打不开它，也就拿不住它（以前 0644 的锁文件面板能只读打开、一直拿着共享锁）
+  # SHOULD 2: the lock lives in a directory only root can enter: the panel cannot open it, so it cannot hold it (the 0644
+  # lock file before could be opened read-only by the panel and held with a shared lock)
+  [[ -e ${directory} || -L ${directory} ]] || install -d -o root -g root -m 0700 "${directory}"
+  [[ -d ${directory} && ! -L ${directory} && $(stat -c '%u %a' -- "${directory}") == "${ROOT_UID} 700" ]] ||
+    fail "${directory} 不是只有 root 能进的目录，锁不能放在那里；先查看它是怎么来的"
   exec {ROOT_LOCK_FD}>> "${ROOT_LOCK}"
   flock -n "${ROOT_LOCK_FD}" ||
-    fail "另一个安装、卸载或在线更新正在运行（同一时间只能有一个）；等它结束再运行。"
+    fail "另一个安装、卸载或在线更新正在运行（同一时间只能有一个$(root_lock_holder)）；等它结束再运行。"
   export KIXDNS_PANEL_ROOT_LOCK_FD=${ROOT_LOCK_FD}
+}
+
+# 拿着锁的是谁：从 /proc/locks 按锁文件的设备号和 inode 找出进程，写成「：PID n，程序 x，unit y」；找不到时什么也不输出。
+# Who holds the lock: the process found in /proc/locks by the lock file's device and inode, as "：PID n，程序 x，unit y";
+# nothing when none is found.
+root_lock_holder() {
+  local inode
+  local device
+  local pid
+  local name
+  local unit
+  read -r inode device < <(stat -c '%i %d' -- "${ROOT_LOCK}" 2>/dev/null) || return 0
+  [[ ${inode} =~ ^[0-9]+$ && ${device} =~ ^[0-9]+$ ]] || return 0
+  # /proc/locks 写的是「主设备号:次设备号:inode」，设备号是十六进制 / /proc/locks reads "major:minor:inode", the numbers in hex
+  device="$(printf '%02x:%02x:%s' "$(((device >> 8) & 0xfff | ((device >> 32) & ~0xfff)))" \
+    "$(((device & 0xff) | ((device >> 12) & ~0xff)))" "${inode}")"
+  pid="$(AWK_DEVICE=${device} awk '$2 != "->" && $6 == ENVIRON["AWK_DEVICE"] { print $5; exit }' "${PROC_ROOT}/locks" 2>/dev/null)"
+  [[ ${pid} =~ ^[1-9][0-9]*$ ]] || return 0
+  name="$(tr -cd 'A-Za-z0-9._-' < "${PROC_ROOT}/${pid}/comm" 2>/dev/null)"
+  unit="$(sed -n 's|^0::.*/\([A-Za-z0-9@._-]*\.\(service\|scope\)\)$|\1|p' "${PROC_ROOT}/${pid}/cgroup" 2>/dev/null | head -n 1)"
+  printf '：拿着锁的是 PID %s' "${pid}"
+  [[ -z ${name} ]] || printf '，程序 %s' "${name}"
+  [[ -z ${unit} ]] || printf '，unit %s' "${unit}"
 }
 
 # R2：要停的进程的 UID：kixdns-panel 账号的，和这些面板能写的路径的属主里已经没有账号的（旧版卸载器删掉面板账号以后，它的进程
@@ -818,7 +918,7 @@ managed_unit_config() {
     (((8#$(stat -c '%a' -- "${path}") & 8#022) == 0)) || return 0
   done
   [[ -f ${file} ]] || return 0
-  awk -v binary="${PANEL_STATE_DIRECTORY}/bin/kixdns" '
+  AWK_BINARY="${PANEL_STATE_DIRECTORY}/bin/kixdns" awk 'BEGIN { binary = ENVIRON["AWK_BINARY"] }
     /^ExecStart=/ {
       line = $0
       sub(/^ExecStart=/, "", line)
@@ -1005,6 +1105,7 @@ validate_non_interactive() {
 
 load_external_backup() {
   [[ ${HAS_EXTERNAL_BACKUP} == true ]] || return 0
+  trusted_record external-backup || fail "迁移前的备份不见了"
   ORIGINAL_UNIT="$(backup_value KIXDNS_SERVICE_UNIT || true)"
   ORIGINAL_ENABLED="$(backup_value KIXDNS_WAS_ENABLED || true)"
   ORIGINAL_ACTIVE="$(backup_value KIXDNS_WAS_ACTIVE || true)"
@@ -1355,7 +1456,7 @@ hand_back_directory() {
 unit_service_setting() {
   local key=$1
   shift
-  awk -v key="${key}" '
+  AWK_KEY="${key}" awk 'BEGIN { key = ENVIRON["AWK_KEY"] }
     FNR == 1 { section = "" }
     /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section); next }
     section == "[Service]" && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
@@ -1434,7 +1535,8 @@ original_unit_files() {
   local -A dropins=()
   if [[ -f ${backup}/unit-fragment ]]; then
     printf '%s\n' "${backup}/unit-fragment"
-    find "${backup}" -maxdepth 1 -name 'unit-dropin-*.conf' -printf '%f\n' | sort -t- -k3 -n | sed "s|^|${backup}/|"
+    find "${backup}" -maxdepth 1 -name 'unit-dropin-*.conf' -printf '%f\n' | sort -t- -k3 -n |
+      while IFS= read -r file; do printf '%s/%s\n' "${backup}" "${file}"; done
     return 0
   fi
   if [[ -f ${backup}/kixdns.service ]]; then
@@ -1642,9 +1744,8 @@ hand_used_panel_configs_to_root() {
 remove_panel_config_directory() {
   local directory=${PANEL_CONFIG_DIRECTORY}
   local config
-  local top
-  local name
-  local -A tops=()
+  local path
+  local -A keep=()
   if [[ ! -d ${directory} || -L ${directory} ]]; then
     rm -f -- "${directory}"
     return 0
@@ -1653,13 +1754,29 @@ remove_panel_config_directory() {
     rm -rf -- "${directory}"
     return 0
   fi
+  # 留下的只有：有 unit 用着的配置，和它到面板配置目录之间的每一层目录（配置放在更深的子目录里也一样）
+  # All that stays: the configs a unit uses, and every directory between one and the panel config directory (a config
+  # in a deeper subdirectory alike)
   for config in "${!USED_PANEL_CONFIGS[@]}"; do
-    top=${config#"${directory}"/}
-    tops[${top%%/*}]=1
+    keep[${config}]=1
+    path="$(dirname -- "${config}")"
+    while [[ ${path} == "${directory}"/* ]]; do
+      keep[${path}]=1
+      path="$(dirname -- "${path}")"
+    done
   done
-  while IFS= read -r -d '' name; do
-    [[ -n ${tops[${name}]:-} ]] || rm -rf -- "${directory:?}/${name}"
-  done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
+  while IFS= read -r -d '' path; do
+    [[ -n ${keep[${path}]:-} ]] || rm -rf -- "${path}"
+  done < <(find "${directory}" -mindepth 1 -depth -print0)
+  # (a)：留下的目录还归面板的交给 root（组不变、去掉组和别人的写权限），删了面板账号也不留归空 UID 的目录
+  # (a): the directories that stay and are still the panel's go to root (group kept, group and others losing write), so no
+  # directory is left owned by a freed UID once the panel account goes
+  for path in "${!keep[@]}"; do
+    if [[ -d ${path} && ! -L ${path} ]] && panel_owned "${path}"; then
+      chown -h root -- "${path}"
+      chmod go-w -- "${path}"
+    fi
+  done
   chown -h root -- "${directory}"
   chmod go-w -- "${directory}"
 }
@@ -1823,7 +1940,8 @@ state_value() {
   local file=$1
   local key=$2
   [[ -f ${file} ]] || return 1
-  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${file}"
+  AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${file}"
 }
 
 # 与 install.sh 的 restore_resolved_stub 保持一致：卸载器单独分发，不能 source 安装器。
@@ -1899,7 +2017,7 @@ mark_kixdns_unmanaged() {
   [[ -f ${PANEL_ENV} ]] || return 0
   extra="$(printf '%s\n' "$@")"
   temporary="$(mktemp "${PANEL_CONFIG_DIRECTORY}/.panel.env.XXXXXX")"
-  awk -v extra="${extra}" '
+  AWK_EXTRA="${extra}" awk 'BEGIN { extra = ENVIRON["AWK_EXTRA"] }
     !/^KIXDNS_(MANAGEMENT_ENABLED|REMOVED|USER_CREATED|GROUP_CREATED)=/ { print }
     END { print "KIXDNS_MANAGEMENT_ENABLED=false"; if (extra != "") print extra }
   ' "${PANEL_ENV}" > "${temporary}"
@@ -1971,6 +2089,7 @@ hand_back_in_place_config() {
   local paths=()
   local befores=()
   [[ -n ${ORIGINAL_CONFIG} && ${ORIGINAL_CONFIG} == "${MANAGED_CONFIG}" ]] || return 0
+  trusted_record external-backup || return 0
   [[ -z $(backup_value KIXDNS_MANAGED_CONFIG || true) ]] || return 0
   case ${ORIGINAL_CONFIG} in
     "${PANEL_CONFIG_DIRECTORY}"/* | "${PANEL_STATE_DIRECTORY}"/*) return 0 ;;
@@ -2005,6 +2124,7 @@ hand_back_kept_in_place_directory() {
   local after
   [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep && ${CONFIG_ACTION} == keep && ${HAS_EXTERNAL_BACKUP} == true ]] ||
     return 0
+  trusted_record external-backup || return 0
   config="$(backup_value KIXDNS_CONFIG || true)"
   [[ -n ${config} && ${config} == "${MANAGED_CONFIG}" && -z $(backup_value KIXDNS_MANAGED_CONFIG || true) ]] || return 0
   directory="$(dirname -- "${config}")"

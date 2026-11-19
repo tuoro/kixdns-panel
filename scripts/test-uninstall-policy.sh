@@ -105,6 +105,7 @@ source "${UNINSTALLER}"
 # 停面板账号的进程（R2）在临时主机上一律当作已经没有进程 / On scratch hosts no panel-account process is left (R2)
 account_signal() { :; }
 account_live_processes() { return 1; }
+ROOT_GID="$(id -g)"
 # 直接放在 /tmp 里的夹具（/tmp 谁都能写）当作 root 的 panel.env；临时主机（uninstall_scratch_host）里照真的查（R4）
 # Fixtures right in /tmp (writable by anyone) count as root's panel.env; scratch hosts (uninstall_scratch_host) check for
 # real (R4)
@@ -692,7 +693,7 @@ migrate_scratch_host() {
     }
     chown() { :; }
     kixdns_can_read() { return 0; }
-    update_panel_environment() { render_panel_environment /dev/null \"\${PANEL_ENV}\" commit panel '' 1 fork; }
+    update_panel_environment() { render_panel_environment /dev/null \"\${PANEL_ENV}\" 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 '' 1 fork; }
     # ACCOUNTS_MISSING=true：迁移前还没有 kixdns 账号和组，这次迁移建的；否则它们原来就有。不看开发机上真实的账号。
     # ACCOUNTS_MISSING=true: the kixdns account and group did not exist before the migration, which created them; otherwise
     # they were there already. The real accounts of the dev host are not looked at.
@@ -1746,8 +1747,12 @@ for reader in value present resolved; do
     fail() { printf 'FAILED %s\n' "$*"; exit 1; }
     case ${reader} in
       value)
+        # backup_value 在命令替换里读：它只验、不给值；挪走和停下由调用它的地方先跑的 trusted_record 做（NIT 4）
+        # backup_value is read inside command substitutions: it only checks and gives no value; moving away and stopping
+        # come from the trusted_record its caller runs first (NIT 4)
         record=${EXTERNAL_BACKUP}
         printf 'VALUE=%s\n' "$(backup_value KIXDNS_SERVICE_UNIT)"
+        trusted_record external-backup
         ;;
       present)
         record=${EXTERNAL_BACKUP}
@@ -1987,6 +1992,28 @@ helper_line="$(grep -n 'systemctl stop --job-mode=ignore-dependencies kixdns-pan
 panel_line="$(grep -n 'systemctl stop kixdns-panel.service' <<< "${records_quiesce}" | head -n 1 | cut -d: -f1 || true)"
 [[ -n ${helper_line} && -n ${panel_line} && ${helper_line} -lt ${panel_line} ]] ||
   { printf '断言失败：挪记录前面板停下之前应先停 helper（helper=%s panel=%s）\n' "${helper_line}" "${panel_line}" >&2; exit 1; }
+
+# 回归（(a)，S4）：不是保留的 KixDNS、别的 unit 用着面板配置目录的子目录里的配置时，子目录也交给 root，子目录里别的东西删掉：
+# 以前子目录还归面板，删了面板账号以后归一个空出来的 UID。
+# Regression ((a), S4): when a unit other than the kept KixDNS uses a config in a subdirectory of the panel config
+# directory, the subdirectory goes to root too and whatever else is in it goes: the subdirectory used to stay the panel's,
+# owned by a freed UID once the panel account was removed.
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+mkdir -p "${host}/panel-etc/sub/deeper"
+printf '{}\n' > "${host}/panel-etc/sub/deeper/user.json"
+chmod 0640 "${host}/panel-etc/sub/deeper/user.json"
+: > "${host}/panel-etc/sub/leftover"
+printf '[Service]\nUser=kixdns\nGroup=kixdns\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${host}/panel-etc/sub/deeper/user.json" \
+  > "${host}/units/user-kixdns.service"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "子目录里有 unit 用着的配置时卸载不应失败"
+[[ -f ${host}/panel-etc/sub/deeper/user.json && ! -e ${host}/panel-etc/sub/leftover ]] ||
+  { printf '断言失败：子目录里只留 unit 用着的配置\n' >&2; exit 1; }
+for kept_directory in sub sub/deeper; do
+  assert_contains "$(cat "${chown_log}")" "chown -h root -- ${host}/panel-etc/${kept_directory}"$'\n' "${kept_directory} 也应交给 root"
+done
+assert_contains "$(cat "${chown_log}")" "chown -h root:kixdns -- ${host}/panel-etc/sub/deeper/user.json" "子目录里的配置应交给 root"
 
 # 规则写在脚本开头 / The rules are written at the top of the script
 for rule in R1 R2 R3 R4; do

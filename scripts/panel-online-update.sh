@@ -11,7 +11,11 @@ readonly GITHUB_TOKEN_FILE="/var/lib/kixdns-panel/github-token"
 # 安装器、卸载器和在线更新器共用的锁（install.sh 的 take_root_lock）；策略测试里换成临时文件
 # The lock the installer, the uninstaller and the online updater share (take_root_lock in install.sh); a scratch file in the
 # policy tests
-ROOT_LOCK="/run/kixdns-panel-root.lock"
+ROOT_LOCK="/run/kixdns-panel-root/lock"
+# SHOULD 2：两把锁都在只有 root 能进的目录里，面板打不开、也就拿不住它们 / SHOULD 2: both locks live in a directory only root
+# can enter, so the panel can neither open nor hold them
+LOCK_DIRECTORY="${ROOT_LOCK%/*}"
+UPDATE_LOCK="${LOCK_DIRECTORY}/update.lock"
 TARGET_VERSION=""
 GITHUB_API_CONFIG=""
 STEP_ERRORS=""
@@ -140,7 +144,8 @@ fail_update() {
 environment_value() {
   local key=$1
   [[ -f ${PANEL_ENV} ]] || return 1
-  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
+  AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
 }
 
 trusted_root_executable() {
@@ -172,7 +177,10 @@ main() {
   STEP_ERRORS="$(mktemp "${STATUS_DIRECTORY}/.errors.XXXXXX")"
   trusted_root_executable "${INSTALLER}" || fail_because "一键安装器 ${INSTALLER} 不是 root 所有或可被他人改写"
   trusted_root_executable "${PANEL_SERVER}" || fail_because "面板程序 ${PANEL_SERVER} 不是 root 所有或可被他人改写"
-  exec 9>/run/kixdns-panel-update.lock
+  [[ -e ${LOCK_DIRECTORY} || -L ${LOCK_DIRECTORY} ]] || install -d -o root -g root -m 0700 "${LOCK_DIRECTORY}"
+  [[ -d ${LOCK_DIRECTORY} && ! -L ${LOCK_DIRECTORY} && $(stat -c '%u %a' -- "${LOCK_DIRECTORY}") == "$(id -u) 700" ]] ||
+    fail_because "${LOCK_DIRECTORY} 不是只有 root 能进的目录，锁不能放在那里"
+  exec 9>> "${UPDATE_LOCK}"
   flock -n 9 || {
     # 另一个更新正在写状态文件；这里再写一份失败会盖掉它的进度。
     # Another update owns the status file; writing a failure here would overwrite its progress.

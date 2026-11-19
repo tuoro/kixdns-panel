@@ -24,24 +24,29 @@ set -Eeuo pipefail
 # R2：面板账号还有任何进程时，root 不碰它能写的路径。先停面板，再以它的身份 kill -KILL -1，一直到 /proc 里没有一个归它（真实、
 #     有效或保存的 UID）的活进程，再发一次（换 PID、改成不可转储都躲不掉）；面板一直停着，直到这些路径上的事全做完，回滚也一样：
 #     放回文件和属主、删这次建的目录和账号，都在重启旧面板之前。在线更新（--panel-only-update）走同一条路。面板停下之前先停
-#     helper（面板能请它以 root 起在线更新），安装器、卸载器和在线更新器同一时间只跑一个（同一把锁，整个运行都拿着）。
+#     helper（面板能请它以 root 起在线更新），安装器、卸载器和在线更新器同一时间只跑一个（同一把锁，放在只有 root 能进的目录里，
+#     整个运行都拿着）。
 # R2: root never touches a path the panel account can write while any process of that account exists. The panel is
 #     stopped, then kill -KILL -1 runs as the account until /proc shows no live process of it (real, effective or saved
 #     UID), and once more (changing PIDs or turning non-dumpable does not escape it); the panel stays stopped until every
 #     root operation on such paths is finished, the rollback included: files and owners put back, this run's directories
 #     and accounts removed, all before the old panel restarts. The online update (--panel-only-update) takes the same
 #     path. The helper stops before the panel (the panel can ask it to start an online update as root), and the
-#     installer, the uninstaller and the online updater run one at a time (one lock, held for the whole run).
+#     installer, the uninstaller and the online updater run one at a time (one lock in a directory only root can enter,
+#     held for the whole run).
 # R3：面板能写的路径上，root 从不跟着符号链接走：chown 用 -h；chmod 只用在照 R2 停了以后、lstat 查过不是符号链接的目录或普通文件上；
 #     已有的、面板能写的目录不用 install -d；这些路径上的重定向、sed -i、cp、mv、rm -rf、find -exec 都要先这样查过。
 # R3: on panel-writable paths root never follows a symlink: chown with -h; chmod only on a directory or regular file checked
 #     by lstat, under R2, to be no symlink; never install -d on an existing directory the panel can write; no redirection,
 #     sed -i, cp, mv, rm -rf, find -exec or tar on such paths without the same check.
 # R4：panel.env（和 root 读来定路径的别的东西）只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才
-#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认。
+#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认；重写时它里面的一项也不带过来。写进 panel.env
+#     的每一项都照它的格式验过；panel.env、备份、unit 和 KixDNS 配置里来的值经 ENVIRON 交给 awk，不插进 sed、printf 的格式或 eval。
 # R4: panel.env (and anything else root reads to decide paths) is trusted only when it and every directory above it are
 #     root's and not writable by others; otherwise the KixDNS config path is taken from the KixDNS unit only root can
-#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it.
+#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it; a rewrite carries
+#     nothing of it over. Every value written into panel.env passes its key's format; values from panel.env, a record, a
+#     unit or the KixDNS config reach awk through ENVIRON and are never put into a sed script, a printf format or eval.
 
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 PANEL_USER="kixdns-panel"
@@ -184,8 +189,15 @@ HELPER_WAS_ACTIVE=false
 KEEP_PANEL_STOPPED=false
 # 安装器、卸载器、在线更新器共用的锁（take_root_lock）；/proc 的位置，策略测试里换成临时目录 / The lock the installer,
 # uninstaller and online updater share (take_root_lock); where /proc is, a scratch directory in the policy tests
-ROOT_LOCK=/run/kixdns-panel-root.lock
+ROOT_LOCK=/run/kixdns-panel-root/lock
 PROC_ROOT=/proc
+# root 的 GID；策略测试里换成跑测试的用户的 / root's GID; the policy tests put the test user's here
+ROOT_GID=0
+# quarantine_record 把东西挪去了哪里（删掉时为空）/ Where quarantine_record moved something (empty when it was deleted)
+QUARANTINED_TO=""
+# SHOULD 3：回滚真的开始了（rollback_install 一进来就设）；在这之前退出时由 on_installer_exit 收拾 / SHOULD 3: the rollback
+# really started (set first thing in rollback_install); an exit before that is tidied up by on_installer_exit
+ROLLBACK_STARTED=false
 ONE_CLICK_URL="https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh"
 # 和 uninstall.sh 同一个：本地的卸载命令随面板删掉以后接着卸载用的 / The same as uninstall.sh's: what carries an uninstall on
 # once the local command is gone with the panel
@@ -281,9 +293,43 @@ validate_unit() {
 validate_absolute_path() {
   local label=$1
   local path=$2
-  [[ ${path} == /* && ${#path} -le 4096 && ! ${path} =~ [[:space:]] &&
-    ${path}/ != *//* && ${path}/ != */./* && ${path}/ != */../* ]] ||
-    fail "${label}必须是绝对路径，不含空白，也不含 .、.. 或空的一段（//）"
+  safe_absolute_path "${path}" ||
+    fail "${label}必须是绝对路径，不含空白、控制字符和反斜杠，也不含 .、.. 或空的一段（//）"
+}
+
+# 能写进 unit、panel.env 的绝对路径：不含空白、控制字符和反斜杠（awk -v、systemd 都会解开反斜杠），也不含 .、.. 或空的一段。
+# An absolute path fit for a unit or panel.env: no whitespace, control character or backslash (awk -v and systemd both
+# decode backslashes), and no ., .. or empty segment.
+safe_absolute_path() {
+  local path=$1
+  [[ ${path} == /* && ${#path} -le 4096 && ${path} != *[[:space:][:cntrl:]\\]* &&
+    ${path}/ != *//* && ${path}/ != */./* && ${path}/ != */../* ]]
+}
+
+# unit 名照 validate_unit 的规则对不对；只在子 shell 里换一下来验，外面的不动。参数：unit 名。
+# Whether a unit name passes validate_unit's rule; swapped only inside a subshell to check it. Argument: the unit name.
+unit_name_valid() {
+  # shellcheck disable=SC2030 # 只在子 shell 里换 / Swapped in the subshell only
+  (KIXDNS_SERVICE_UNIT=$1 && validate_unit) > /dev/null 2>&1
+}
+
+# MUST 1：写进 panel.env 的每一项照它的格式验：提交是 40 位十六进制，编号是正整数，来源只能是 fork，Release 标签、路径、unit 名照
+# 各自的规则；空值表示没记。别的键不归安装器写。参数：键，值。
+# MUST 1: every value written into panel.env is checked by its key's format: commits 40 hex digits, ids positive integers,
+# the source only fork, release tags, paths and unit names by their own rules; empty means not recorded. Other keys are not
+# the installer's to write. Arguments: the key, the value.
+panel_env_value_valid() {
+  local key=$1
+  local value=$2
+  case ${key} in
+    KIXDNS_INSTALLED_COMMIT | KIXDNS_PANEL_INSTALLED_COMMIT) [[ -z ${value} || ${value} =~ ^[0-9a-fA-F]{40}$ ]] ;;
+    KIXDNS_INSTALLED_SOURCE_ID) [[ -z ${value} || ${value} =~ ^[1-9][0-9]{0,18}$ ]] ;;
+    KIXDNS_INSTALLED_SOURCE) [[ -z ${value} || ${value} == fork ]] ;;
+    KIXDNS_PANEL_INSTALLED_RELEASE) [[ -z ${value} || ${value} =~ ^[0-9A-Za-z._-]{1,100}$ ]] ;;
+    KIXDNS_CONFIG | KIXDNS_BINARY | KIXDNS_CONTROL_SOCKET | KIXDNS_SERVICE_HELPER_SOCKET) safe_absolute_path "${value}" ;;
+    KIXDNS_SERVICE_UNIT) unit_name_valid "${value}" ;;
+    *) return 1 ;;
+  esac
 }
 
 # panel.env 里的一项。R4：不能信的 panel.env 只给出显示用的几项（版本只用来显示和记回 panel.env，是不是同一版照 root 的面板程序
@@ -299,12 +345,11 @@ environment_value() {
   if [[ ${PANEL_ENV_TRUSTED} == false ]]; then
     case ${key} in
       KIXDNS_CONFIG | KIXDNS_SERVICE_UNIT) [[ ${PANEL_ENV_VERIFIED} == true ]] || return 1 ;;
-      KIXDNS_PANEL_BIND | KIXDNS_PANEL_INSTALLED_RELEASE | KIXDNS_PANEL_INSTALLED_COMMIT | KIXDNS_INSTALLED_COMMIT | \
-        KIXDNS_INSTALLED_SOURCE_ID | KIXDNS_INSTALLED_SOURCE) ;;
       *) return 1 ;;
     esac
   fi
-  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
+  AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
 }
 
 # R4：panel.env 不能信时（panel_env_trusted），它记的 KixDNS 配置要和 root 才能改的 unit 里写的一样，才照它的配置路径和 unit 名做；
@@ -321,6 +366,7 @@ check_panel_env_trust() {
   ! panel_env_trusted || return 0
   PANEL_ENV_TRUSTED=false
   unit="$(state_file_value "${PANEL_ENV}" KIXDNS_SERVICE_UNIT || true)"
+  # shellcheck disable=SC2031 # 用的是外面没被改过的那个 / The outer, unchanged one is meant
   unit=${unit:-${KIXDNS_SERVICE_UNIT}}
   recorded="$(state_file_value "${PANEL_ENV}" KIXDNS_CONFIG || true)"
   unit_file="${SYSTEMD_UNIT_DIRECTORY}/${unit}"
@@ -345,7 +391,8 @@ state_file_value() {
   local file=$1
   local key=$2
   [[ -f ${file} ]] || return 1
-  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${file}"
+  AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${file}"
 }
 
 fail() {
@@ -664,7 +711,17 @@ record_problem() {
     return 0
   fi
   while IFS= read -r -d '' entry; do
-    if [[ -L ${entry} || ! -f ${entry} ]]; then
+    # 接手旧位置的记录时（第三个参数是 links），v4.3.4 用 systemctl link 装的 unit 备份成的符号链接可以照它指着的文件算
+    # Adopting a record from the old place (third argument links), a symlink v4.3.4 backed up for a unit installed with
+    # systemctl link may count by the file it points at
+    if [[ ${3:-} == links && -L ${entry} ]] && trusted_record_link "${entry}"; then
+      continue
+    fi
+    if [[ -L ${entry} ]]; then
+      printf '里面的 %s 是符号链接，指着的文件或它上面的目录不是只有 root 能改\n' "${entry##*/}"
+      return 0
+    fi
+    if [[ ! -f ${entry} ]]; then
       printf '里面的 %s 不是普通文件\n' "${entry##*/}"
       return 0
     fi
@@ -684,6 +741,35 @@ record_problem() {
   fi
 }
 
+# R1、(b)：记录里的符号链接能不能照它指着的文件算：链接本身归 root，指着的是普通文件、只有一个链接，它和上面每一层目录都归 root、
+# 别人写不进。参数：链接。
+# R1, (b): whether a symlink in a record may count by the file it points at: the link itself root's, pointing at a regular
+# file with one link that, with every directory above it, is root's and not writable by others. Argument: the link.
+trusted_record_link() {
+  local link=$1
+  local target
+  [[ -L ${link} && $(stat -c '%u' -- "${link}") == "${ROOT_UID}" ]] || return 1
+  target="$(readlink -f -- "${link}")" || return 1
+  [[ -f ${target} && ! -L ${target} && $(stat -c '%h' -- "${target}") == 1 ]] || return 1
+  root_only_path "${target}"
+}
+
+# (b)：把复制过来的记录里能信的符号链接换成它指着的文件的内容（普通文件，只有 root 能读写），接手以后记录里就只有普通文件。
+# 不能信的链接留着，后面的检查会拒绝它。参数：复制过来的记录。
+# (b): replace each trusted symlink in a copied record with the content of the file it points at (a regular file only root
+# can read and write), so the adopted record holds regular files only. An untrusted link stays for the check after to
+# refuse. Argument: the copied record.
+materialize_record_links() {
+  local entry
+  while IFS= read -r -d '' entry; do
+    trusted_record_link "${entry}" || continue
+    rm -f -- "${entry}.material"
+    cp -L -- "${entry}" "${entry}.material"
+    chmod 0600 -- "${entry}.material"
+    mv -fT -- "${entry}.material" "${entry}"
+  done < <(find "$1" -mindepth 1 -maxdepth 1 -type l -print0)
+}
+
 # 两个目录在不在同一个文件系统：在才能一次 rename 挪过去。/ Whether two directories are on one filesystem: only then can one
 # rename move a thing across.
 same_filesystem() {
@@ -699,17 +785,23 @@ quarantine_record() {
   local record=$1
   local name=$2
   local destination
-  # 输出的只有去处，别的都不往标准输出写 / Only the destination goes to standard output
-  ensure_root_records > /dev/null
+  QUARANTINED_TO=""
+  # NIT 4：不在命令替换里调用：这里照记录停下时（ensure_root_records），停下的是这次运行本身，面板也照样停着
+  # NIT 4: never called inside a command substitution: a stop over a record here (ensure_root_records) stops the run
+  # itself, with the panel kept stopped as said
+  ensure_root_records
   [[ -d ${ROOT_RECORDS}/quarantine && ! -L ${ROOT_RECORDS}/quarantine ]] ||
-    install -d -o root -g root -m 0700 "${ROOT_RECORDS}/quarantine" > /dev/null
+    install -d -o root -g root -m 0700 "${ROOT_RECORDS}/quarantine"
   destination="${ROOT_RECORDS}/quarantine/${name}.$(date -u +%Y%m%dT%H%M%SZ).$$"
   if same_filesystem "$(dirname -- "${record}")" "${ROOT_RECORDS}/quarantine"; then
     mv -T -- "${record}" "${destination}"
-    printf '%s\n' "${destination}"
+    # NIT 5：挪进来的整个交给 root（不跟着链接），面板账号删掉以后不留归空 UID 的东西
+    # NIT 5: what moved in goes to root as a whole (no link followed), so nothing is left owned by a freed UID once the
+    # panel account is gone
+    chown -hR "${ROOT_UID}:${ROOT_GID}" -- "${destination}"
+    QUARANTINED_TO=${destination}
   else
     rm -rf -- "${record}"
-    printf '\n'
   fi
 }
 
@@ -720,7 +812,8 @@ quarantine_record() {
 refuse_record() {
   local destination
   local where
-  destination="$(quarantine_record "$1" "$2")"
+  quarantine_record "$1" "$2"
+  destination=${QUARANTINED_TO}
   if [[ -n ${destination} ]]; then
     where="已经挪到只有 root 能进的 ${destination}，这次和以后都不会再用；查看以后确认不要了就删掉：sudo rm -rf ${destination}"
   else
@@ -804,7 +897,8 @@ discard_old_records() {
   for name in external-backup resolved-stub; do
     old=${PANEL_STATE_DIRECTORY}/${name}
     [[ -e ${old} || -L ${old} ]] || continue
-    destination="$(quarantine_record "${old}" "${name}")"
+    quarantine_record "${old}" "${name}"
+    destination=${QUARANTINED_TO}
     where="已删掉"
     [[ -z ${destination} ]] || where="挪到了 ${destination}"
     printf '%s 不用（%s）：这台主机已经接手过旧版的记录，之后这里再有的都不是 root 写的。\n' "${old}" "${where}"
@@ -834,26 +928,32 @@ adopt_old_records() {
     [[ -e ${old} || -L ${old} ]] || continue
     if [[ -e ${new} || -L ${new} ]]; then
       trusted_record "${name}"
-      destination="$(quarantine_record "${old}" "${name}")"
+      quarantine_record "${old}" "${name}"
+      destination=${QUARANTINED_TO}
       where="已删掉"
       [[ -z ${destination} ]] || where="挪到了 ${destination}"
       printf '%s 没有用（%s）：只有 root 能进的 %s 里已经有一份，用的是那份。\n' "${old}" "${where}" "${new}"
       continue
     fi
-    problem="$(record_problem "${old}" "${name}")"
+    problem="$(record_problem "${old}" "${name}" links)"
     if [[ -n ${problem} ]]; then
-      destination="$(quarantine_record "${old}" "${name}")"
+      quarantine_record "${old}" "${name}"
+      destination=${QUARANTINED_TO}
       where="已删掉"
       [[ -z ${destination} ]] || where="挪到了 ${destination}"
       printf '%s 不能信（%s），没有用它（%s）；这台主机就当作没有这份记录。\n' "${old}" "${problem}" "${where}"
+      [[ -z ${destination} || ${problem} != *符号链接* ]] ||
+        printf '确认它就是迁移前的备份的话：把里面的符号链接换成它指着的那个文件（sudo cp --remove-destination 指着的文件 那个链接），再 sudo mv %s %s，然后再运行一次。\n' \
+          "${destination}" "${new}"
       continue
     fi
     ensure_root_records
-    if same_filesystem "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}"; then
+    if same_filesystem "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}" && [[ -z "$(find "${old}" -mindepth 1 -type l -print -quit)" ]]; then
       mv -T -- "${old}" "${new}"
     else
       rm -rf -- "${new}.incoming"
       cp -a -- "${old}" "${new}.incoming"
+      materialize_record_links "${new}.incoming"
       problem="$(record_problem "${new}.incoming" "${name}")"
       if [[ -n ${problem} ]]; then
         rm -rf -- "${new}.incoming"
@@ -893,13 +993,43 @@ secure_root_records() {
 # asks the helper for therefore cannot get in, and cannot restart the panel half way through this run.
 take_root_lock() {
   local fd=${KIXDNS_PANEL_ROOT_LOCK_FD:-}
+  local directory=${ROOT_LOCK%/*}
   if [[ ${fd} =~ ^[0-9]+$ && $(readlink -- "/proc/$$/fd/${fd}" 2>/dev/null) == "${ROOT_LOCK}" ]] && flock -n "${fd}"; then
     return 0
   fi
+  # SHOULD 2：锁放在只有 root 能进的目录里：面板打不开它，也就拿不住它（以前 0644 的锁文件面板能只读打开、一直拿着共享锁）
+  # SHOULD 2: the lock lives in a directory only root can enter: the panel cannot open it, so it cannot hold it (the 0644
+  # lock file before could be opened read-only by the panel and held with a shared lock)
+  [[ -e ${directory} || -L ${directory} ]] || install -d -o root -g root -m 0700 "${directory}"
+  [[ -d ${directory} && ! -L ${directory} && $(stat -c '%u %a' -- "${directory}") == "${ROOT_UID} 700" ]] ||
+    fail "${directory} 不是只有 root 能进的目录，锁不能放在那里；先查看它是怎么来的"
   exec {ROOT_LOCK_FD}>> "${ROOT_LOCK}"
   flock -n "${ROOT_LOCK_FD}" ||
-    fail "另一个安装、卸载或在线更新正在运行（同一时间只能有一个）；等它结束再运行。"
+    fail "另一个安装、卸载或在线更新正在运行（同一时间只能有一个$(root_lock_holder)）；等它结束再运行。"
   export KIXDNS_PANEL_ROOT_LOCK_FD=${ROOT_LOCK_FD}
+}
+
+# 拿着锁的是谁：从 /proc/locks 按锁文件的设备号和 inode 找出进程，写成「：PID n，程序 x，unit y」；找不到时什么也不输出。
+# Who holds the lock: the process found in /proc/locks by the lock file's device and inode, as "：PID n，程序 x，unit y";
+# nothing when none is found.
+root_lock_holder() {
+  local inode
+  local device
+  local pid
+  local name
+  local unit
+  read -r inode device < <(stat -c '%i %d' -- "${ROOT_LOCK}" 2>/dev/null) || return 0
+  [[ ${inode} =~ ^[0-9]+$ && ${device} =~ ^[0-9]+$ ]] || return 0
+  # /proc/locks 写的是「主设备号:次设备号:inode」，设备号是十六进制 / /proc/locks reads "major:minor:inode", the numbers in hex
+  device="$(printf '%02x:%02x:%s' "$(((device >> 8) & 0xfff | ((device >> 32) & ~0xfff)))" \
+    "$(((device & 0xff) | ((device >> 12) & ~0xff)))" "${inode}")"
+  pid="$(AWK_DEVICE=${device} awk '$2 != "->" && $6 == ENVIRON["AWK_DEVICE"] { print $5; exit }' "${PROC_ROOT}/locks" 2>/dev/null)"
+  [[ ${pid} =~ ^[1-9][0-9]*$ ]] || return 0
+  name="$(tr -cd 'A-Za-z0-9._-' < "${PROC_ROOT}/${pid}/comm" 2>/dev/null)"
+  unit="$(sed -n 's|^0::.*/\([A-Za-z0-9@._-]*\.\(service\|scope\)\)$|\1|p' "${PROC_ROOT}/${pid}/cgroup" 2>/dev/null | head -n 1)"
+  printf '：拿着锁的是 PID %s' "${pid}"
+  [[ -z ${name} ]] || printf '，程序 %s' "${name}"
+  [[ -z ${unit} ]] || printf '，unit %s' "${unit}"
 }
 
 # R2：要停的进程的 UID：kixdns-panel 账号的，和这些面板能写的路径的属主里已经没有账号的（旧版卸载器删掉面板账号以后，它的进程
@@ -1023,7 +1153,7 @@ managed_unit_config() {
     (((8#$(stat -c '%a' -- "${path}") & 8#022) == 0)) || return 0
   done
   [[ -f ${file} ]] || return 0
-  awk -v binary="${PANEL_STATE_DIRECTORY}/bin/kixdns" '
+  AWK_BINARY="${PANEL_STATE_DIRECTORY}/bin/kixdns" awk 'BEGIN { binary = ENVIRON["AWK_BINARY"] }
     /^ExecStart=/ {
       line = $0
       sub(/^ExecStart=/, "", line)
@@ -1060,7 +1190,7 @@ quiesce_for_records() {
   fi
   printf '面板能写的 %s 里有旧版记录的名字：先停下面板和它账号的所有进程，再处理它们。\n' "${PANEL_STATE_DIRECTORY}"
   PANEL_STOPPED_EARLY=true
-  trap restart_panel_after_early_stop EXIT
+  trap on_installer_exit EXIT
   stop_panel_helper
   systemctl stop kixdns-panel.service 2>/dev/null || true
   stop_panel_processes refuse_with_panel_held
@@ -1083,8 +1213,8 @@ stop_panel_helper() {
 # The panel stopped at the start for the records, and the run ends before the install really starts: the helper and the
 # panel are restarted as they were; not after a stop over a record (refuse_with_panel_held).
 restart_panel_after_early_stop() {
-  # 回滚挂上以后由回滚管重启 / Once rollback is armed, restarting is the rollback's business
-  [[ -z ${ROLLBACK_SHELL} && ${PANEL_STOPPED_EARLY} == true && ${KEEP_PANEL_STOPPED} == false ]] || return 0
+  # 回滚真的开始以后由回滚管重启 / Once the rollback has really started, restarting is the rollback's business
+  [[ ${ROLLBACK_STARTED} == false && ${PANEL_STOPPED_EARLY} == true && ${KEEP_PANEL_STOPPED} == false ]] || return 0
   [[ ${HELPER_WAS_ACTIVE} == false ]] || systemctl start kixdns-panel-helper.service 2>/dev/null || true
   [[ ${PANEL_WAS_ACTIVE} == false ]] || systemctl start kixdns-panel.service 2>/dev/null || true
 }
@@ -1092,7 +1222,28 @@ restart_panel_after_early_stop() {
 # 面板这时是为了记录停着的：还没真的开始安装 / The panel is stopped for the records right now: the install has not really
 # started
 panel_held_for_records() {
-  [[ ${PANEL_STOPPED_EARLY} == true && ${ROOT_WORK_STARTED} == false && -z ${ROLLBACK_SHELL} ]]
+  [[ ${PANEL_STOPPED_EARLY} == true && ${ROOT_WORK_STARTED} == false && ${ROLLBACK_STARTED} == false ]]
+}
+
+# SHOULD 3：安装器退出时都走这里（EXIT）。回滚已经挂上、安装已经开始、回滚却没真的开始（信号落在挂陷阱的空档里，或者 bash 5.2
+# 在解析多行的命令替换时收到信号，INT/TERM 的陷阱没能跑起来）：在这里回滚。还没开始安装：删掉准备回滚时建的备份目录，照原样重启
+# 开头停下的 helper 和面板。回滚开始以后什么也不做。
+# SHOULD 3: every exit of the installer comes here (EXIT). With rollback armed and the install started but the rollback not
+# really started (a signal landing in the gap while traps were set, or bash 5.2 receiving a signal while parsing a
+# multi-line command substitution, so the INT/TERM trap never ran): roll back here. With the install not started yet:
+# remove the backup directory made to prepare the rollback, and restart the helper and the panel stopped at the start as
+# they were. Once the rollback has started, nothing.
+on_installer_exit() {
+  local status=$?
+  [[ ${ROLLBACK_STARTED} == false ]] || return 0
+  if [[ ${ROOT_WORK_STARTED} == true && -n ${ROLLBACK_SHELL} && ${BASHPID} == "${ROLLBACK_SHELL}" ]]; then
+    [[ ${status} != 0 ]] || status=1
+    rollback_install "${status}" interrupted "${ROLLBACK_SHELL}"
+  fi
+  if [[ -n ${BACKUP_ROOT} && ${BACKUP_ROOT} == /var/tmp/kixdns-panel-install.* ]]; then
+    rm -rf -- "${BACKUP_ROOT}"
+  fi
+  restart_panel_after_early_stop
 }
 
 # 主机上已有的 KixDNS 是上次卸载时保留下来的面板自带的那个：它跑的是面板状态目录里的程序。这不是外部安装，没有要迁移的。
@@ -1335,7 +1486,7 @@ hand_back_directory() {
 unit_service_setting() {
   local key=$1
   shift
-  awk -v key="${key}" '
+  AWK_KEY="${key}" awk 'BEGIN { key = ENVIRON["AWK_KEY"] }
     FNR == 1 { section = "" }
     /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section); next }
     section == "[Service]" && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
@@ -1414,7 +1565,8 @@ original_unit_files() {
   local -A dropins=()
   if [[ -f ${backup}/unit-fragment ]]; then
     printf '%s\n' "${backup}/unit-fragment"
-    find "${backup}" -maxdepth 1 -name 'unit-dropin-*.conf' -printf '%f\n' | sort -t- -k3 -n | sed "s|^|${backup}/|"
+    find "${backup}" -maxdepth 1 -name 'unit-dropin-*.conf' -printf '%f\n' | sort -t- -k3 -n |
+      while IFS= read -r file; do printf '%s/%s\n' "${backup}" "${file}"; done
     return 0
   fi
   if [[ -f ${backup}/kixdns.service ]]; then
@@ -1644,7 +1796,10 @@ kixdns_unit_template() {
 }
 
 render_kixdns_unit() {
-  awk -v config_path="${KIXDNS_CONFIG_PATH}" -v control_socket="${KIXDNS_CONTROL_SOCKET}" '
+  AWK_CONFIG_PATH="${KIXDNS_CONFIG_PATH}" AWK_CONTROL_SOCKET="${KIXDNS_CONTROL_SOCKET}" awk 'BEGIN {
+        config_path = ENVIRON["AWK_CONFIG_PATH"]
+        control_socket = ENVIRON["AWK_CONTROL_SOCKET"]
+      }
     /^ConditionPathExists=/ { print "ConditionPathExists=" config_path; next }
     /^ExecStart=/ {
       print "ExecStart=/var/lib/kixdns-panel/bin/kixdns run --config " config_path " --admin-socket " control_socket
@@ -2086,6 +2241,8 @@ rollback_install() {
   # parent, seeing the failure, rolled back again with only deletion left, removing what was just put back. So only the shell
   # that set the trap rolls back; a subshell just exits with the failure
   [[ -z ${3:-} || ${BASHPID} == "$3" ]] || exit "${status}"
+  # 回滚真的开始了：之后的 EXIT 不再插手 / The rollback has really started: EXIT keeps out of it from here
+  ROLLBACK_STARTED=true
   local outcome=安装未完成
   local panel_running=true
   local quiesced=true
@@ -2646,12 +2803,16 @@ require_regular_targets() {
 # 出错就回滚，回滚只在这个 shell 里做（rollback_install 里说了为什么）
 # Roll back on error, in this shell only (rollback_install says why)
 arm_rollback() {
-  ROLLBACK_SHELL=${BASHPID}
+  # SHOULD 3：先挂陷阱，再记下回滚的 shell：反过来时，信号落在中间就既不回滚、EXIT 也以为回滚会管
+  # SHOULD 3: traps first, then the rollback shell is recorded: the other way round, a signal in between got no rollback
+  # while EXIT took it that the rollback would see to things
   # shellcheck disable=SC2064 # BASHPID 要在挂陷阱时展开，记下是哪个 shell 挂的 / BASHPID expands now, recording which shell set the trap
   trap "rollback_install \$? failed ${BASHPID}" ERR
   # 只挂 ERR 时，Ctrl-C、SIGTERM 或 SSH 断线会直接杀掉 bash，已停掉的服务不会恢复。
   # With only ERR trapped, Ctrl-C, SIGTERM or an SSH hangup kill bash and stopped services stay stopped.
-  trap 'rollback_install 130 interrupted' INT TERM HUP
+  # shellcheck disable=SC2064 # 同上 / As above
+  trap "rollback_install 130 interrupted ${BASHPID}" INT TERM HUP
+  ROLLBACK_SHELL=${BASHPID}
 }
 
 # 安装包自带的 GeoSite（Loyalsoldier 的 geosite.dat、来源说明和 GPL 许可证）。只是安装包里的数据：
@@ -2704,6 +2865,40 @@ install_web() {
   mv -- "${staged}" "${target}"
 }
 
+# MUST 1：仅更新面板时内核没换，panel.env 里记的内核来源、提交、编号照旧写回：只在 panel.env 能信、每一项都照格式验过时；
+# 不然照 root 的事实定：面板目录里的内核程序和这个安装包的一字不差，就是这个包的；都不是就写成空（面板当作没记）。
+# MUST 1: a panel-only update keeps the kernel, so the kernel source, commit and id panel.env records are written back: only
+# when panel.env can be trusted and each one passes its format; otherwise root's facts decide: a kernel program in the
+# panel's directory identical to this package's is this package's; if neither, they are written empty (the panel takes
+# that as not recorded).
+installed_kixdns_labels() {
+  local commit
+  local source_id
+  local source
+  local package_sum
+  if [[ ${PANEL_ENV_TRUSTED} == true ]]; then
+    commit="$(environment_value KIXDNS_INSTALLED_COMMIT || true)"
+    source_id="$(environment_value KIXDNS_INSTALLED_SOURCE_ID || true)"
+    source="$(environment_value KIXDNS_INSTALLED_SOURCE || true)"
+    if panel_env_value_valid KIXDNS_INSTALLED_COMMIT "${commit}" &&
+      panel_env_value_valid KIXDNS_INSTALLED_SOURCE_ID "${source_id}" &&
+      panel_env_value_valid KIXDNS_INSTALLED_SOURCE "${source}"; then
+      KIXDNS_BUILD_COMMIT=${commit}
+      KIXDNS_SOURCE_ID=${source_id}
+      KIXDNS_SOURCE=${source}
+      return 0
+    fi
+  fi
+  package_sum="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_BINARY_SHA256" 2>/dev/null || true)"
+  if [[ -f ${MANAGED_KIXDNS_BINARY} && ! -L ${MANAGED_KIXDNS_BINARY} && ${package_sum} =~ ^[0-9a-f]{64}$ &&
+    $(file_sha256 "${MANAGED_KIXDNS_BINARY}") == "${package_sum}" ]]; then
+    return 0
+  fi
+  KIXDNS_BUILD_COMMIT=""
+  KIXDNS_SOURCE_ID=""
+  KIXDNS_SOURCE=""
+}
+
 render_panel_environment() {
   local source=$1
   local output=$2
@@ -2712,14 +2907,39 @@ render_panel_environment() {
   local panel_release=$5
   local kixdns_source_id=$6
   local kixdns_source=$7
-  awk -v kixdns_commit="${kixdns_commit}" -v panel_commit="${panel_commit}" \
-    -v panel_release="${panel_release}" -v kixdns_source_id="${kixdns_source_id}" \
-    -v kixdns_source="${kixdns_source}" \
-    -v config_path="${KIXDNS_CONFIG_PATH}" -v binary_path="${KIXDNS_BINARY_PATH}" \
-    -v control_socket="${KIXDNS_CONTROL_SOCKET}" -v helper_socket="${KIXDNS_SERVICE_HELPER_SOCKET}" \
-    -v service_unit="${KIXDNS_SERVICE_UNIT}" \
-    -v old_trusted_comment="${OLD_TRUSTED_PROXIES_COMMENT}" -v old_trusted_line="${OLD_TRUSTED_PROXIES_LINE}" \
-    -v trusted_comment_1="${TRUSTED_PROXIES_COMMENT_1}" -v trusted_comment_2="${TRUSTED_PROXIES_COMMENT_2}" '
+  local pair
+  # MUST 1：写进去的每一项先照格式验，不对就停下；值经 ENVIRON 交给 awk（awk -v 会把 \n 这样的写法解开成换行，多出一行就是多出一项）
+  # MUST 1: each value written is checked by its format first, and a bad one stops the run; values reach awk through
+  # ENVIRON (awk -v decodes escapes such as \n into a new line, and a new line is a new setting)
+  for pair in "KIXDNS_INSTALLED_COMMIT=${kixdns_commit}" "KIXDNS_PANEL_INSTALLED_COMMIT=${panel_commit}" \
+    "KIXDNS_PANEL_INSTALLED_RELEASE=${panel_release}" "KIXDNS_INSTALLED_SOURCE_ID=${kixdns_source_id}" \
+    "KIXDNS_INSTALLED_SOURCE=${kixdns_source}" "KIXDNS_CONFIG=${KIXDNS_CONFIG_PATH}" "KIXDNS_BINARY=${KIXDNS_BINARY_PATH}" \
+    "KIXDNS_CONTROL_SOCKET=${KIXDNS_CONTROL_SOCKET}" "KIXDNS_SERVICE_HELPER_SOCKET=${KIXDNS_SERVICE_HELPER_SOCKET}" \
+    "KIXDNS_SERVICE_UNIT=${KIXDNS_SERVICE_UNIT}"; do
+    panel_env_value_valid "${pair%%=*}" "${pair#*=}" || fail "要写进 panel.env 的 ${pair%%=*} 格式不对，没有写"
+  done
+  AWK_KIXDNS_COMMIT=${kixdns_commit} AWK_PANEL_COMMIT=${panel_commit} AWK_PANEL_RELEASE=${panel_release} \
+    AWK_KIXDNS_SOURCE_ID=${kixdns_source_id} AWK_KIXDNS_SOURCE=${kixdns_source} AWK_CONFIG_PATH=${KIXDNS_CONFIG_PATH} \
+    AWK_BINARY_PATH=${KIXDNS_BINARY_PATH} AWK_CONTROL_SOCKET=${KIXDNS_CONTROL_SOCKET} \
+    AWK_HELPER_SOCKET=${KIXDNS_SERVICE_HELPER_SOCKET} AWK_SERVICE_UNIT=${KIXDNS_SERVICE_UNIT} \
+    AWK_OLD_TRUSTED_COMMENT=${OLD_TRUSTED_PROXIES_COMMENT} AWK_OLD_TRUSTED_LINE=${OLD_TRUSTED_PROXIES_LINE} \
+    AWK_TRUSTED_COMMENT_1=${TRUSTED_PROXIES_COMMENT_1} AWK_TRUSTED_COMMENT_2=${TRUSTED_PROXIES_COMMENT_2} awk '
+    BEGIN {
+      kixdns_commit = ENVIRON["AWK_KIXDNS_COMMIT"]
+      panel_commit = ENVIRON["AWK_PANEL_COMMIT"]
+      panel_release = ENVIRON["AWK_PANEL_RELEASE"]
+      kixdns_source_id = ENVIRON["AWK_KIXDNS_SOURCE_ID"]
+      kixdns_source = ENVIRON["AWK_KIXDNS_SOURCE"]
+      config_path = ENVIRON["AWK_CONFIG_PATH"]
+      binary_path = ENVIRON["AWK_BINARY_PATH"]
+      control_socket = ENVIRON["AWK_CONTROL_SOCKET"]
+      helper_socket = ENVIRON["AWK_HELPER_SOCKET"]
+      service_unit = ENVIRON["AWK_SERVICE_UNIT"]
+      old_trusted_comment = ENVIRON["AWK_OLD_TRUSTED_COMMENT"]
+      old_trusted_line = ENVIRON["AWK_OLD_TRUSTED_LINE"]
+      trusted_comment_1 = ENVIRON["AWK_TRUSTED_COMMENT_1"]
+      trusted_comment_2 = ENVIRON["AWK_TRUSTED_COMMENT_2"]
+    }
     # 旧示例的可信代理说明先压着，看下一行：还是旧示例的默认值时只换说明，值留着（为什么见 update_panel_environment）。
     # The trusted-proxies comment of the old example is held to look at the next line: when that is still the old default,
     # only the comment is replaced and the value stays (update_panel_environment says why).
@@ -2817,7 +3037,10 @@ render_panel_environment() {
 # still as the old example had it.
 old_trusted_proxies_default() {
   [[ -f $1 ]] || return 1
-  awk -v comment="${OLD_TRUSTED_PROXIES_COMMENT}" -v line="${OLD_TRUSTED_PROXIES_LINE}" '
+  AWK_COMMENT="${OLD_TRUSTED_PROXIES_COMMENT}" AWK_LINE="${OLD_TRUSTED_PROXIES_LINE}" awk 'BEGIN {
+        comment = ENVIRON["AWK_COMMENT"]
+        line = ENVIRON["AWK_LINE"]
+      }
     previous == comment && $0 == line { found = 1 }
     { previous = $0 }
     END { exit !found }
@@ -2829,6 +3052,8 @@ update_panel_environment() {
   local kixdns_source_id=$2
   local kixdns_source=$3
   local temporary
+  local source=${PANEL_ENV}
+  local destination
   # 旧示例默认信任本机代理，从那时装起的主机都还写着。升级不改这个值：本机 Nginx 后面的人改成谁都不信以后，登录限流把所有人
   # 算在代理一个地址上，几次输错就全被锁住，比它挡住的本机伪造更糟。只把说明换成新示例的，在安装结果里提醒一次；说明换过，
   # 下次就不再提醒。
@@ -2836,14 +3061,26 @@ update_panel_environment() {
   # value: trusting none behind a local Nginx makes the login limit count everyone against the proxy's one address, locking
   # all out after a few wrong passwords, which is worse than the local spoofing it stops. Only the comment becomes the new
   # example's and the install result says so once; with the comment replaced, the next run says nothing.
-  if old_trusted_proxies_default "${PANEL_ENV}"; then
+  if [[ ${PANEL_ENV_TRUSTED} == false ]]; then
+    # MUST 1：面板能改的 panel.env 一项也不带过来：照安装包的示例重写，值只用 root 的事实和安装器验过的设置
+    # MUST 1: nothing is carried over from a panel.env the panel can change: it is rewritten from the package's example,
+    # with values only from root's facts and settings the installer checked
+    source="${PACKAGE_ROOT}/deploy/panel.env.example"
+  elif old_trusted_proxies_default "${PANEL_ENV}"; then
     TRUSTED_PROXIES_NOTICE=true
   fi
   temporary="$(mktemp "${PANEL_CONFIG_DIRECTORY}/.panel.env.XXXXXX")"
-  render_panel_environment "${PANEL_ENV}" "${temporary}" "${kixdns_commit}" \
+  render_panel_environment "${source}" "${temporary}" "${kixdns_commit}" \
     "${PANEL_BUILD_COMMIT}" "${PANEL_RELEASE}" "${kixdns_source_id}" "${kixdns_source}"
-  chown root:"${KIXDNS_GROUP}" "${temporary}"
-  chmod 0640 "${temporary}"
+  chown -h root:"${KIXDNS_GROUP}" -- "${temporary}"
+  chmod 0640 -- "${temporary}"
+  if [[ ${PANEL_ENV_TRUSTED} == false && ( -e ${PANEL_ENV} || -L ${PANEL_ENV} ) ]]; then
+    quarantine_record "${PANEL_ENV}" panel.env
+    destination="已删掉"
+    [[ -z ${QUARANTINED_TO} ]] || destination="挪到了 ${QUARANTINED_TO}"
+    printf '%s 面板能改，这次照安装包的示例重写，里面原来的设置一项也没用（%s）；要用其中的设置（比如监听地址），核对以后照着改 %s，再 sudo systemctl restart kixdns-panel.service。\n' \
+      "${PANEL_ENV}" "${destination}" "${PANEL_ENV}"
+  fi
   mv -fT -- "${temporary}" "${PANEL_ENV}"
 }
 
@@ -2865,11 +3102,8 @@ install_configuration() {
   hand_back_config_directory
   if [[ ! -e ${PANEL_ENV} || -L ${PANEL_ENV} ]]; then
     rm -f -- "${PANEL_ENV}"
-    sed -e "s/^KIXDNS_INSTALLED_SOURCE=.*/KIXDNS_INSTALLED_SOURCE=${KIXDNS_SOURCE}/" \
-      -e "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${KIXDNS_BUILD_COMMIT}/" \
-      -e "s/^KIXDNS_PANEL_INSTALLED_COMMIT=.*/KIXDNS_PANEL_INSTALLED_COMMIT=${PANEL_BUILD_COMMIT}/" \
-      -e "s/^KIXDNS_INSTALLED_SOURCE_ID=.*/KIXDNS_INSTALLED_SOURCE_ID=${KIXDNS_SOURCE_ID}/" \
-      "${PACKAGE_ROOT}/deploy/panel.env.example" > "${PANEL_ENV}"
+    render_panel_environment "${PACKAGE_ROOT}/deploy/panel.env.example" "${PANEL_ENV}" "${KIXDNS_BUILD_COMMIT}" \
+      "${PANEL_BUILD_COMMIT}" "${PANEL_RELEASE}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
     chown -h root:"${KIXDNS_GROUP}" -- "${PANEL_ENV}"
     chmod 0640 -- "${PANEL_ENV}"
   fi
@@ -2943,8 +3177,12 @@ install_services() {
     install -o root -g root -m 0644 "${kixdns_temporary}" "${kixdns_unit}"
     rm -f -- "${kixdns_temporary}"
   fi
-  awk -v service_unit="${KIXDNS_SERVICE_UNIT}" -v helper_socket="${KIXDNS_SERVICE_HELPER_SOCKET}" \
-    -v panel_uid="${panel_uid}" '
+  AWK_SERVICE_UNIT="${KIXDNS_SERVICE_UNIT}" AWK_HELPER_SOCKET="${KIXDNS_SERVICE_HELPER_SOCKET}" \
+    AWK_PANEL_UID="${panel_uid}" awk 'BEGIN {
+        service_unit = ENVIRON["AWK_SERVICE_UNIT"]
+        helper_socket = ENVIRON["AWK_HELPER_SOCKET"]
+        panel_uid = ENVIRON["AWK_PANEL_UID"]
+      }
     /^ExecStart=/ {
       print "ExecStart=/usr/local/libexec/kixdns-panel-helper --socket " helper_socket " --unit " service_unit " --allowed-uid " panel_uid
       next
@@ -2954,7 +3192,10 @@ install_services() {
   install -o root -g root -m 0644 "${helper_temporary}" "${helper_unit}"
   rm -f -- "${helper_temporary}"
   config_directory="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
-  awk -v service_unit="${KIXDNS_SERVICE_UNIT}" -v config_directory="${config_directory}" '
+  AWK_SERVICE_UNIT="${KIXDNS_SERVICE_UNIT}" AWK_CONFIG_DIRECTORY="${config_directory}" awk 'BEGIN {
+        service_unit = ENVIRON["AWK_SERVICE_UNIT"]
+        config_directory = ENVIRON["AWK_CONFIG_DIRECTORY"]
+      }
     /^After=network-online\.target / { print "After=network-online.target " service_unit " kixdns-panel-helper.service"; next }
     /^ReadWritePaths=/ {
       print "ReadWritePaths=" config_directory " /var/lib/kixdns-panel"
@@ -3177,6 +3418,13 @@ main() {
   # 同一时间只跑一个安装、卸载或在线更新，整个运行都拿着锁 / One install, uninstall or online update at a time, the lock held
   # for the whole run
   take_root_lock
+  # SHOULD 3：从这里起每个退出都经过 on_installer_exit；挂回滚之前的信号也照常退出，让它收拾
+  # SHOULD 3: from here on every exit goes through on_installer_exit; a signal before the rollback is armed exits normally
+  # too, for it to tidy up
+  trap on_installer_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   command -v getent >/dev/null || fail "系统缺少 getent"
   command -v sha256sum >/dev/null || fail "系统缺少 sha256sum"
   require_file "${PACKAGE_ROOT}/bin/kixdns"
@@ -3259,9 +3507,7 @@ main() {
   adopt_github_token
   preserve_external_install
   if [[ ${INSTALL_KIND} == panel-only ]]; then
-    KIXDNS_BUILD_COMMIT="$(environment_value KIXDNS_INSTALLED_COMMIT || true)"
-    KIXDNS_SOURCE_ID="$(environment_value KIXDNS_INSTALLED_SOURCE_ID || true)"
-    KIXDNS_SOURCE="$(environment_value KIXDNS_INSTALLED_SOURCE || true)"
+    installed_kixdns_labels
   fi
   if kixdns_replaced; then
     if [[ ${KIXDNS_RESTART} == true ]]; then

@@ -231,6 +231,7 @@ source "${INSTALLER}"
 # What is in the scratch tree belongs to the user running the tests, who stands in for root; paths only root may change are
 # checked up to the scratch tree (R1, R4)
 ROOT_CHAIN_TOP=${WORK}
+ROOT_GID="$(id -g)"
 # 停面板账号的进程（R2）只在专门的用例里真的去发信号，别处一律当作已经没有进程 / Stopping the panel account's processes
 # (R2) really sends signals only in its own case; everywhere else no process is left
 ! declare -F account_signal > /dev/null || eval "real_account_signal() $(declare -f account_signal | tail -n +2)"
@@ -301,7 +302,7 @@ path_verdict() {
 for bad_path in /etc/kixdns/../x.json /etc/kixdns-panel/x/../pipeline.json /etc/kixdns/./pipeline.json \
   /etc//kixdns/pipeline.json /etc/kixdns/ /etc/kixdns/.. /etc/kixdns/. / //pipeline.json; do
   output="$(path_verdict "${bad_path}")"
-  assert_contains "${output}" "安装失败：路径必须是绝对路径，不含空白，也不含 .、.. 或空的一段（//）" "${bad_path} 应被拒绝"
+  assert_contains "${output}" "安装失败：路径必须是绝对路径，不含空白、控制字符和反斜杠，也不含 .、.. 或空的一段（//）" "${bad_path} 应被拒绝"
   assert_not_contains "${output}" "accepted" "${bad_path} 不能被接受"
 done
 for good_path in /etc/kixdns/pipeline.json /srv/..kixdns/pipeline.json /srv/kixdns./x.json /run/kixdns/admin.sock; do
@@ -1055,7 +1056,7 @@ migration_layout() {
     plan_kixdns_changes
     printf 'LISTEN=%s\n' "$(kixdns_listen_addresses | tr '\n' ' ')"
     printf 'UNIT=%s\n' "$(render_kixdns_unit | grep '^ExecStart=')"
-    render_panel_environment /dev/null "${root}/rendered.env" kixdns-commit panel-commit '' 42 fork
+    render_panel_environment /dev/null "${root}/rendered.env" 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 '' 42 fork
     printf 'ENV=%s\n' "$(grep '^KIXDNS_CONFIG=' "${root}/rendered.env")"
     preserve_external_install
     printf 'BACKUP=%s\n' "$(grep 'CONFIG=' "${EXTERNAL_BACKUP}/install.env" | tr '\n' ' ')"
@@ -1930,6 +1931,10 @@ assert_contains "${output}" "chown -h kixdns-panel:kixdns -- ${root}/etc-kixdns/
 # to the panel, like any other directory: only the path used to count, and a panel given the directory could change the
 # others' files in it. So the prepared pipeline.json is moved off before another file name is tried; with pipeline.json
 # still there, custom.json is refused.
+# 上一次运行新建的 panel.env 现在照实记下了配置的位置（以前新建时先照示例写 /etc/kixdns/pipeline.json）：这里要的是没记过这个目录的主机
+# The panel.env the previous run created now records the config's real place (it used to be written from the example's
+# /etc/kixdns/pipeline.json first): what is wanted here is a host that never recorded this directory
+rm -f -- "${root}/panel-etc/panel.env"
 output="$(config_directory_run --kixdns-config "${root}/etc-kixdns/custom.json")"
 assert_contains "${output}" "安装失败：KixDNS 配置要放在 ${root}/etc-kixdns，面板要能写这个目录，可里面还放着别的文件（${root}/etc-kixdns/pipeline.json）。先把它们移走再重新运行。" \
   "/etc/kixdns 里放着别的文件时应拒绝并说明"
@@ -2145,7 +2150,14 @@ assert_contains "${output}" "不能信（它不是 root 建的）" "面板建的
 for record_case in symlink hardlink writable; do
   legacy_host_tree 'User=kxu\n'
   case ${record_case} in
-    symlink) ln -s -- "${root}/etc/foo.json" "${root}/state/external-backup/extra" ;;
+    # 指着别人能改的文件的符号链接（指着只有 root 能改的文件的，(b) 照它指着的内容接手，见下面）/ A symlink to a file others can
+    # change (one to a file only root can change is adopted by its content, (b), see below)
+    symlink)
+      mkdir -p "${root}/shared"
+      chmod 0777 "${root}/shared"
+      : > "${root}/shared/extra"
+      ln -s -- "${root}/shared/extra" "${root}/state/external-backup/extra"
+      ;;
     hardlink) ln -- "${root}/etc/foo.json" "${root}/state/external-backup/extra" ;;
     writable) chmod 0770 "${root}/state/external-backup" ;;
   esac
@@ -2750,8 +2762,13 @@ assert_contains "${guarded}" 'restore_path "${PANEL_ENV}" panel-env' "回滚放�
 # 结构 3：同一时间只跑一个。锁在别人手里时停下并说明；在线更新器拿着锁再调安装器时，安装器认出传下来的那一把，接着用。
 # Structural change 3: one at a time. With the lock held elsewhere the run stops and says so; when the online updater holds
 # it and runs the installer, the installer recognises the one handed down and carries on with it.
-lock_file="${WORK}/root.lock"
-rm -f -- "${lock_file}"
+# 锁在只有 root 能进的目录里（SHOULD 2）；这里由跑测试的用户代替 root / The lock lives in a root-only directory (SHOULD 2);
+# the user running the tests stands in for root here
+ROOT_UID="$(id -u)"
+lock_directory="${WORK}/lock-directory"
+lock_file="${lock_directory}/lock"
+rm -rf -- "${lock_directory}"
+mkdir -m 0700 "${lock_directory}"
 exec 7>> "${lock_file}"
 flock -n 7
 lock_output="$(
@@ -2763,6 +2780,41 @@ lock_output="$(
 )" || true
 assert_contains "${lock_output}" "FAILED 另一个安装、卸载或在线更新正在运行" "锁在别人手里时应停下并说明"
 assert_not_contains "${lock_output}" "LOCKED" "锁在别人手里时不能接着做"
+# SHOULD 2：说清拿着锁的是谁（PID 和程序，从 /proc/locks 按 inode 找）/ SHOULD 2: say who holds it (the PID and program, found in
+# /proc/locks by inode)
+[[ ${lock_output} =~ 拿着锁的是\ PID\ [1-9][0-9]* ]] ||
+  { printf '断言失败：锁在别人手里时应说出拿着它的进程（%s）\n' "${lock_output}" >&2; exit 1; }
+# 放锁的目录不是只有 root 能进（别人能进、是符号链接）就不用它 / A lock directory others can enter, or a symlink, is not used
+for lock_case in mode symlink; do
+  lock_output="$(
+    base="${WORK}/lock-case"
+    rm -rf -- "${base}"
+    mkdir -p "${base}/real"
+    case ${lock_case} in
+      mode) mv -- "${base}/real" "${base}/locks"; chmod 0755 "${base}/locks" ;;
+      symlink) chmod 0700 "${base}/real"; ln -s real "${base}/locks" ;;
+    esac
+    ROOT_LOCK="${base}/locks/lock"
+    unset KIXDNS_PANEL_ROOT_LOCK_FD
+    fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+    take_root_lock
+    printf 'LOCKED\n'
+  )" || true
+  assert_contains "${lock_output}" "不是只有 root 能进的目录，锁不能放在那里" "放锁的目录不对时不能用（${lock_case}）"
+  assert_not_contains "${lock_output}" "LOCKED" "放锁的目录不对时不能拿锁（${lock_case}）"
+done
+# 还没有放锁的目录时建成只有 root 能进的 / A missing lock directory is created root-only
+lock_output="$(
+  base="${WORK}/lock-new"
+  rm -rf -- "${base}"
+  mkdir -p "${base}"
+  ROOT_LOCK="${base}/locks/lock"
+  unset KIXDNS_PANEL_ROOT_LOCK_FD
+  install() { mkdir -p "${@: -1}"; chmod 0700 "${@: -1}"; }
+  take_root_lock
+  stat -c '%a' "${base}/locks"
+)" || true
+assert_equals "${lock_output}" "700" "放锁的目录应建成只有 root 能进的"
 lock_output="$(
   ROOT_LOCK=${lock_file}
   KIXDNS_PANEL_ROOT_LOCK_FD=7
@@ -2796,6 +2848,248 @@ lock_output="$(
 )" || true
 exec 7>&- 5>&-
 assert_not_contains "${lock_output}" "LOCKED" "环境里写着的文件描述符不是这把锁时不能当成拿到了锁"
+
+
+# ---------------------------------------------------------------------------
+# 第五轮审查（rv6）/ Fifth review (rv6)
+# ---------------------------------------------------------------------------
+
+# 回归（MUST 1）：不能信的 panel.env 里一行 KIXDNS_INSTALLED_SOURCE=fork\nKIXDNS_CONFIG=…（反斜杠 n 是两个字符），仅更新面板时交给
+# awk -v 写回，awk 把它解开成换行，重写出来的、已经归 root 的 panel.env 里就多了一行排在前面的 KIXDNS_CONFIG；下一次运行照它把
+# systemd 的 drop-in 目录交给了面板（容器里两个系统都是 uid=0）。现在不能信的 panel.env 一项也不带过来：照安装包的示例重写，原来那份
+# 挪进 quarantine；写进去的每一项照格式验过，值经 ENVIRON 交给 awk。
+# Regression (MUST 1): one line of an untrusted panel.env, KIXDNS_INSTALLED_SOURCE=fork\nKIXDNS_CONFIG=… (backslash n as two
+# characters), went back through awk -v on a panel-only update; awk decoded it into a new line, so the rewritten panel.env,
+# now root's, held an extra KIXDNS_CONFIG ahead of the real one, and the next run handed a systemd drop-in directory to the
+# panel (uid=0 in a container on both systems). Now nothing is carried over from an untrusted panel.env: it is rewritten
+# from the package's example and the old one goes to quarantine; every value written passes its format and reaches awk
+# through ENVIRON.
+escape_run() {
+  local base="${WORK}/escape"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/package/deploy" "${base}/package/bin" "${base}/panel-etc" "${base}/state/bin" "${base}/records"
+  chmod 0700 "${base}/records"
+  cp "${PACKAGE_ROOT}/deploy/panel.env.example" "${base}/package/deploy/"
+  printf 'kernel\n' > "${base}/state/bin/kixdns"
+  file_sha256 "${base}/state/bin/kixdns" > "${base}/package/KIXDNS_BINARY_SHA256"
+  printf '%s\n' 'KIXDNS_INSTALLED_SOURCE=fork\nKIXDNS_CONFIG=/etc/systemd/system/kixdns.service.d/pipeline.json' \
+    "KIXDNS_CONFIG=${base}/etc-kixdns/pipeline.json" 'KIXDNS_INSTALLED_COMMIT=4444444444444444444444444444444444444444' \
+    'KIXDNS_INSTALLED_SOURCE_ID=77' 'KIXDNS_EXTRA_FROM_THE_PANEL=yes' 'KIXDNS_PANEL_BIND=0.0.0.0:1' > "${base}/panel-etc/panel.env"
+  (
+    PACKAGE_ROOT="${base}/package"
+    PANEL_CONFIG_DIRECTORY="${base}/panel-etc"
+    PANEL_ENV="${base}/panel-etc/panel.env"
+    PANEL_STATE_DIRECTORY="${base}/state"
+    MANAGED_KIXDNS_BINARY="${base}/state/bin/kixdns"
+    KIXDNS_CONFIG_PATH="${base}/etc-kixdns/pipeline.json"
+    ROOT_RECORDS="${base}/records"
+    ROOT_CHAIN_TOP=${base}
+    ROOT_UID="$(id -u)"
+    PANEL_ENV_TRUSTED=${1:-false}
+    PANEL_ENV_VERIFIED=true
+    PANEL_BUILD_COMMIT=5555555555555555555555555555555555555555
+    PANEL_RELEASE=""
+    KIXDNS_BUILD_COMMIT=6666666666666666666666666666666666666666
+    KIXDNS_SOURCE_ID=88
+    KIXDNS_SOURCE=fork
+    KIXDNS_GROUP=$(id -gn)
+    chown() { :; }
+    install() { mkdir -p "${@: -1}"; chmod 0700 "${@: -1}"; }
+    installed_kixdns_labels
+    printf 'LABELS=%s %s %s\n' "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
+    update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
+  ) 2>&1
+  printf 'CONFIG-LINES=%s\n' "$(grep -c '^KIXDNS_CONFIG=' "${base}/panel-etc/panel.env")"
+  printf 'FIRST-CONFIG=%s\n' "$(grep -m1 '^KIXDNS_CONFIG=' "${base}/panel-etc/panel.env")"
+  grep -q 'kixdns.service.d' "${base}/panel-etc/panel.env" && printf 'INJECTED\n'
+  grep -q '^KIXDNS_EXTRA_FROM_THE_PANEL=' "${base}/panel-etc/panel.env" && printf 'CARRIED-OVER\n'
+  grep -m1 '^KIXDNS_PANEL_BIND=' "${base}/panel-etc/panel.env"
+  [[ -n "$(find "${base}/records/quarantine" -name 'panel.env.*' -print -quit 2>/dev/null)" ]] && printf 'OLD-QUARANTINED\n'
+  return 0
+}
+output="$(escape_run false)"
+assert_contains "${output}" "CONFIG-LINES=1" "重写的 panel.env 里只能有一行 KIXDNS_CONFIG"
+assert_contains "${output}" "FIRST-CONFIG=KIXDNS_CONFIG=${WORK}/escape/etc-kixdns/pipeline.json" "KIXDNS_CONFIG 只能是验过的那一个"
+assert_not_contains "${output}" "INJECTED" "不能信的 panel.env 里的值不能带进重写的那份"
+assert_not_contains "${output}" "CARRIED-OVER" "不能信的 panel.env 里认不得的行不能带过来"
+assert_contains "${output}" "KIXDNS_PANEL_BIND=0.0.0.0:5738" "不能信的 panel.env 照安装包的示例重写"
+assert_contains "${output}" "OLD-QUARANTINED" "不能信的 panel.env 应挪进 quarantine 留给管理员看"
+assert_contains "${output}" "面板能改，这次照安装包的示例重写，里面原来的设置一项也没用" "重写不能信的 panel.env 时应说明"
+# 内核的来源、提交、编号照 root 的事实定：面板目录里的内核和这个包的一字不差，就是包里的；不然写成空
+# The kernel's source, commit and id from root's facts: a kernel identical to this package's is the package's; otherwise
+# empty
+assert_contains "${output}" "LABELS=6666666666666666666666666666666666666666 88 fork" "内核和包里的一样时照包里的记"
+# 能信的 panel.env：它记的照旧写回，只要每一项都照格式验过 / A trusted panel.env: what it records is written back, provided
+# each value passes its format
+output="$(escape_run true)"
+assert_contains "${output}" "LABELS=6666666666666666666666666666666666666666 88 fork" "能信的 panel.env 里有不合格式的值时照 root 的事实定"
+labels_output="$(
+  PANEL_ENV="${WORK}/labels.env"
+  printf '%s\n' 'KIXDNS_INSTALLED_COMMIT=4444444444444444444444444444444444444444' 'KIXDNS_INSTALLED_SOURCE_ID=77' \
+    'KIXDNS_INSTALLED_SOURCE=fork' > "${PANEL_ENV}"
+  PANEL_ENV_TRUSTED=true
+  installed_kixdns_labels
+  printf '%s %s %s\n' "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
+  PANEL_ENV_TRUSTED=false
+  MANAGED_KIXDNS_BINARY="${WORK}/no-such-kernel"
+  installed_kixdns_labels
+  printf '[%s %s %s]\n' "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
+)"
+assert_contains "${labels_output}" "4444444444444444444444444444444444444444 77 fork" "能信的 panel.env 里合格式的内核记录照旧写回"
+assert_contains "${labels_output}" "[  ]" "不能信、内核也对不上时写成空"
+# 每一项照格式验：不对就停下，不写 / Every value passes its format, or the run stops without writing
+for bad_value in 'KIXDNS_INSTALLED_COMMIT=x\nKIXDNS_CONFIG=/x' 'KIXDNS_INSTALLED_SOURCE_ID=1\n2' 'KIXDNS_INSTALLED_SOURCE=release' \
+  'KIXDNS_PANEL_INSTALLED_RELEASE=v1\n' 'KIXDNS_CONFIG=/etc/a\b.json' 'KIXDNS_SERVICE_UNIT=x.service\n'; do
+  panel_env_value_valid "${bad_value%%=*}" "${bad_value#*=}" &&
+    { printf '断言失败：%s 不能算合格式\n' "${bad_value}" >&2; exit 1; }
+done
+for good_value in 'KIXDNS_INSTALLED_COMMIT=' 'KIXDNS_INSTALLED_COMMIT=aBcDeF0123456789aBcDeF0123456789aBcDeF01' \
+  'KIXDNS_INSTALLED_SOURCE_ID=42' 'KIXDNS_INSTALLED_SOURCE=fork' 'KIXDNS_CONFIG=/etc/kixdns/pipeline.json' \
+  'KIXDNS_SERVICE_UNIT=kixdns.service'; do
+  panel_env_value_valid "${good_value%%=*}" "${good_value#*=}" ||
+    { printf '断言失败：%s 应算合格式\n' "${good_value}" >&2; exit 1; }
+done
+render_output="$(
+  KIXDNS_CONFIG_PATH=/etc/kixdns/pipeline.json
+  fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+  render_panel_environment /dev/null "${WORK}/bad-render.env" 'x\nKIXDNS_CONFIG=/evil' "" "" "" ""
+  printf 'RENDERED\n'
+)" || true
+assert_contains "${render_output}" "FAILED 要写进 panel.env 的 KIXDNS_INSTALLED_COMMIT 格式不对" "要写的值不合格式时应停下"
+assert_not_contains "${render_output}" "RENDERED" "要写的值不合格式时不能写"
+# 路径里的反斜杠和控制字符：awk -v 和 systemd 都会解开反斜杠 / Backslashes and control characters in paths: awk -v and
+# systemd both decode backslashes
+for bad_path in '/etc/kixdns/a\nb.json' "/etc/kixdns/a"$'\t'"b.json" "/etc/kixdns/a"$'\x01'"b.json"; do
+  output="$(path_verdict "${bad_path}")"
+  assert_contains "${output}" "不含空白、控制字符和反斜杠" "${bad_path} 应被拒绝"
+  assert_not_contains "${output}" "accepted" "${bad_path} 不能被接受"
+done
+# 四个脚本里不再有 awk -v，也不把读来的值插进 sed 的脚本（只看代码行，注释不算）
+# No awk -v left in the four scripts, and no value read in is put into a sed script (code lines only, not comments)
+for script_name in install uninstall panel-online-update one-click-install; do
+  code="$(grep -v '^[[:space:]]*#' "${PACKAGE_ROOT}/scripts/${script_name}.sh")"
+  [[ $(grep -cE "awk[^']*[[:space:]]-v[[:space:]]" <<< "${code}" || true) == 0 ]] ||
+    { printf '断言失败：%s.sh 里还有 awk -v\n' "${script_name}" >&2; exit 1; }
+  [[ $(grep -cE 'sed [^|]*"[^"]*\$\{' <<< "${code}" || true) == 0 ]] ||
+    { printf '断言失败：%s.sh 里还有插进 sed 脚本的变量\n' "${script_name}" >&2; exit 1; }
+done
+# 新建 panel.env 也照示例渲染，不再用 sed 填值 / A new panel.env is rendered from the example too, sed no longer fills values
+assert_not_contains "$(declare -f install_configuration)" "sed -e" "新建 panel.env 不能再用 sed 填值"
+
+# 回归（SHOULD 3）：arm_rollback 先记下回滚的 shell、后挂 INT/TERM/HUP，信号落在中间时既不回滚，EXIT 也以为回滚会管，开头为记录
+# 停下的 helper 和面板就一直停着（debian 13 上 47 次里有 2 次）；bash 5.2 在解析多行命令替换时收到信号，INT/TERM 的陷阱会解析失败
+# （「trap: line 2: unexpected EOF」），同样没回滚。现在先挂陷阱再记下回滚的 shell；EXIT 的 on_installer_exit 只在回滚真的开始以后
+# 才不插手：回滚挂上了却没开始就在这里回滚；还没挂上就删掉备份目录、照原样重启。
+# Regression (SHOULD 3): arm_rollback recorded the rollback shell before trapping INT/TERM/HUP, so a signal in between got
+# no rollback while EXIT took it that the rollback would see to things, and the helper and panel stopped at the start for
+# the records stayed stopped (2 of 47 on debian 13); bash 5.2 receiving a signal while parsing a multi-line command
+# substitution fails to parse the INT/TERM trap ("trap: line 2: unexpected EOF"), with no rollback either. Now the traps
+# come before the rollback shell is recorded, and EXIT's on_installer_exit keeps out only once the rollback has really
+# started: armed but not started, it rolls back there; not armed yet, it removes the backup directory and restarts what
+# was stopped.
+arm_body="$(declare -f arm_rollback)"
+trap_line="$(grep -n 'INT TERM HUP' <<< "${arm_body}" | head -n 1 | cut -d: -f1 || true)"
+shell_line="$(grep -n 'ROLLBACK_SHELL=' <<< "${arm_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${trap_line} && -n ${shell_line} && ${trap_line} -lt ${shell_line} ]] ||
+  { printf '断言失败：要先挂陷阱再记下回滚的 shell（trap=%s shell=%s）\n' "${trap_line}" "${shell_line}" >&2; exit 1; }
+assert_contains "$(declare -f rollback_install | head -n 12)" "ROLLBACK_STARTED=true" "回滚一开始就要记下它开始了"
+exit_line="$(grep -n 'trap on_installer_exit EXIT' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+records_line="$(grep -n 'secure_root_records' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${exit_line} && -n ${records_line} && ${exit_line} -lt ${records_line} ]] ||
+  { printf '断言失败：一开头就要挂 EXIT（exit=%s records=%s）\n' "${exit_line}" "${records_line}" >&2; exit 1; }
+early_backup="$(mktemp -d /var/tmp/kixdns-panel-install.XXXXXX)"
+exit_output="$(
+  (
+    systemctl() { printf 'systemctl %s\n' "$*"; }
+    rollback_install() { printf 'ROLLBACK %s\n' "$*"; }
+    PANEL_STOPPED_EARLY=true
+    PANEL_WAS_ACTIVE=true
+    HELPER_WAS_ACTIVE=true
+    BACKUP_ROOT=${early_backup}
+    on_installer_exit
+  )
+)"
+assert_not_contains "${exit_output}" "ROLLBACK" "回滚还没挂上时退出不能回滚"
+assert_contains "${exit_output}" "systemctl start kixdns-panel.service" "回滚还没挂上时退出应照原样重启开头停下的面板"
+[[ ! -e ${early_backup} ]] || { printf '断言失败：还没开始就退出时应删掉准备回滚的备份目录\n' >&2; exit 1; }
+exit_output="$(
+  (
+    systemctl() { printf 'systemctl %s\n' "$*"; }
+    rollback_install() { printf 'ROLLBACK %s\n' "$*"; }
+    PANEL_STOPPED_EARLY=true
+    PANEL_WAS_ACTIVE=true
+    ROOT_WORK_STARTED=true
+    ROLLBACK_SHELL=${BASHPID}
+    on_installer_exit
+  )
+)"
+assert_contains "${exit_output}" "ROLLBACK 1 interrupted" "回滚挂上了却没开始就退出时应在退出时回滚"
+exit_output="$(
+  (
+    systemctl() { printf 'systemctl %s\n' "$*"; }
+    rollback_install() { printf 'ROLLBACK %s\n' "$*"; }
+    PANEL_STOPPED_EARLY=true
+    PANEL_WAS_ACTIVE=true
+    ROOT_WORK_STARTED=true
+    ROLLBACK_SHELL=${BASHPID}
+    ROLLBACK_STARTED=true
+    on_installer_exit
+  )
+)"
+assert_equals "${exit_output}" "" "回滚开始以后退出时什么也不做"
+
+# 回归（NIT 4）：quarantine_record 在命令替换里调用，它照记录停下（ensure_root_records）时记下的「面板不重启」丢在子 shell 里，父 shell
+# 接着把 helper 和面板都重启了，消息却说它们停着。现在它不在命令替换里调用，结果放在 QUARANTINED_TO 里。
+# Regression (NIT 4): quarantine_record ran inside a command substitution, so "keep the panel stopped" from its stop over a
+# record (ensure_root_records) was lost with the subshell, and the parent restarted the helper and the panel while the
+# message said both stay stopped. Now it never runs in a command substitution, and leaves its result in QUARANTINED_TO.
+for script_name in install uninstall; do
+  # shellcheck disable=SC2016 # 找的就是没展开的写法 / The unexpanded text is what is looked for
+  [[ $(grep -c '\$(quarantine_record' "${PACKAGE_ROOT}/scripts/${script_name}.sh" || true) == 0 ]] ||
+    { printf '断言失败：%s.sh 里还在命令替换里调用 quarantine_record\n' "${script_name}" >&2; exit 1; }
+done
+legacy_host_tree 'User=kxu\n'
+mkdir -p "${root}/records"
+chmod 0755 "${root}/records"
+output="$(FORGED_RECORDS=true config_directory_run)"
+assert_contains "${output}" "不是只有 root 能进的目录，不能放安装记录" "挪走不能信的记录时放记录的目录不对应停下"
+assert_contains "${output}" "面板和它账号的进程这时都停着" "照记录停下时应说明面板停着"
+assert_equals "$(grep -c '^systemctl start' <<< "${output}" || true)" "0" "照记录停下时面板和 helper 都不能重启"
+
+# 回归（NIT 5）：挪进 quarantine 的东西整个交给 root，面板账号删掉以后不留归空 UID 的东西
+# Regression (NIT 5): what goes into quarantine is handed to root as a whole, so nothing is left owned by a freed UID once
+# the panel account goes
+legacy_host_tree 'User=kxu\n'
+output="$(FORGED_RECORDS=true config_directory_run)"
+assert_contains "${output}" "chown -hR 0:$(id -g) -- ${root}/records/quarantine/external-backup." "挪进 quarantine 的东西应整个交给 root"
+
+# 回归（(b)）：v4.3.4 用 systemctl link 装的原 unit，备份里的 kixdns.service 是符号链接，接手时被当作不能信挪走，以后恢复不了。现在
+# 链接本身归 root、指着的文件和它上面每一层都只有 root 能写时，接手时换成指着的文件的内容；不然照旧挪走，并说明管理员能怎么办。
+# Regression ((b)): v4.3.4 backed up a unit installed with systemctl link as a symlink, and adoption moved it away as
+# untrusted, so it could never be restored. Now, with the link root's and the file it points at and every level above it
+# writable by root alone, adoption replaces it with that file's content; otherwise it is moved away as before, saying what
+# the admin can do.
+legacy_host_tree 'User=kxu\n'
+mkdir -p "${root}/linked-units"
+cp -- "${root}/state/external-backup/kixdns.service" "${root}/linked-units/kixdns.service"
+rm -f -- "${root}/state/external-backup/kixdns.service"
+ln -s -- "${root}/linked-units/kixdns.service" "${root}/state/external-backup/kixdns.service"
+output="$(config_directory_run)"
+assert_contains "${output}" "的记录已验过，挪到只有 root 能进的 ${root}/records/external-backup。" "指着只有 root 能改的文件的符号链接应照它的内容接手"
+[[ -f ${root}/records/external-backup/kixdns.service && ! -L ${root}/records/external-backup/kixdns.service ]] ||
+  { printf '断言失败：接手以后记录里应是普通文件\n' >&2; exit 1; }
+cmp -s -- "${root}/linked-units/kixdns.service" "${root}/records/external-backup/kixdns.service" ||
+  { printf '断言失败：接手以后应是指着的文件的内容\n' >&2; exit 1; }
+legacy_host_tree 'User=kxu\n'
+mkdir -p "${root}/linked-units"
+chmod 0777 "${root}/linked-units"
+cp -- "${root}/state/external-backup/kixdns.service" "${root}/linked-units/kixdns.service"
+rm -f -- "${root}/state/external-backup/kixdns.service"
+ln -s -- "${root}/linked-units/kixdns.service" "${root}/state/external-backup/kixdns.service"
+output="$(config_directory_run)"
+assert_contains "${output}" "里面的 kixdns.service 是符号链接，指着的文件或它上面的目录不是只有 root 能改" "指着别人能改的文件的符号链接不能信"
+assert_contains "${output}" "确认它就是迁移前的备份的话：把里面的符号链接换成它指着的那个文件" "不能信时应说明管理员能怎么办"
+[[ ! -e ${root}/records/external-backup ]] || { printf '断言失败：不能信的符号链接记录不能接手\n' >&2; exit 1; }
 
 # R3：内核包的身份目录已经有时不用 install -d；里面的文件先删掉同名的再写。/ R3: an existing bundle directory gets no
 # install -d; its files are removed by name before being written.
@@ -3290,7 +3584,7 @@ KIXDNS_BINARY_PATH=/var/lib/kixdns-panel/bin/kixdns
 KIXDNS_CONTROL_SOCKET=/run/kixdns/admin.sock
 KIXDNS_SERVICE_UNIT=kixdns.service
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit '' 42 fork
+  1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 '' 42 fork
 if grep -q '^KIXDNS_PANEL_INSTALLED_RELEASE=' "${environment_output}"; then
   printf '断言失败：Action 包不应输出空 Release 环境变量\n' >&2
   exit 1
@@ -3308,7 +3602,7 @@ fi
 # panel's again and these keys go (a migration backup carries the accounts on, see below).
 printf '%s\n' 'KIXDNS_MANAGEMENT_ENABLED=false' 'KIXDNS_REMOVED=true' 'KIXDNS_USER_CREATED=true' 'KIXDNS_GROUP_CREATED=false' \
   > "${WORK}/left-behind.env"
-render_panel_environment "${WORK}/left-behind.env" "${WORK}/left-behind.out" kixdns-commit panel-commit '' 42 fork
+render_panel_environment "${WORK}/left-behind.env" "${WORK}/left-behind.out" 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 '' 42 fork
 assert_equals "$(grep -c '^KIXDNS_\(MANAGEMENT_ENABLED\|REMOVED\|USER_CREATED\|GROUP_CREATED\)=' "${WORK}/left-behind.out" || true)" "0" \
   "重新安装应删掉卸载器记下的归属和待删记录"
 # 迁移备份记下 kixdns 账号和组是不是面板建的：这次运行开始时还没有，或者保留的 panel.env 记着是以前的面板留下待删的。
@@ -3329,7 +3623,7 @@ assert_equals "$(account_created_of true KIXDNS_REMOVED=true)" "true true" "面�
 assert_equals "$(account_created_of true KIXDNS_USER_CREATED=true KIXDNS_GROUP_CREATED=false)" "true false" \
   "上次迁移建的账号记在 panel.env 里时照旧算面板的"
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit v1.0.0 42 fork
+  1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 v1.0.0 42 fork
 release_value="$(awk -F= '$1 == "KIXDNS_PANEL_INSTALLED_RELEASE" { print $2 }' "${environment_output}")"
 assert_equals "${release_value}" "v1.0.0" "正式包应保留 Release 标签"
 helper_socket_value="$(awk -F= '$1 == "KIXDNS_SERVICE_HELPER_SOCKET" { print $2 }' "${environment_output}")"
@@ -3353,11 +3647,11 @@ printf '%s\n' \
   '# x86_64 使用 x86_64，ARM64 使用 arm64；安装脚本会自动填写。' \
   'KIXDNS_UPDATE_ARTIFACT=kixdns-enhanced-linux-x86_64' \
   '# 完整安装包复用的 KixDNS Action 提交，由安装脚本填写；不要手工修改。' \
-  'KIXDNS_INSTALLED_COMMIT=old-commit' \
+  'KIXDNS_INSTALLED_COMMIT=3333333333333333333333333333333333333333' \
   '# 完整安装包自带增强 Artifact 的 GitHub ID，由安装脚本填写。' \
   'KIXDNS_INSTALLED_SOURCE_ID=7' > "${environment_source}"
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit '' 42 fork
+  1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 '' 42 fork
 if grep -q 'KIXDNS_UPDATE_\|nightly\.link\|自动填写。$\|Action 提交\|增强 Artifact' "${environment_output}"; then
   printf '断言失败：升级应删掉不再读取的 Artifact 更新设置和旧说明\n' >&2
   exit 1
@@ -3366,33 +3660,33 @@ identity_lines="$(grep '^KIXDNS_INSTALLED_\|^# 完整安装包' "${environment_o
 expected_identity="$(printf '%s\n' \
   '# 完整安装包自带内核的来源和提交，由安装脚本填写；不要手工修改。' \
   'KIXDNS_INSTALLED_SOURCE=fork' \
-  'KIXDNS_INSTALLED_COMMIT=kixdns-commit' \
+  'KIXDNS_INSTALLED_COMMIT=1111111111111111111111111111111111111111' \
   '# 完整安装包自带内核包在 GitHub 上的编号，由安装脚本填写。' \
   'KIXDNS_INSTALLED_SOURCE_ID=42')"
 assert_equals "${identity_lines}" "${expected_identity}" "完整包应在提交前记下内核来源，说明改成新的说法"
 # 只更新面板、原来没记来源（旧 Action 内核）：不凭空写上来源。
 # A panel-only update with no recorded source (an old Action kernel): no source is made up.
 render_panel_environment "${environment_source}" "${environment_output}" \
-  old-commit panel-commit '' 7 ''
+  3333333333333333333333333333333333333333 2222222222222222222222222222222222222222 '' 7 ''
 if grep -q '^KIXDNS_INSTALLED_SOURCE=' "${environment_output}"; then
   printf '断言失败：没有来源记录时不应写出内核来源\n' >&2
   exit 1
 fi
-printf '%s\n' 'KIXDNS_INSTALLED_SOURCE=fork' 'KIXDNS_INSTALLED_COMMIT=old-commit' > "${environment_source}"
+printf '%s\n' 'KIXDNS_INSTALLED_SOURCE=fork' 'KIXDNS_INSTALLED_COMMIT=3333333333333333333333333333333333333333' > "${environment_source}"
 render_panel_environment "${environment_source}" "${environment_output}" \
-  old-commit panel-commit '' 7 fork
+  3333333333333333333333333333333333333333 2222222222222222222222222222222222222222 '' 7 fork
 assert_equals "$(grep -c '^KIXDNS_INSTALLED_SOURCE=fork$' "${environment_output}")" "1" \
   "已有的内核来源应原地保留一行"
 
 printf '%s\n' 'KIXDNS_PANEL_BIND=192.168.10.5:6754' > "${environment_source}"
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit '' 42 fork
+  1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 '' 42 fork
 bind_value="$(awk -F= '$1 == "KIXDNS_PANEL_BIND" { print $2 }' "${environment_output}")"
 assert_equals "${bind_value}" "192.168.10.5:6754" "用户自定义监听地址不应被升级覆盖"
 
 printf '%s\n' 'KIXDNS_PANEL_INSTALLED_RELEASE=' > "${environment_source}"
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit '' 42 fork
+  1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 '' 42 fork
 assert_equals "$(grep -c '^KIXDNS_PANEL_BIND=0\.0\.0\.0:5738$' "${environment_output}")" "1" \
   "没设过监听地址时应补上默认值"
 
@@ -3409,7 +3703,7 @@ trusted_proxies_round() {
     PANEL_CONFIG_DIRECTORY="$(dirname -- "$1")"
     chown() { :; }
     TRUSTED_PROXIES_NOTICE=false
-    update_panel_environment kixdns-commit 42 fork
+    update_panel_environment 1111111111111111111111111111111111111111 42 fork
     printf 'NOTICE=%s\n' "${TRUSTED_PROXIES_NOTICE}"
   )
 }
@@ -3613,9 +3907,10 @@ sed -e "s|/var/lib/kixdns-panel-update|${online_update_root}/status|g" \
   -e "s|/usr/local/libexec/kixdns-panel-one-click-install|${online_update_root}/one-click|" \
   -e "s|/usr/local/bin/kixdns-panel-server|${online_update_root}/server|" \
   -e "s|/var/lib/kixdns-panel/github-token|${online_update_root}/github-token|" \
-  -e "s|/run/kixdns-panel-update.lock|${online_update_root}/lock|" \
-  -e "s|/run/kixdns-panel-root.lock|${online_update_root}/root.lock|" \
+  -e "s|/run/kixdns-panel-root|${online_update_root}/locks|" \
   "${PACKAGE_ROOT}/scripts/panel-online-update.sh" > "${online_update_root}/updater.sh"
+# 两把锁都在只有 root 能进的目录里（SHOULD 2）/ Both locks live in a root-only directory (SHOULD 2)
+mkdir -m 0700 "${online_update_root}/locks"
 printf '#!/usr/bin/env bash\nprintf "kixdns-panel-server 3.1.1\\n"\n' > "${online_update_root}/server"
 printf 'KIXDNS_PANEL_INSTALLED_RELEASE=v3.1.1\n' > "${online_update_root}/panel.env"
 chmod 0755 "${online_update_root}/server"
@@ -3681,14 +3976,14 @@ assert_equals "${output}" "complete 面板已更新到 v3.1.2" "安装器成功�
 # Structural change 3: with the installer or uninstaller holding the lock, the online update stops and says so, neither
 # asking for the latest release nor running the installer; an update that got the lock hands it to the installer.
 rm -f -- "${online_update_root}/one-click-ran"
-exec 6>> "${online_update_root}/root.lock"
+exec 6>> "${online_update_root}/locks/lock"
 flock -n 6
 output="$(online_update_status "printf 'RAN\n' > '${online_update_root}/one-click-ran'" "${latest_release}")"
 exec 6>&-
 assert_equals "${output}" "failed 在线更新失败：安装器或卸载器正在运行，这次不更新；等它结束再试" "安装器或卸载器正在运行时在线更新应停下并说明"
 [[ ! -e ${online_update_root}/one-click-ran ]] || { printf '断言失败：安装器或卸载器正在运行时在线更新不能调安装器\n' >&2; exit 1; }
 output="$(online_update_status "printf '%s\n' \"\${KIXDNS_PANEL_ROOT_LOCK_FD:-}\" \"\$(readlink /proc/\$\$/fd/8)\" > '${online_update_root}/one-click-ran'" "${latest_release}")"
-assert_equals "$(tr '\n' ' ' < "${online_update_root}/one-click-ran")" "8 ${online_update_root}/root.lock " "在线更新器应把拿着的锁传给安装器"
+assert_equals "$(tr '\n' ' ' < "${online_update_root}/one-click-ran")" "8 ${online_update_root}/locks/lock " "在线更新器应把拿着的锁传给安装器"
 
 # 回归（P1）：Token 文件在面板的状态目录里，面板账号能在检查和读取之间把它换成指向 root 才能读的文件的符号链接。按文件属主的
 # 身份去读（换了也只能读到那个身份本来就能读的），最多等 5 秒。

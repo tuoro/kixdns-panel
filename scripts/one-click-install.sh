@@ -266,7 +266,8 @@ panel_env_trusted() {
 panel_env_value() {
   local key=$1
   [[ -f ${PANEL_ENV} ]] && panel_env_trusted || return 1
-  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
+  AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
 }
 
 # 同版本重跑时在下载前结束，省下整包下载，也不打扰正在运行的 KixDNS。
@@ -440,7 +441,8 @@ main() {
   archive="${TEMP_DIRECTORY}/${asset_name}"
   extract_directory="${TEMP_DIRECTORY}/package"
   printf '正在下载 %s（%s MB）…\n' "${asset_name}" \
-    "$(awk -v bytes="${asset_size}" 'BEGIN { printf "%.1f", bytes / 1048576 }')"
+    "$(AWK_BYTES="${asset_size}" awk 'BEGIN { bytes = ENVIRON["AWK_BYTES"] }
+    BEGIN { printf "%.1f", bytes / 1048576 }')"
   download_archive "${asset_url}" "${archive}"
   printf '%s  %s\n' "${asset_digest#sha256:}" "${archive}" |
     sha256sum --check --strict --status ||
