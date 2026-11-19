@@ -1690,6 +1690,80 @@ output="$(CONFIG_DIRECTORY_UNIT="${root}/etc/foo.json" config_directory_run)"
 assert_contains "${output}" "PLANNED reclaim ${root}/etc-kixdns/pipeline.json" "接回面板的 KixDNS 时公共目录里的配置也应挪走"
 assert_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "接回时公共目录应交还 root"
 assert_not_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/etc"$'\n' "接回时不能再把公共目录交给面板"
+# 换配置位置以后安装失败：回滚放回原配置（内容、权限）、它所在目录的权限、补记之前的外部备份，删掉副本或新位置的配置。
+# The install fails after the config moved: rollback puts back the original config (content, mode), its directory's mode and
+# the external backup as it was before the copy was added, and removes the copy or the config in its new place.
+conversion_rollback() {
+  local kind=$1
+  if [[ ${kind} == legacy ]]; then
+    legacy_host_tree 'User=kxu\n'
+  else
+    upgrade_host_tree
+    : > "${root}/etc/passwd-like"
+  fi
+  chmod 0751 "${root}/etc"
+  chmod 0604 "${root}/etc/foo.json"
+  cp -a -- "${root}/etc/foo.json" "${root}/original-config"
+  [[ ! -f ${root}/external-backup/install.env ]] || cp -- "${root}/external-backup/install.env" "${root}/original-backup"
+  (
+    PACKAGE_ROOT="${root}/package"
+    PANEL_CONFIG_DIRECTORY="${root}/panel-etc"
+    PANEL_ENV="${root}/panel-etc/panel.env"
+    PANEL_STATE_DIRECTORY="${root}/state"
+    MIGRATED_KIXDNS_CONFIG_DIRECTORY="${root}/panel-etc/kixdns"
+    MIGRATED_KIXDNS_CONFIG="${root}/panel-etc/kixdns/pipeline.json"
+    KIXDNS_CONFIG_DIRECTORY="${root}/etc-kixdns"
+    PANEL_SERVER_BINARY="${root}/panel-server"
+    SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    EXTERNAL_BACKUP="${root}/external-backup"
+    BACKUP_ROOT="${root}/rollback"
+    mkdir -p "${BACKUP_ROOT}"
+    getent() { [[ $1 == passwd && $2 == kxu ]] && printf 'kxu:x:1001:1001::/nonexistent:/usr/sbin/nologin\n'; }
+    chown() { :; }
+    systemctl() { :; }
+    update_panel_environment() { :; }
+    install() {
+      local arguments=()
+      while [[ $# -gt 0 ]]; do
+        case $1 in -o | -g) shift ;; *) arguments+=("$1") ;; esac
+        shift
+      done
+      [[ ${arguments[*]: -1} != "${root}"/* ]] || command install "${arguments[@]}"
+    }
+    load_existing_panel_settings
+    INSTALL_KIND=upgrade
+    validate_install_mode
+    eval "real_backup_path() $(declare -f backup_path | tail -n +2)"
+    eval "real_restore_path() $(declare -f restore_path | tail -n +2)"
+    backup_path() { [[ $1 != "${root}"/* ]] || real_backup_path "$@"; }
+    restore_path() { [[ $1 != "${root}"/* ]] || real_restore_path "$@"; }
+    backup_managed_config
+    backup_original_config
+    install_configuration
+    printf 'CONVERTED %s %s\n' "${CONFIG_CONVERSION}" "$(stat -c '%a' "${root}/etc")"
+    restore_panel_database() { :; }
+    INSTALL_MODE=managed
+    KIXDNS_BINARY_CHANGED=false
+    KIXDNS_UNIT_CHANGED=false
+    RESOLVED_CHANGED=false
+    rollback_install 1
+  ) 2>&1 || true
+  printf 'ORIGINAL=%s %s\n' "$(cmp -s "${root}/etc/foo.json" "${root}/original-config" && printf same || printf changed)" \
+    "$(stat -c '%a' "${root}/etc/foo.json" 2>/dev/null || printf missing)"
+  printf 'DIRECTORY=%s\n' "$(stat -c '%a' "${root}/etc")"
+  [[ ! -e ${root}/panel-etc/kixdns && ! -e ${root}/etc-kixdns ]] || printf 'NEW-CONFIG-LEFT\n'
+  if [[ -f ${root}/original-backup ]]; then
+    cmp -s "${root}/external-backup/install.env" "${root}/original-backup" || printf 'BACKUP-CHANGED\n'
+  fi
+}
+for conversion_kind in legacy shared; do
+  output="$(conversion_rollback "${conversion_kind}")"
+  assert_contains "${output}" "CONVERTED ${conversion_kind} 755" "回滚之前应真的换了配置位置（${conversion_kind}）"
+  assert_contains "${output}" "ORIGINAL=same 604" "回滚应放回原配置的内容和权限（${conversion_kind}）"
+  assert_contains "${output}" "DIRECTORY=751" "回滚应放回原配置所在目录的权限（${conversion_kind}）"
+  assert_not_contains "${output}" "NEW-CONFIG-LEFT" "回滚应删掉副本或新位置的配置（${conversion_kind}）"
+  assert_not_contains "${output}" "BACKUP-CHANGED" "回滚应放回补记之前的外部备份（${conversion_kind}）"
+done
 # 面板写到一半的临时文件不算别的东西 / A temporary file the panel was half way through writing does not count as anything else
 upgrade_host_tree
 : > "${root}/etc/.kixdns-panel-Ab12Cd"

@@ -472,9 +472,131 @@ python3 "${ACCEPTANCE_PY}" dns --dns-port "${second_port}"
 [[ $(second_config_state) == "${second_before}" ]] || fail "第二次恢复后原配置和第二次迁移前不一样"
 [[ ! -e /etc/kixdns-panel ]] || fail "卸载后仍残留 /etc/kixdns-panel"
 ! systemctl is-active --quiet kixdns-panel.service || fail "卸载后面板服务仍在运行"
+
+# v4.3.4 及更早原地迁移的主机：那时的迁移不复制，直接接管原配置，原配置的目录归面板（kixdns-panel:kixdns 0750）、面板 unit 的
+# ReadWritePaths 放开它，备份里不记副本，panel.env 里还是旧示例的可信代理。先用这个包迁移一个外部 KixDNS，再把主机改回那时
+# 留下的样子，然后在线更新（--panel-only-update）、再改回去完整重装各一次：都要改管副本，原配置一字不动地交还原来的 KixDNS。
+# A host migrated in place by v4.3.4 or earlier: that migration made no copy and took the original config over, the
+# original's directory belonging to the panel (kixdns-panel:kixdns 0750) and opened by the panel unit's ReadWritePaths, no
+# copy in the backup, and the old example's trusted proxies in panel.env. Migrate an external KixDNS with this package, turn
+# the host back into what that left, then run an online update (--panel-only-update) and, turned back again, a full
+# reinstall: each must move onto the copy and hand the original, byte for byte, back to the original KixDNS.
+legacy_directory="${MIGRATION_ROOT}/legacy"
+legacy_config="${legacy_directory}/kixdns.json"
+legacy_copy=/etc/kixdns-panel/kixdns/pipeline.json
+legacy_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${legacy_config}")"
+[[ ${legacy_port} =~ ^[0-9]+$ ]] || fail "没有获得旧版原地迁移验收的 DNS 端口"
+chmod 0755 "${legacy_directory}"
+cat > "${MIGRATION_UNIT}" <<EOF
+[Unit]
+Description=验收用的外部 KixDNS（旧版原地迁移）
+
+[Service]
+ExecStart=${MIGRATION_ROOT}/kixdns run --config ${legacy_config} --admin-socket /run/kixdns/admin.sock
+RuntimeDirectory=kixdns
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cp -- "${MIGRATION_UNIT}" "${MIGRATION_ROOT}/legacy.service"
+systemctl daemon-reload
+systemctl enable kixdns.service
+systemctl restart kixdns.service
+python3 "${ACCEPTANCE_PY}" dns --dns-port "${legacy_port}"
+legacy_sum="$(sha256sum < "${legacy_config}")"
+run_installer --replace-existing
+installed=true
+
+# 把主机改回 v4.3.4 原地迁移留下的样子 / Turn the host back into what a v4.3.4 in-place migration left
+make_legacy_in_place() {
+  local temporary
+  systemctl stop kixdns-panel.service
+  temporary="$(mktemp /etc/kixdns-panel/.acceptance-env.XXXXXX)"
+  awk -v config="${legacy_config}" '
+    /^# 仅这些代理 CIDR 可以提供 X-Forwarded-For；多个网段用逗号分隔。默认谁都不信。$/ { next }
+    /^# 面板在本机 Nginx 后面时写 / { next }
+    /^KIXDNS_TRUSTED_PROXIES=/ {
+      print "# 仅这些代理 CIDR 可以提供 X-Forwarded-For；多个网段用逗号分隔。"
+      print "KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128"
+      next
+    }
+    /^KIXDNS_CONFIG=/ { print "KIXDNS_CONFIG=" config; next }
+    { print }
+  ' "${PANEL_ENV}" > "${temporary}"
+  chown root:kixdns "${temporary}"
+  chmod 0640 "${temporary}"
+  mv -fT -- "${temporary}" "${PANEL_ENV}"
+  sed -i -E '/^KIXDNS_(MANAGED_CONFIG|LEGACY_IN_PLACE|USER_CREATED|GROUP_CREATED)=/d' /var/lib/kixdns-panel/external-backup/install.env
+  sed -i -e "s|--config [^ ]*|--config ${legacy_config}|" -e "s|^ConditionPathExists=.*|ConditionPathExists=${legacy_config}|" \
+    "${MIGRATION_UNIT}"
+  sed -i "s|^ReadWritePaths=.*|ReadWritePaths=${legacy_directory} /var/lib/kixdns-panel|" /etc/systemd/system/kixdns-panel.service
+  chown kixdns-panel:kixdns "${legacy_directory}" "${legacy_config}"
+  chmod 0750 "${legacy_directory}"
+  chmod 0640 "${legacy_config}"
+  rm -rf -- /etc/kixdns-panel/kixdns
+  systemctl daemon-reload
+  systemctl restart kixdns.service
+  systemctl start kixdns-panel.service
+  python3 "${ACCEPTANCE_PY}" dns --dns-port "${legacy_port}"
+}
+
+# 改管副本以后应有的样子。参数：安装结果里说 KixDNS 的那一行。/ What the host must look like once on the copy. Argument: the
+# install result's line about KixDNS.
+require_legacy_converted() {
+  require_output "$1" "改管副本时没有说明 KixDNS 怎样了"
+  require_output "配置：改为管理副本 ${legacy_copy}，以后在面板里改的都写进副本；原配置 ${legacy_config} 留着升级这时的内容，交还给原来的 KixDNS" \
+    "改管副本时没有说明配置的去向"
+  require_output "旧版迁移时把原配置交给了面板，没有记下它原来的属主和权限，这次改成：" "改管副本时没有说明改了属主"
+  require_output "  ${legacy_directory}：kixdns-panel:kixdns 0750 → root:root 0755" "改管副本时没有列出交还的目录"
+  # 原来的 KixDNS 以 root 运行，原配置只留给 root / The original KixDNS runs as root, so the original is left to root alone
+  require_output "  ${legacy_config}：kixdns-panel:kixdns 0640 → root:root 0600" "改管副本时没有列出交还的原配置"
+  require_output "反向代理：panel.env 还信任本机代理（旧版的默认值 127.0.0.1/32,::1/128）" "旧版的可信代理默认值留着时没有提醒"
+  [[ $(stat -c '%U:%G:%a' -- "${legacy_directory}") == root:root:755 ]] || fail "原配置的目录没有交还 root"
+  [[ $(stat -c '%U:%G:%a' -- "${legacy_config}") == root:root:600 ]] || fail "原配置没有交还 root"
+  [[ $(sha256sum < "${legacy_config}") == "${legacy_sum}" ]] || fail "改管副本时改了原配置的内容"
+  cmp -s -- "${legacy_config}" "${legacy_copy}" || fail "副本和原配置不一样"
+  [[ $(stat -c '%U:%G:%a' -- "${legacy_copy}") == kixdns-panel:kixdns:640 ]] || fail "副本的权限不符合预期"
+  grep -Fxq "KIXDNS_CONFIG=${legacy_copy}" "${PANEL_ENV}" || fail "panel.env 没有改指副本"
+  grep -Fq -- "--config ${legacy_copy} " "${MIGRATION_UNIT}" || fail "KixDNS 的 unit 没有改指副本"
+  grep -Fxq 'ReadWritePaths=/etc/kixdns-panel/kixdns /var/lib/kixdns-panel' /etc/systemd/system/kixdns-panel.service ||
+    fail "面板 unit 还能写原配置的目录"
+  grep -Fxq "KIXDNS_MANAGED_CONFIG=${legacy_copy}" /var/lib/kixdns-panel/external-backup/install.env || fail "备份没有记下副本"
+  grep -Fxq 'KIXDNS_LEGACY_IN_PLACE=true' /var/lib/kixdns-panel/external-backup/install.env || fail "备份没有记下这是旧版原地迁移"
+  grep -Fxq 'KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' "${PANEL_ENV}" || fail "升级改掉了用户的可信代理"
+  ! grep -Fxq '# 仅这些代理 CIDR 可以提供 X-Forwarded-For；多个网段用逗号分隔。' "${PANEL_ENV}" || fail "旧的可信代理说明没有换掉"
+  # 面板账号不能再在原配置的目录里建文件 / The panel account can no longer create files in the original's directory
+  ! setpriv --reuid=kixdns-panel --regid=kixdns --init-groups -- touch "${legacy_directory}/.acceptance-probe" 2>/dev/null ||
+    fail "面板账号还能写原配置的目录"
+  systemctl is-active --quiet kixdns.service || fail "改管副本以后 KixDNS 没有保持运行"
+  [[ $(unit_main_executable kixdns.service) == /var/lib/kixdns-panel/bin/kixdns ]] || fail "改管副本以后运行的不是增强版"
+  python3 "${ACCEPTANCE_PY}" dns --dns-port "${legacy_port}"
+}
+
+make_legacy_in_place
+run_installer --panel-only-update --reinstall
+require_legacy_converted "KixDNS：程序未替换，unit 改用新的配置路径，已按原状态重启（运行中）"
+make_legacy_in_place
+run_installer --reinstall
+require_legacy_converted "KixDNS：已替换并按原状态重启（运行中）"
+# 在面板里改配置：写进副本，原配置不变 / Edit the config in the panel: the copy changes, the original does not
+python3 "${ACCEPTANCE_PY}" verify --dns-port "${legacy_port}" --mode migrated
+[[ $(sha256sum < "${legacy_config}") == "${legacy_sum}" ]] || fail "在面板里改配置改到了原配置"
+uninstall_log="$(mktemp)"
+bash "${UNINSTALLER}" --remove-kixdns --remove-config --yes 2>&1 | tee "${uninstall_log}"
+installed=false
+grep -Fq "它用的配置 ${legacy_config} 是升级到新版那时面板保存的内容" "${uninstall_log}" ||
+  fail "旧版原地迁移的主机恢复时没有照实说原配置里是什么"
+rm -f -- "${uninstall_log}"
+systemctl daemon-reload
+cmp -s -- "${MIGRATION_UNIT}" "${MIGRATION_ROOT}/legacy.service" || fail "卸载没有放回旧版原地迁移前的 unit"
+systemctl is-active --quiet kixdns.service || fail "卸载后原来的 KixDNS 没有运行"
+[[ $(unit_main_executable kixdns.service) == "${MIGRATION_ROOT}/kixdns" ]] || fail "卸载后运行的不是原来的程序"
+python3 "${ACCEPTANCE_PY}" dns --dns-port "${legacy_port}"
+[[ ! -e /etc/kixdns-panel ]] || fail "卸载后仍残留 /etc/kixdns-panel"
 remove_migration_fixture
 migration_fixture=false
 
 rm -f -- "${install_log}"
 trap - EXIT
-printf '完整包安装、同版本重跑、修复安装、运行联调、迁移、恢复后再迁移与卸载验收通过。\n'
+printf '完整包安装、同版本重跑、修复安装、运行联调、迁移、恢复后再迁移、旧版原地迁移改管副本与卸载验收通过。\n'
