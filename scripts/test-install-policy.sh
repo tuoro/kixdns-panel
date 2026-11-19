@@ -2883,12 +2883,15 @@ for lock_case in missing wide symlink; do
       symlink) : > "${base}/elsewhere" && ln -s -- "${base}/elsewhere" "${ROOT_LOCK}" ;;
     esac
     unset KIXDNS_PANEL_ROOT_LOCK_FD
-    fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+    fail() { printf 'FAILED %s\n' "$*"; [[ ! -e ${base}/elsewhere ]] || stat -c 'TARGET %a' -- "${base}/elsewhere"; exit 1; }
     take_root_lock
     stat -c '%a' -- "${ROOT_LOCK}"
   )" || true
   case ${lock_case} in
-    symlink) assert_contains "${lock_output}" "FAILED ${WORK}/lock-file/locks/lock 不是 root 的普通文件，锁不能用它" "锁文件是符号链接时应停下" ;;
+    symlink)
+      assert_contains "${lock_output}" "FAILED ${WORK}/lock-file/locks/lock 不是 root 的普通文件，锁不能用它" "锁文件是符号链接时应停下"
+      assert_contains "${lock_output}" "TARGET 644" "锁文件是符号链接时不能顺着它改指着的文件"
+      ;;
     *) assert_equals "${lock_output}" "600" "锁文件应是只有 root 能读写的 0600（${lock_case}）" ;;
   esac
 done
@@ -3170,13 +3173,20 @@ settings_run() {
     PANEL_BUILD_COMMIT=5555555555555555555555555555555555555555
     PANEL_RELEASE=""
     KIXDNS_GROUP=$(id -gn)
-    chown() { :; }
+    chown() { printf 'chown %s\n' "$*"; }
     install() { mkdir -p "${@: -1}"; chmod 0700 "${@: -1}"; }
+    if [[ ${SETTINGS_UPDATE_LINK:-false} == true ]]; then
+      mkdir -p "${base}/elsewhere"
+      PANEL_UPDATE_DIRECTORY="${base}/update-link"
+      ln -s -- "${base}/elsewhere" "${PANEL_UPDATE_DIRECTORY}"
+    fi
     if [[ ${SETTINGS_SAME_FS:-true} == false ]]; then
       same_filesystem() { return 1; }
     fi
     update_panel_environment 6666666666666666666666666666666666666666 88 fork
   ) 2>&1
+  printf 'BIND-LINES=%s\n' "$(grep -c '^KIXDNS_PANEL_BIND=' "${base}/panel-etc/panel.env")"
+  [[ ! -e ${base}/elsewhere/notice ]] || printf 'NOTICE-THROUGH-LINK\n'
   printf 'NEW:\n'
   grep -E '^(KIXDNS_PANEL_BIND|KIXDNS_PANEL_SECURE_COOKIE|KIXDNS_TRUSTED_PROXIES|RUST_LOG|KIXDNS_DIAGNOSTIC_SERVER|KIXDNS_EXTRA)=' \
     "${base}/panel-etc/panel.env"
@@ -3192,6 +3202,7 @@ for kept in KIXDNS_PANEL_BIND=127.0.0.1:5738 KIXDNS_PANEL_SECURE_COOKIE=true KIX
   assert_contains "$(sed -n '/^NEW:/,$p' <<< "${output}")" "${kept}" "重写时面板自己的设置照原来的保留（${kept%%=*}）"
 done
 assert_not_contains "${output}" "KIXDNS_EXTRA=1" "别的设置照旧不带过来"
+assert_contains "${output}" "BIND-LINES=1" "保留的设置写在示例那一项的位置，不多出一行"
 assert_not_contains "${output}" "格式不对" "都合格式时不说换了值"
 output="$(settings_run 'KIXDNS_PANEL_BIND=0.0.0.0:5738' 'KIXDNS_PANEL_BIND="[::1]:5738"' "RUST_LOG='kixdns_panel=debug,info'")"
 assert_contains "${output}" $'NEW:\nKIXDNS_PANEL_BIND=[::1]:5738' "同一项写了几次时照 systemd 用最后一次，去掉一对引号"
@@ -3215,6 +3226,17 @@ assert_not_contains "${output}" "NOTICE:" "不是仅更新面板时不留给在�
 # copied, root's alone
 output="$(SETTINGS_SAME_FS=false settings_run 'KIXDNS_PANEL_BIND=127.0.0.1:5738')"
 assert_contains "${output}" "KEPT ${WORK}/settings/records/quarantine/panel.env." "不在同一个文件系统时原来的 panel.env 也要留一份"
+assert_contains "${output}" "chown -hR $(id -u):$(id -g) -- ${WORK}/settings/records/quarantine/panel.env." "复制进 quarantine 的那份应归 root"
+output="$(SETTINGS_KIND=panel-only SETTINGS_UPDATE_LINK=true settings_run 'KIXDNS_PANEL_BIND=127.0.0.1:5738')"
+assert_not_contains "${output}" "NOTICE-THROUGH-LINK" "在线更新状态目录是符号链接时不往里写"
+render_output="$(
+  KIXDNS_CONFIG_PATH=/etc/kixdns/pipeline.json
+  PANEL_SETTINGS=$'KIXDNS_PANEL_BIND=0.0.0.0:5738\nKIXDNS_CONFIG=/evil\n'
+  fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+  render_panel_environment /dev/null "${WORK}/bad-settings.env" "" "" "" "" ""
+  printf 'RENDERED\n'
+)" || true
+assert_contains "${render_output}" "FAILED 要写进 panel.env 的 KIXDNS_CONFIG 格式不对" "渲染时保留的设置也要再验一遍"
 for good_setting in 'KIXDNS_PANEL_BIND=0.0.0.0:1' 'KIXDNS_PANEL_BIND=255.255.255.255:65535' 'KIXDNS_PANEL_BIND=[::]:5738' \
   'KIXDNS_PANEL_BIND=[fe80::1:2]:80' 'KIXDNS_PANEL_BIND=[::ffff:10.0.0.1]:80' 'KIXDNS_PANEL_BIND=[1:2:3:4:5:6:7:8]:1' \
   'KIXDNS_PANEL_SECURE_COOKIE=false' 'KIXDNS_TRUSTED_PROXIES=' 'KIXDNS_TRUSTED_PROXIES=10.0.0.0/8,fd00::/8,0.0.0.0/0' \
@@ -3224,7 +3246,7 @@ for good_setting in 'KIXDNS_PANEL_BIND=0.0.0.0:1' 'KIXDNS_PANEL_BIND=255.255.255
 done
 for bad_setting in 'KIXDNS_PANEL_BIND=0.0.0.0:0' 'KIXDNS_PANEL_BIND=0.0.0.0:65536' 'KIXDNS_PANEL_BIND=256.0.0.1:80' \
   'KIXDNS_PANEL_BIND=01.2.3.4:80' 'KIXDNS_PANEL_BIND=localhost:80' 'KIXDNS_PANEL_BIND=::1:80' 'KIXDNS_PANEL_BIND=[1::2::3]:80' \
-  'KIXDNS_PANEL_BIND=[1:2:3:4:5:6:7:8:9]:80' 'KIXDNS_PANEL_BIND=[fe80::1%eth0]:80' 'KIXDNS_PANEL_BIND=1.2.3.4:80 ' \
+  'KIXDNS_PANEL_BIND=[1:2:3:4:5:6:7:8:9]:80' 'KIXDNS_PANEL_BIND=[1:2:3:4::5:6:7:8]:80' 'KIXDNS_PANEL_BIND=[fe80::1%eth0]:80' 'KIXDNS_PANEL_BIND=1.2.3.4:80 ' \
   'KIXDNS_PANEL_SECURE_COOKIE=True' 'KIXDNS_TRUSTED_PROXIES=10.0.0.0/33' 'KIXDNS_TRUSTED_PROXIES=fd00::/129' \
   'KIXDNS_TRUSTED_PROXIES=10.0.0.1' 'KIXDNS_TRUSTED_PROXIES=10.0.0.0/8,' 'KIXDNS_TRUSTED_PROXIES=10.0.0.0/8, ::1/128' \
   'RUST_LOG=' 'RUST_LOG=info warn' 'KIXDNS_DIAGNOSTIC_SERVER=127.0.0.1:53\nKIXDNS_CONFIG=/x' 'KIXDNS_CONFIG=/etc/x.json'; do
@@ -3404,20 +3426,20 @@ for script_name in install uninstall panel-online-update one-click-install; do
   [[ -z ${direct} ]] || { printf '断言失败：%s.sh 里还有不经 drop_privileges 的 setpriv：%s\n' "${script_name}" "${direct}" >&2; exit 1; }
 done
 drop_output="$(
-  exec 7>> "${WORK}/drop-fd"
+  exec 3>> "${WORK}/drop-fd" 7>> "${WORK}/drop-fd"
   setpriv() {
     while [[ $1 != -- ]]; do shift; done
     shift
     "$@"
   }
-  timeout() { shift; "$@"; }
+  timeout() { printf 'TIMEOUT %s\n' "$1"; shift; "$@"; }
   # shellcheck disable=SC2016 # 内层 bash 展开 / Expanded by the inner bash
-  drop_privileges --reuid=1 --regid=1 --clear-groups -- bash -c '[[ -e /proc/$$/fd/7 ]] && echo LEAKED || echo CLOSED'
+  drop_privileges --reuid=1 --regid=1 --clear-groups -- bash -c '[[ -e /proc/$$/fd/3 || -e /proc/$$/fd/7 ]] && echo LEAKED || echo CLOSED'
   # shellcheck disable=SC2016 # 同上 / As above
-  drop_privileges --timeout 5 --reuid=1 --regid=1 --clear-groups -- bash -c '[[ -e /proc/$$/fd/7 ]] && echo LEAKED || echo CLOSED'
-  [[ -e /proc/${BASHPID}/fd/7 ]] && echo PARENT-KEPT
+  drop_privileges --timeout 5 --reuid=1 --regid=1 --clear-groups -- bash -c '[[ -e /proc/$$/fd/3 || -e /proc/$$/fd/7 ]] && echo LEAKED || echo CLOSED'
+  [[ -e /proc/${BASHPID}/fd/3 && -e /proc/${BASHPID}/fd/7 ]] && echo PARENT-KEPT
 )"
-assert_equals "${drop_output}" $'CLOSED\nCLOSED\nPARENT-KEPT' "降权的子进程不能带着 2 以上的描述符，自己这边照旧开着"
+assert_equals "${drop_output}" $'CLOSED\nTIMEOUT 5\nCLOSED\nPARENT-KEPT' "降权的子进程不能带着 2 以上的描述符，限时由 root 的 timeout 做，自己这边照旧开着"
 assert_not_contains "$(cat "${PACKAGE_ROOT}/docs/deployment.md")" "面板打不开它" "文档不能说面板打不开锁：说的要是真的"
 
 # R3：内核包的身份目录已经有时不用 install -d；里面的文件先删掉同名的再写。/ R3: an existing bundle directory gets no
@@ -4315,6 +4337,8 @@ printf 'KIXDNS_PANEL_INSTALLED_RELEASE=v3\033[2J\n' > "${online_update_root}/pan
 output="$(online_update_status "exit 0" "${latest_release}")"
 printf 'KIXDNS_PANEL_INSTALLED_RELEASE=v3.1.1\n' > "${online_update_root}/panel.env"
 assert_equals "${output}" "failed 在线更新失败：panel.env 里记录的面板版本无效" "panel.env 里的值不能原样进在线更新的结果"
+output="$(online_update_status "printf 'a\033[2Jb\n' > '${online_update_root}/status/notice'; exit 0" "${latest_release}")"
+assert_equals "${output}" "complete 面板已更新到 v3.1.2。a[2Jb" "安装器留下的说明里的控制字符不能带进结果"
 printf 'stale\n' > "${online_update_root}/status/notice"
 output="$(online_update_status "exit 0" "${latest_release}")"
 assert_equals "${output}" "complete 面板已更新到 v3.1.2" "上一次留下的说明不能带进这一次的结果"
