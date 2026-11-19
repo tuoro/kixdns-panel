@@ -932,8 +932,8 @@ struct RegexCheckRequest {
     patterns: Vec<RegexCheckItem>,
 }
 
-/// 和请求里的正则一一对应：内核编得出、编不出（原因和内核的原话），或者太长不下结论 / One per regex of the request: the kernel
-/// compiles it, or does not (why, and the kernel's words), or it is too long for a verdict
+/// 和请求里的正则一一对应：内核编得出、编不出（原因和内核的原话，太长的也是） / One per regex of the request: the kernel compiles
+/// it, or does not (why, and the kernel's words, one too long included)
 #[derive(Debug, Serialize)]
 struct RegexCheckResponse {
     answers: Vec<crate::regex_check::Answer>,
