@@ -5,7 +5,14 @@ import { isCnameTarget, isIp, isNet, isQclass, isQtype, isRcode, kernelRegexOk, 
 
 // 内核怎么读正则：每一条都拿内核的 config::validate 跑过，服务端和页面共用 / How the kernel reads regexes: each run through the kernel's
 // config::validate, shared by the server and the page
-const KERNEL_REGEXES = (JSON.parse(readFileSync(fileURLToPath(new URL('../../../testdata/kernel-regex.json', import.meta.url)), 'utf8')) as { patterns: { pattern: string; error: string | null }[] }).patterns
+const KERNEL_REGEXES = (JSON.parse(readFileSync(fileURLToPath(new URL('../../../testdata/kernel-regex.json', import.meta.url)), 'utf8')) as { patterns: { kind: 'domain' | 'txt'; pattern: string; error: string | null }[] }).patterns
+// 服务端的回答照内核的原话写成 / The server's answer, written from the kernel's words
+const tableAnswer = ({ kind, pattern }: { kind: 'domain' | 'txt'; pattern: string }) => {
+  const error = KERNEL_REGEXES.find((c) => c.kind === kind && c.pattern === pattern)!.error
+  if (error === null) return { verdict: 'compiles' as const }
+  const cause = error.startsWith('regex pattern too long') ? 'too-long' as const : error.includes('exceeds size limit') ? 'too-big' as const : 'syntax' as const
+  return { verdict: 'refused' as const, cause, error }
+}
 
 // grammar.ts 照内核的读法写：下面每一条的答案都是把这个写法放进一份最小配置、跑 kixdns 79e8fd5 的 config::validate 得到的。
 // 内核收的这里也收、内核拒绝的这里也拒绝；少数几个内核收、这里查不出来的（CNAME 目标里的 IDN 域名）单独说明，宁可多拦不放过
@@ -52,8 +59,9 @@ describe('内核的读法', () => {
   it('正则：照 Rust 的 regex 读', async () => {
     vi.resetModules()
     const check = await import('./regex-check')
-    const { kernelRegexOk: answered } = await import('./grammar')
-    check.setRegexChecker(async (patterns) => patterns.map((p) => KERNEL_REGEXES.find((c) => c.pattern === p)!.error))
+    const { kernelRegexOk } = await import('./grammar')
+    const answered = (p: string) => kernelRegexOk('domain', p)
+    check.setRegexChecker(async (items) => items.map(tableAnswer))
     const ok = [
       '^a\\.b$', '(?<n>a)', '(?P<n>a)', '\\d+', '[[:alpha:]]+', '(?i)abc', '(?i:abc)', '\\/', '\\-', '\\p{Han}', '\\pL', '\\u0041', '\\x41', '(?s).', '\\A', '\\z',
       '\\<', '\\>', '\\b{start}', '\\\\1', '[\\]]', '(?x) a b', '(?-i)a', '(?i)(?s)a', '(?u)a', '(?R)a', '(?U)a+', '\\a', '\\v', '[\\d\\s]',
@@ -62,7 +70,7 @@ describe('内核的读法', () => {
       '(?=a)', '(?!a)', '(?<=a)b', '(?<!a)b', 'a\\1', '(?P<n>a)\\k<n>', '\\0', 'a{2,1}', '\\cA', '[\\b]', '\\Z', '\\e', '\\h', '\\y', '\\K', '\\G', '\\Q',
       '[\\z]', '[\\A]', '[\\B]',
     ]
-    await check.checkKernelRegexes([...ok, ...refused, 'a++'])
+    await check.checkKernelRegexes([...ok, ...refused, 'a++'].map((pattern) => ({ kind: 'domain', pattern })))
     both(ok, refused, answered)
     // 内核收、JS 的正则读不了的写法（比如 a++）：以前宁可多拦，现在照内核收 / What the kernel takes but JS's regex cannot read (a++, say): once
     // refused to err on the strict side, now taken as the kernel takes it
@@ -73,7 +81,24 @@ describe('内核的读法', () => {
   // Before the panel server answers (or when it cannot be reached), the page's own checks may only stop what the kernel surely refuses:
   // nothing the kernel takes is marked
   it('正则：服务端还没回答时不比内核严', () => {
-    expect(KERNEL_REGEXES.filter((c) => c.error === null && !kernelRegexOk(c.pattern)).map((c) => c.pattern)).toEqual([])
+    expect(KERNEL_REGEXES.filter((c) => c.error === null && !kernelRegexOk(c.kind, c.pattern)).map((c) => `${c.kind} ${c.pattern}`)).toEqual([])
+  })
+
+  // 边打字边写正则时最常停在没写完的样子上：括号、方括号没配上，结尾的反斜杠，前面没东西的 *、+、?、{，没收尾的 {。这些本地就拦下，
+  // 不用等服务端回答（等回答的那一下，出错提示会先消失再出来），每一条内核也确实不收
+  // Typing a regex stops most often at unfinished shapes: a ( or [ not closed, a trailing backslash, a *, +, ?, { with nothing before it, a
+  // { never closed. These are stopped here without waiting for the server (waiting is what made the error vanish and come back), and the
+  // kernel does refuse every one
+  it('正则：没写完的结构本地就拦下', () => {
+    const unfinished = [
+      '(', '(a', '(abc', '(abcd', '((a)', '(?:a', '(?P<n>a', '(?i)(', '(?i:', '(?<n>', 'a|(', '\\\\(', 'a)', '(a))', '|a)', '(?i))', '[(]a)',
+      '[a', '[a-z', '[^a', '[]a', '[^]', '[[a]', '[a\\]', '[[:alpha:]', 'ab\\', '\\', '*a', '+a', '?a', 'a|*b', '(*a)', '(?:*a)', '(|*)', '(?i)*',
+      'a(?i)*', '(?i)+a', '{1}', '{a', 'a|{1}', 'a{', 'a{1', 'a{1,2', 'a{1}{', '\\p{L',
+    ]
+    const missing = unfinished.filter((p) => !KERNEL_REGEXES.some((c) => c.kind === 'domain' && c.pattern === p && c.error !== null))
+    expect(missing, '表里内核不收的').toEqual([])
+    expect(unfinished.filter((p) => kernelRegexOk('domain', p))).toEqual([])
+    expect(unfinished.filter((p) => kernelRegexOk('txt', p))).toEqual([])
   })
 
   it('CNAME 的目标：照 hickory 的域名读', () => {

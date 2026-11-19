@@ -158,6 +158,12 @@ pub enum Skip {
     /// 内核的正则不支持这种写法（前后断言、反向引用等） / A regex the kernel's syntax does not support (lookaround,
     /// backreferences and the like)
     BadRegex,
+    /// 正则编译出来超过内核的 1 MB 上限，内核跳过它 / A regex over the kernel's 1 MB limit once compiled, which the kernel
+    /// skips
+    RegexTooLarge,
+    /// 规则写成的正则超过 16 KiB：面板不编译它，也不写进合并文件 / A rule whose regex is over 16 KiB: the panel neither
+    /// compiles it nor writes it into the merged file
+    RegexTooLong,
     /// 这个列表的通配符和正则规则已经用满 [`MAX_PATTERNS_PER_LIST`] 条 / The list has used up its
     /// [`MAX_PATTERNS_PER_LIST`] wildcard and regex rules
     TooManyPatterns,
@@ -181,9 +187,19 @@ pub enum Line {
     Skipped(Skip),
 }
 
-/// 读一行规则 / Reads one line
+/// 读一行规则，正则照内核读合并文件的办法编译过：内核用不上的算没用上（`scan` 也是这样读，只是先数过上限） / Reads one line,
+/// its regex compiled as the kernel reads the merged file: one the kernel cannot use counts as unused (`scan` reads so too, only
+/// counting against the limit first)
+#[cfg(test)]
 #[must_use]
 pub fn parse_line(raw: &str) -> Line {
+    verified(read_line(raw))
+}
+
+/// 读一行规则，正则不编译（`verified` 再编译）：只要 `$badfilter`、或者这一行反正用不上时用它，省下编译 / Reads one line
+/// without compiling its regex (`verified` does that): for when only `$badfilter` matters or the line goes unused anyway, saving
+/// the compile
+fn read_line(raw: &str) -> Line {
     let line = raw.trim();
     if line.is_empty() || line.starts_with(['!', '#', '[']) {
         return Line::Ignored;
@@ -321,12 +337,7 @@ fn parse_pattern(pattern: &str) -> Result<Match, Skip> {
         if regex.is_empty() {
             return Err(Skip::Unreadable);
         }
-        // 内核按 Rust 的正则读：前后断言、反向引用这些写法它不认 / The kernel reads Rust regex syntax, which has no
-        // lookaround or backreferences
-        return match regex_syntax::Parser::new().parse(regex) {
-            Ok(_) => Ok(Match::Regex(ignoring_case(regex))),
-            Err(_) => Err(Skip::BadRegex),
-        };
+        return Ok(Match::Regex(ignoring_case(regex)));
     }
     let mut lower = pattern.to_lowercase();
     // AdGuard 拿「http://域名」去匹配 DNS 查询，所以开头的 `://` 和 `|` 一样是域名的开头
@@ -363,6 +374,27 @@ fn parse_pattern(pattern: &str) -> Result<Match, Skip> {
         } else {
             Skip::Unreadable
         })
+}
+
+/// 这一行的正则内核用不用得上（照内核读 `GeoSite` JSON 的办法编译，见 `regex_check.rs`）：用不上的这一行算没用上，说出内核为什么
+/// 不用；16 KiB 以上的不编译（只是展开成语法树就要几十 MB），也不要
+/// Whether the kernel can use this line's regex (compiled as the kernel reads `GeoSite` JSON, see `regex_check.rs`): when it
+/// cannot, the line counts as unused, saying why the kernel would not use it; one over 16 KiB is not compiled (spelling it out as
+/// a syntax tree alone takes tens of MB) and not taken either
+fn verified(line: Line) -> Line {
+    let Line::Rules(rules) = &line else {
+        return line;
+    };
+    let problem = rules.iter().find_map(|rule| match &rule.matcher {
+        Match::Regex(regex) => crate::regex_check::blocklist_problem(regex),
+        _ => None,
+    });
+    match problem {
+        None => line,
+        Some(crate::regex_check::Cause::Syntax) => Line::Skipped(Skip::BadRegex),
+        Some(crate::regex_check::Cause::TooBig) => Line::Skipped(Skip::RegexTooLarge),
+        Some(crate::regex_check::Cause::TooLong) => Line::Skipped(Skip::RegexTooLong),
+    }
 }
 
 /// `AdGuard` 的规则不分大小写，内核拿小写的域名去比：写了大写字母（转义里的不算）的正则加上 `(?i)`，不然永远匹配
@@ -457,7 +489,7 @@ fn lines(text: &str) -> std::str::Lines<'_> {
 #[must_use]
 pub fn badfilters(text: &str) -> HashSet<String> {
     lines(text)
-        .filter_map(|line| match parse_line(line) {
+        .filter_map(|line| match read_line(line) {
             Line::Badfilter(rule) => Some(rule),
             _ => None,
         })
@@ -523,7 +555,8 @@ fn scan(text: &str, badfilters: &HashSet<String>, mut on_rule: impl FnMut(Rule))
         if badfilters.contains(raw.trim()) {
             continue;
         }
-        let line = match parse_line(raw) {
+        // 先数够不够：超出上限的不必再编译 / The limit is counted first: a rule past it need not be compiled
+        let line = match read_line(raw) {
             Line::Rules(rules) => {
                 let added = rules
                     .iter()
@@ -532,8 +565,11 @@ fn scan(text: &str, badfilters: &HashSet<String>, mut on_rule: impl FnMut(Rule))
                 if added > 0 && patterns + added > MAX_PATTERNS_PER_LIST {
                     Line::Skipped(Skip::TooManyPatterns)
                 } else {
-                    patterns += added;
-                    Line::Rules(rules)
+                    let line = verified(Line::Rules(rules));
+                    if matches!(line, Line::Rules(_)) {
+                        patterns += added;
+                    }
+                    line
                 }
             }
             line => line,
@@ -716,6 +752,8 @@ mod tests {
             Skip::BrowserModifier(name) => ("browser-modifier", Some(name)),
             Skip::UnknownModifier(name) => ("unknown-modifier", Some(name)),
             Skip::BadRegex => ("bad-regex", None),
+            Skip::RegexTooLarge => ("regex-too-large", None),
+            Skip::RegexTooLong => ("regex-too-long", None),
             Skip::TooManyPatterns => ("too-many-patterns", None),
             Skip::UrlPath => ("url-path", None),
             Skip::Unreadable => ("unreadable", None),
@@ -760,6 +798,49 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// 列表里的正则照内核读合并文件（`GeoSite` JSON）的办法算：内核把 `\w` 改成 ASCII 再编译，`\w{60}` 照用；`\pL{60}`
+    /// 编译出来超过 1 MB，内核跳过它，这里也不算用上，原因说的是太大，不是写法；16 KiB 以上的不编译（只是展开就要几十 MB），
+    /// 也不写进合并文件。条数和内核真用上的一样。答案拿内核读合并文件跑过（testdata/kernel-regex.json 的 blocklist）
+    /// A list's regexes count as the kernel reads the merged file (`GeoSite` JSON): the kernel turns `\w` into ASCII before
+    /// compiling, so `\w{60}` is used; `\pL{60}` compiles to over 1 MB, the kernel skips it, it does not count as used here
+    /// either, and the reason given is its size, not its syntax; over 16 KiB nothing is compiled (spelling it out alone takes tens
+    /// of MB) and it stays out of the merged file. The count is what the kernel really uses. The answers come from the kernel
+    /// reading a merged file (the blocklist cases of testdata/kernel-regex.json)
+    #[test]
+    fn regex_rules_count_as_the_kernel_uses_them() {
+        let long = format!("/{}/", r"\pL".repeat(6000));
+        let wildcard = format!("ad{}.example", "*a".repeat(9000));
+        let text = format!(
+            "/^ad\\w{{60}}\\.example\\.com$/\n/^ad\\pL{{60}}\\.example\\.com$/\n/(?=ad)x/\n{long}\n{wildcard}\n"
+        );
+        let summary = serde_json::to_value(summarize(&text)).unwrap();
+        assert_eq!(
+            (&summary["rules"], &summary["skipped"]),
+            (&1.into(), &4.into())
+        );
+        let reasons: Vec<&serde_json::Value> = summary["samples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|sample| &sample["reason"])
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                "regex-too-large",
+                "bad-regex",
+                "regex-too-long",
+                "regex-too-long"
+            ]
+        );
+        let mut merged = Merged::default();
+        assert_eq!(merged.add(&text, &HashSet::new()).rules, 1);
+        assert_eq!(
+            merged.geosite_json(&[]),
+            r#"{"entries":[{"tag":"kixdns-panel-block","domains":["regexp:^ad\\w{60}\\.example\\.com$"]}],"kixdns_panel":{"sources":[]}}"#
+        );
     }
 
     /// 文件开头的 BOM 不挡第一行 / A byte order mark does not hide the first line

@@ -1,5 +1,5 @@
 import { PREFIX } from './kernel'
-import { kernelRegexVerdict } from './regex-check'
+import { kernelRegexVerdict, type RegexCause, type RegexKind } from './regex-check'
 
 // 内核读配置时认的写法：编辑器查一个值写没写对都看这里，读法和内核加载配置时一样，内核拒绝的这里也不认，内核会悄悄另作解释的这里也不放过。
 // 依据 kixdns 79e8fd5：matcher/mod.rs parse_dns_type、parse_dns_class、client_net、cidr_list、domain_regex、ResponseRcode、ResponseTxtContent；
@@ -99,43 +99,88 @@ export const isCnameTarget = (v: string): boolean =>
 const ESCAPES = 'afnrtvdDsSwWpPxuU'
 const OUTSIDE_CLASS = 'bBAz'
 /**
- * 内核一定不收、页面自己就看得出的写法：前后断言、反向引用（连 \0）、Rust 不认的字母转义（\k、\c、\Z、字符组里的 \b……）。字符组照 Rust 读：
- * 紧跟在 [ 或 [^ 后面的 ] 是字符本身，字符组里的 [ 开一个嵌套的字符组。带 x 标志的不在这里查：x 模式里 # 后面是注释，那里写什么内核都收。
- * 只查这些，绝不比内核严；别的（重复写错、范围写错、编译后太大……）等服务端照内核编译一遍再说
+ * 内核一定不收、页面自己就看得出的写法：前后断言、反向引用（连 \0）、Rust 不认的字母转义（\k、\c、\Z、字符组里的 \b……），还有没写完的
+ * 结构——括号、方括号没配上，结尾一个孤零零的反斜杠，*、+、?、{ 前面没有要重复的（开头、| 后面、( 后面、(?i) 这样的标志后面），
+ * { 后面再没有 }。边打字边写正则时停在这些样子上最多，本地就拦下，不用等服务端回答。字符组照 Rust 读：紧跟在 [ 或 [^ 后面的 ] 是字符本身，
+ * 字符组里的 [ 开一个嵌套的字符组。带 x 标志的不在这里查：x 模式里 # 后面是注释，那里写什么内核都收。只查这些，绝不比内核严（每一条都拿内核
+ * 跑过的用例对过，见 testdata/kernel-regex.json）；别的（范围写错、{} 里写错、编译后太大……）等服务端照内核编译一遍再说
  * What the kernel surely refuses and the page can tell itself: lookaround, backreferences (\0 included), letter escapes Rust does not know
- * (\k, \c, \Z, \b inside a class…). Classes are read as Rust reads them: a ] right after [ or [^ is the character itself, and a [ inside a
- * class opens a nested one. A pattern with the x flag is not checked here: in x mode a # starts a comment, where the kernel takes anything.
- * Only these, so never stricter than the kernel; the rest (a bad repetition, a bad range, too large compiled…) waits for the server to
- * compile it as the kernel does
+ * (\k, \c, \Z, \b inside a class…), and structure left unfinished — a ( or [ never closed or a ) never opened, a lone backslash at the
+ * end, *, +, ?, { with nothing to repeat (at the start, after |, after (, after a flag group such as (?i)), a { with no } after it.
+ * Typing a regex stops at these shapes most, so they are stopped here without waiting for the server. Classes are read as Rust reads them:
+ * a ] right after [ or [^ is the character itself, and a [ inside a class opens a nested one. A pattern with the x flag is not checked
+ * here: in x mode a # starts a comment, where the kernel takes anything. Only these, so never stricter than the kernel (each checked
+ * against cases run through the kernel, see testdata/kernel-regex.json); the rest (a bad range, a wrong {}, too large compiled…) waits
+ * for the server to compile it as the kernel does
  */
 export function regexSurelyRefused(regex: string): boolean {
   if (/\(\?[A-Za-z-]*x/.test(regex)) return false
   let depth = 0
+  let groups = 0
+  // 这里没有可以重复的：开头、| 后面、开一个组以后、标志组以后 / Nothing here to repeat: at the start, after |, after opening a group, after
+  // a flag group
+  let bare = true
   for (let i = 0; i < regex.length; i++) {
     const c = regex[i]!
     if (c === '\\') {
-      const next = regex[i + 1] ?? ''
+      if (i + 1 === regex.length) return true
+      const next = regex[i + 1]!
       if (/[0-9]/.test(next) || (/[A-Za-z]/.test(next) && !ESCAPES.includes(next) && (depth > 0 || !OUTSIDE_CLASS.includes(next)))) return true
       i++
+      bare = false
     } else if (c === '[') {
       depth++
       if (regex[i + 1] === '^') i++
       if (regex[i + 1] === ']') i++
+      bare = false
     } else if (c === ']' && depth > 0) depth--
-    else if (depth === 0 && /^\(\?<?[=!]/.test(regex.slice(i, i + 4))) return true
+    else if (depth > 0) continue
+    else if (/^\(\?<?[=!]/.test(regex.slice(i, i + 4))) return true
+    else if (c === '(') {
+      // (?i) 只改标志、不开组；(?i:、(?:、(?P<n>、(?<n> 开组 / (?i) only sets flags and opens no group; (?i:, (?:, (?P<n>, (?<n> open one
+      const named = /^\(\?P?<[^>]*>/.exec(regex.slice(i))
+      const flags = named ? null : /^\(\?[A-Za-z-]*([:)])/.exec(regex.slice(i))
+      const opener = named?.[0] ?? flags?.[0] ?? '('
+      if (flags?.[1] !== ')') groups++
+      i += opener.length - 1
+      bare = true
+    } else if (c === ')') {
+      if (--groups < 0) return true
+      bare = false
+    } else if (c === '|') bare = true
+    else if (c === '*' || c === '+' || c === '?' || c === '{') {
+      if (bare) return true
+      if (c === '{' && !regex.includes('}', i)) return true
+    } else bare = false
   }
-  return false
+  return depth > 0 || groups > 0
 }
 /**
- * 内核读不读得了这个正则（域名的、TXT 内容的）。面板服务端照内核编译过的就用它的回答（见 regex-check.ts）；还没回答、连不上时只拦
- * regexSurelyRefused 那几种，别的先不标红，保存时内核自己还会再查一遍
- * Whether the kernel can read this regex (for names, for TXT content). Once the panel server has compiled it as the kernel does, its answer
- * is used (see regex-check.ts); before that, or while it cannot be reached, only what regexSurelyRefused finds is stopped and nothing else is
- * marked yet, the kernel checking once more on save
+ * 内核为什么不收这个正则（域名的、TXT 内容的）；收、或者还说不上时为 null。面板服务端照内核编译过的就用它的回答（见 regex-check.ts）；
+ * 还没回答、连不上、太长不查时只拦本地看得出的：TXT 的长度，和 regexSurelyRefused 那几种，别的先不标红，保存时内核自己还会再查一遍
+ * Why the kernel refuses this regex (for names, for TXT content); null when it takes it or nothing can be said yet. Once the panel server
+ * has compiled it as the kernel does, its answer is used (see regex-check.ts); before that, while it cannot be reached, or for one too long
+ * to check, only what the page can tell is stopped: a TXT regex's length, and what regexSurelyRefused finds, nothing else being marked
+ * yet, the kernel checking once more on save
  */
-export function kernelRegexOk(regex: string): boolean {
-  const verdict = kernelRegexVerdict(regex)
-  return verdict === undefined ? !regexSurelyRefused(regex) : verdict === null
+export function kernelRegexCause(kind: RegexKind, regex: string): RegexCause | null {
+  const verdict = kernelRegexVerdict(kind, regex)
+  if (verdict?.verdict === 'refused') return verdict.cause
+  if (verdict?.verdict === 'compiles') return null
+  if (kind === 'txt' && byteLength(regex) > TXT_REGEX_BYTES) return 'too-long'
+  return regexSurelyRefused(regex) ? 'syntax' : null
+}
+/** 内核读不读得了这个正则 / Whether the kernel can read this regex */
+export const kernelRegexOk = (kind: RegexKind, regex: string): boolean => kernelRegexCause(kind, regex) === null
+/** 编辑器里怎么说内核为什么不收 / How the editor says why the kernel refuses a regex */
+export function regexCauseText(kind: RegexKind, cause: RegexCause): string {
+  if (cause === 'too-long') return `TXT 的正则最长 ${TXT_REGEX_BYTES} 字节`
+  if (cause === 'too-big') {
+    return kind === 'txt'
+      ? `正则编译出来超过 KixDNS 给 TXT 正则的 ${TXT_REGEX_BYTES} 字节：.、\\w、\\d 和 {n} 都放不下，能用「开头是」就用它`
+      : '正则编译出来超过 KixDNS 的 1 MB 上限：\\w、\\pL 配上 {n} 最占地方'
+  }
+  return '正则写得不对，或者用了 KixDNS 不认的写法，比如前后断言、反向引用'
 }
 /** TXT 内容的正则最长 1000 字节 / A TXT content regex is at most 1000 bytes */
 export const TXT_REGEX_BYTES = 1000

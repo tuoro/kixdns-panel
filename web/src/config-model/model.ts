@@ -176,7 +176,7 @@ const DOMAIN_OPS: OpDef[] = [
   { value: 're', label: '匹配正则', negate: false, regex: true }, { value: 'nre', label: '不匹配正则', negate: true, regex: true },
 ]
 // 「就是」配 *. 自相矛盾：通配符说的是子域名 / 「就是」 with *. contradicts itself: the wildcard speaks of subdomains
-const domainValid = (v: string, c: { regex?: boolean; exact?: boolean }) => (c.regex ? kernelRegexOk(v) : isDomain(v) && !(c.exact && v.startsWith('*.')))
+const domainValid = (v: string, c: { regex?: boolean; exact?: boolean }) => (c.regex ? kernelRegexOk('domain', v) : isDomain(v) && !(c.exact && v.startsWith('*.')))
 // 内核按写的原样查分类，「geosite:cn」找不到 cn 这个分类，永远不命中 / The kernel looks the category up as written, so 「geosite:cn」 never finds cn and never matches
 const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
 // 记录类型、类别、响应码内核只认那几个：标红的同时说出能用哪些（HTTPS 这样的真类型标红了不说，看着像面板错了）
@@ -215,7 +215,7 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
     { value: 'prefix', label: '开头是', negate: false, txtMode: 'prefix' }, { value: 'nprefix', label: '开头不是', negate: true, txtMode: 'prefix' },
     { value: 're', label: '匹配正则', negate: false, txtMode: 'regex' }, { value: 'nre', label: '不匹配正则', negate: true, txtMode: 'regex' },
-  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? byteLength(v) <= TXT_REGEX_BYTES && kernelRegexOk(v) : true) },
+  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? byteLength(v) <= TXT_REGEX_BYTES && kernelRegexOk('txt', v) : true) },
   qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN', upper: true, suggest: 'qclass', valid: isQclass, explain: onlyThese('查询类别', isQclass, CLASSES_TEXT) },
   edns: { label: '回答的 EDNS', ops: [{ value: 'is', label: '带', phrase: '回答带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '回答不带 EDNS', negate: true }], values: false, placeholder: '' },
 }

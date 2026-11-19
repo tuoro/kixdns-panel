@@ -1,4 +1,5 @@
-import { kernelRegexOk } from './grammar'
+import { kernelRegexCause } from './grammar'
+import { kernelRegexChecking } from './regex-check'
 import type { KMatcher } from './kernel'
 
 // 拦截列表：AdGuard、Adblock 语法和 hosts 文件里 DNS 用得上的那部分，写法照 https://adguard-dns.io/kb/general/dns-filtering-syntax/。
@@ -38,7 +39,9 @@ export type MatchKind = 'suffix' | 'exact' | 'regex'
 export interface Match { kind: MatchKind; value: string }
 export interface ListRule { allow: boolean; important: boolean; match: Match }
 export type Skip =
-  | { reason: 'cosmetic' | 'hosts-address' | 'bad-regex' | 'too-many-patterns' | 'url-path' | 'unreadable' }
+  // regex-too-long 只有服务端读订阅时给（自己写的规则太长时照内核的 domain_regex 不下结论） / regex-too-long comes only from the server reading a
+  // subscription (one's own rule that long gets no verdict, as the kernel's domain_regex)
+  | { reason: 'cosmetic' | 'hosts-address' | 'bad-regex' | 'regex-too-large' | 'regex-too-long' | 'too-many-patterns' | 'url-path' | 'unreadable' }
   | { reason: 'unsupported-modifier' | 'browser-modifier' | 'unknown-modifier'; modifier: string }
 export type Line =
   | { kind: 'ignored' }
@@ -148,7 +151,8 @@ function parsePattern(pattern: string): Match | Skip {
     // 问的是写进内核的那个（带大写字母的加了 (?i)）：自己写的规则落成 domain_regex，内核照它编译 / What is asked about is what reaches the kernel
     // (with (?i) for a capital letter): one's own rule becomes a domain_regex, which the kernel compiles
     const value = ignoringCase(regex)
-    return kernelRegexOk(value) ? { kind: 'regex', value } : { reason: 'bad-regex' }
+    const cause = kernelRegexCause('domain', value)
+    return cause === null ? { kind: 'regex', value } : { reason: cause === 'syntax' ? 'bad-regex' : 'regex-too-large' }
   }
   let lower = pattern.toLowerCase()
   // AdGuard 拿「http://域名」去匹配 DNS 查询，所以开头的 `://` 和 `|` 一样是域名的开头
@@ -226,17 +230,25 @@ export function skipText(skip: Skip): string {
     case 'unsupported-modifier': return `还不支持 $${skip.modifier}`
     case 'browser-modifier': return `$${skip.modifier} 只对浏览器有用，DNS 用不上`
     case 'unknown-modifier': return `认不出 $${skip.modifier}`
-    case 'bad-regex': return 'KixDNS 的正则不支持这种写法（前后断言、反向引用等）'
+    case 'bad-regex': return '正则写得不对，或者用了 KixDNS 不认的写法，比如前后断言、反向引用'
+    case 'regex-too-large': return '正则编译出来超过 KixDNS 的 1 MB 上限'
+    case 'regex-too-long': return '正则超过 16\u00a0KiB，太长了没有用上'
     case 'too-many-patterns': return '这个列表的通配符和正则规则超过 1000 条，多的没用上'
     case 'url-path': return '带网址路径，只对浏览器有用，DNS 用不上'
     case 'unreadable': return '看不懂这一行'
   }
 }
 
-/** 读自己写的规则：用得上的一条条给出来，用不上的行说出原因 / Reads the rules of one's own: those in use one by one, and why each other line went unused */
-export function parseOwnRules(text: string): { rules: OwnRule[]; problems: OwnProblem[] } {
+/**
+ * 读自己写的规则：用得上的一条条给出来，用不上的行说出原因；checking 是正则还在问面板服务端、本地也没看出毛病的那几行（见 regex-check.ts），
+ * 页面上这几行先留着上一次的结论
+ * Reads the rules of one's own: those in use one by one, and why each other line went unused; checking lists the lines whose regex is still
+ * being asked about with nothing wrong found locally (see regex-check.ts), where the page keeps the last conclusion meanwhile
+ */
+export function parseOwnRules(text: string): { rules: OwnRule[]; problems: OwnProblem[]; checking: number[] } {
   const rules: OwnRule[] = []
   const problems: OwnProblem[] = []
+  const checking: number[] = []
   // 超过上限的只指出第一行，后面的一起算进那一条：贴进一个大列表时不刷出几千行一样的原因 / Past the limit only the first line is pointed out and
   // the rest are counted into it, so pasting a big list does not flood thousands of identical reasons
   let over: OwnProblem | null = null
@@ -268,10 +280,13 @@ export function parseOwnRules(text: string): { rules: OwnRule[]; problems: OwnPr
       if (!over) { over = { line, text: raw.trim(), problem: '' }; problems.push(over) }
       continue
     }
-    for (const r of parsed.rules) rules.push({ line, allow: r.allow, match: r.match })
+    for (const r of parsed.rules) {
+      rules.push({ line, allow: r.allow, match: r.match })
+      if (r.match.kind === 'regex' && kernelRegexChecking('domain', r.match.value)) checking.push(line)
+    }
   }
   if (over) over.problem = `从这一行起的 ${overCount.toLocaleString('en-US')}\u00a0条没用上：自己写的规则最多 ${MAX_OWN_RULES.toLocaleString('en-US')}\u00a0条，大列表请用订阅`
-  return { rules, problems }
+  return { rules, problems, checking }
 }
 
 /** 一条规则管不管这个域名（已经是小写、去掉末尾点的） / Whether a rule covers this name (already lower-cased, no trailing dot) */

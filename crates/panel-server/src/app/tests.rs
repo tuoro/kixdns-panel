@@ -876,6 +876,7 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         trusted_proxies: "127.0.0.1/32,::1/128".parse().unwrap(),
         login_limiter: Arc::new(crate::auth::LoginLimiter::default()),
         password_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+        regex_slots: Arc::new(tokio::sync::Semaphore::new(super::REGEX_CHECK_SLOTS)),
         config_apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         dummy_password_hash: Arc::from("unused"),
         recent_history: Arc::default(),
@@ -1257,6 +1258,33 @@ async fn a_scheduled_geo_update_also_swaps_older_downloads_it_made() {
     assert_eq!(
         state.config.desired().await.unwrap().content["settings"],
         serde_json::json!({ "geoip_db_path": d.new_mmdb, "geosite_data_paths": [d.new_site_a] })
+    );
+}
+
+/// 配置里有两个 `GeoSite`：一个是清单里那份，另一个是更早下载的别的链接。清单只剩一个 `GeoSite` 时，对上号的换成新的，对不上的
+/// 那份不能也换成它：两项会成了同一个文件，那份旧文件里的分类悄悄没了
+/// The config names two `GeoSite` files: the manifest's, and an older download of another link. With one `GeoSite` left in the
+/// manifest, the one that pairs up is swapped for the new download, and the unpaired one must not become it too: both entries would
+/// be one file, and the categories of the older file would quietly be gone
+#[tokio::test]
+async fn a_geo_update_never_turns_two_geosite_files_into_one() {
+    let directory = tempdir().unwrap();
+    let d = downloads(&directory);
+    write_settings(
+        &directory,
+        &serde_json::json!({ "geosite_data_paths": [d.old_site_a, d.old_site_b] }),
+    );
+    let state = test_state(&directory).await;
+    let before = geo_manifest(None, None, &[d.old_site_a]);
+    let updated = geo_manifest(None, None, &[d.new_site_a]);
+
+    super::geo::apply_synced_geo_data(&state, &before, &updated)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        state.config.desired().await.unwrap().content["settings"]["geosite_data_paths"],
+        serde_json::json!([d.new_site_a, d.old_site_b])
     );
 }
 
@@ -2695,15 +2723,53 @@ async fn dns_diagnostic_refuses_options_the_kernel_does_not_declare() {
     }
 }
 
+/// 一次正则检查的请求：每个正则带上它用在哪儿（`domain`、`txt`） / One regex check request: each regex with where it is used
+/// (`domain`, `txt`)
+fn regex_check_request(
+    context: &AuthenticatedApp,
+    items: &[(&str, &str)],
+    csrf: bool,
+    cookies: bool,
+) -> Request<Body> {
+    let patterns: Vec<Value> = items
+        .iter()
+        .map(|(kind, pattern)| serde_json::json!({ "kind": kind, "pattern": pattern }))
+        .collect();
+    regex_check_body(
+        context,
+        serde_json::json!({ "patterns": patterns }).to_string(),
+        csrf,
+        cookies,
+    )
+}
+
+fn regex_check_body(
+    context: &AuthenticatedApp,
+    body: String,
+    csrf: bool,
+    cookies: bool,
+) -> Request<Body> {
+    let mut request =
+        Request::post("/api/v1/config/regex-check").header(CONTENT_TYPE, "application/json");
+    if cookies {
+        request = request.header(COOKIE, context.cookies.clone());
+    }
+    if csrf {
+        request = request.header("x-csrf-token", context.csrf_token.clone());
+    }
+    request.body(Body::from(body)).unwrap()
+}
+
 /// 正则检查照内核编译域名和 TXT 正则的办法回答：`testdata/kernel-regex.json` 里每一条都是拿内核的 `config::validate` 跑出来的，
-/// 这里的回答（内核收为 null，不收为内核报的原因）一条不差。要登录、要 CSRF，和别的检查一样；一次太多的整个不收
+/// 这里的回答（内核收、不收和不收的原话）一条不差，TXT 的照 TXT 的上限。要登录、要 CSRF，和别的检查一样；一次太多的整个不收
 /// The regex check answers as the kernel compiles name and TXT regexes: each entry of `testdata/kernel-regex.json` came from the
-/// kernel's `config::validate`, and the answers here (null when the kernel takes it, otherwise the cause it gives) match every one. It
-/// takes a session and CSRF as the other checks do; too many at once is refused whole
+/// kernel's `config::validate`, and the answers here (taken or refused, and the kernel's words for a refusal) match every one, a TXT
+/// regex by the TXT limits. It takes a session and CSRF as the other checks do; too many at once is refused whole
 #[tokio::test]
 async fn regex_check_answers_as_the_kernel_compiles() {
     #[derive(serde::Deserialize)]
     struct Case {
+        kind: String,
         pattern: String,
         error: Option<String>,
     }
@@ -2714,44 +2780,133 @@ async fn regex_check_answers_as_the_kernel_compiles() {
     let table: Table =
         serde_json::from_str(include_str!("../../../../testdata/kernel-regex.json")).unwrap();
     let context = authenticated_app().await;
-    let check = |patterns: &[&str], csrf: bool, cookies: bool| {
-        let mut request =
-            Request::post("/api/v1/config/regex-check").header(CONTENT_TYPE, "application/json");
-        if cookies {
-            request = request.header(COOKIE, context.cookies.clone());
-        }
-        if csrf {
-            request = request.header("x-csrf-token", context.csrf_token.clone());
-        }
-        request
-            .body(Body::from(
-                serde_json::json!({ "patterns": patterns }).to_string(),
-            ))
-            .unwrap()
-    };
-    let (status, _) = send_json(&context, check(&["a"], true, false)).await;
+    let one = [("domain", "a")];
+    let (status, _) = send_json(&context, regex_check_request(&context, &one, true, false)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, _) = send_json(&context, check(&["a"], false, true)).await;
+    let (status, _) = send_json(&context, regex_check_request(&context, &one, false, true)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let patterns: Vec<&str> = table.patterns.iter().map(|c| c.pattern.as_str()).collect();
-    let (status, body) = send_json(&context, check(&patterns, true, true)).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let errors: Vec<Option<String>> = serde_json::from_value(body["errors"].clone()).unwrap();
-    let expected: Vec<(&str, Option<&str>)> = table
+    let mut answered = Vec::new();
+    for batch in table.patterns.chunks(200) {
+        let items: Vec<(&str, &str)> = batch
+            .iter()
+            .map(|c| (c.kind.as_str(), c.pattern.as_str()))
+            .collect();
+        let (status, body) =
+            send_json(&context, regex_check_request(&context, &items, true, true)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        answered.extend(body["answers"].as_array().unwrap().iter().cloned());
+    }
+    let expected: Vec<Value> = table
         .patterns
         .iter()
-        .map(|c| (c.pattern.as_str(), c.error.as_deref()))
+        .map(|c| match &c.error {
+            None => serde_json::json!({ "verdict": "compiles" }),
+            Some(error) => {
+                let cause = if error.starts_with("regex pattern too long") {
+                    "too-long"
+                } else if error.contains("exceeds size limit") {
+                    "too-big"
+                } else {
+                    "syntax"
+                };
+                serde_json::json!({ "verdict": "refused", "cause": cause, "error": error })
+            }
+        })
         .collect();
-    let answered: Vec<(&str, Option<&str>)> = patterns
+    let differ: Vec<(&str, &str, &Value, &Value)> = table
+        .patterns
         .iter()
-        .copied()
-        .zip(errors.iter().map(Option::as_deref))
+        .zip(answered.iter().zip(&expected))
+        .filter(|(_, (got, want))| got != want)
+        .map(|(case, (got, want))| (case.kind.as_str(), case.pattern.as_str(), got, want))
         .collect();
-    assert_eq!(answered, expected);
-    let many = vec!["a"; 201];
-    let (status, body) = send_json(&context, check(&many, true, true)).await;
+    assert!(differ.is_empty(), "{differ:#?}");
+    assert_eq!(answered.len(), table.patterns.len());
+    let many = vec![("domain", "a"); 201];
+    let (status, body) =
+        send_json(&context, regex_check_request(&context, &many, true, true)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "regex_check_invalid");
+}
+
+/// 一次检查花多少有上限：regex-syntax 先把整个正则展开成语法树、编译时才看大小上限，一个 `\w` 就是几 KB，所以 16 KiB 以上的
+/// 域名正则不编译、回答「不下结论」（不算内核收，也不算不收）；TXT 的内核先看长度，再长也照样回答；请求体照 200 个 16 KiB 算，
+/// 再大的整个不收
+/// What one check costs is bounded: regex-syntax spells the whole regex out as a syntax tree and the size limits only apply when it
+/// compiles, a single `\w` being several KB, so a name regex over 16 KiB is not compiled and answered as no verdict (neither taken
+/// nor refused); the kernel looks at a TXT regex's length first, so any length is answered; the body is sized for 200 of 16 KiB, and
+/// a larger one is refused whole
+#[tokio::test]
+async fn regex_check_bounds_what_one_request_costs() {
+    let context = authenticated_app().await;
+    let cap = crate::regex_check::MAX_CHECKED_BYTES;
+    let at_cap = r"\w".repeat(cap / 2);
+    let over = format!("{at_cap}a");
+    let txt = r"\pL".repeat(cap);
+    let items = [
+        ("domain", at_cap.as_str()),
+        ("domain", over.as_str()),
+        ("txt", txt.as_str()),
+    ];
+    let (status, body) =
+        send_json(&context, regex_check_request(&context, &items, true, true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["answers"][0]["verdict"], "refused");
+    assert_eq!(body["answers"][0]["cause"], "too-big");
+    assert_eq!(
+        body["answers"][1]["verdict"], "unchecked",
+        "{}",
+        body["answers"][1]
+    );
+    assert!(body["answers"][1].get("error").is_none());
+    assert_eq!(
+        body["answers"][2],
+        serde_json::json!({
+            "verdict": "refused",
+            "cause": "too-long",
+            "error": format!("regex pattern too long: {} bytes (max 1000)", txt.len()),
+        })
+    );
+    // 200 个上限长度的正则装得下，再大一个字节就是 413 / 200 regexes at the cap fit; a byte more is a 413
+    let full: Vec<(&str, String)> = (0..200).map(|_| ("domain", "a".repeat(cap))).collect();
+    let full: Vec<(&str, &str)> = full.iter().map(|(k, p)| (*k, p.as_str())).collect();
+    let (status, _) = send_json(&context, regex_check_request(&context, &full, true, true)).await;
+    assert_eq!(status, StatusCode::OK);
+    let limit = super::REGEX_CHECK_BODY_BYTES;
+    let padding = limit - r#"{"patterns":[]}"#.len();
+    let body = format!(r#"{{"patterns":[]{}}}"#, " ".repeat(padding));
+    assert_eq!(body.len(), limit);
+    let (status, _) = send_json(&context, regex_check_body(&context, body, true, true)).await;
+    assert_eq!(status, StatusCode::OK);
+    let body = format!(r#"{{"patterns":[]{}}}"#, " ".repeat(padding + 1));
+    let (status, _) = send_json(&context, regex_check_body(&context, body, true, true)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+/// 编译正则的同时最多 `REGEX_CHECK_SLOTS` 个请求：位子都占着时，再来的一直等（时钟停着，等多久都一样），有位子了才编译
+/// At most `REGEX_CHECK_SLOTS` requests compile regexes at once: with every slot taken a new one waits (the clock is paused,
+/// however long it waits), and compiles once a slot is free
+#[tokio::test(start_paused = true)]
+async fn regex_checks_take_turns_for_a_few_slots() {
+    use crate::regex_check::{Answer, Kind};
+    let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(super::REGEX_CHECK_SLOTS));
+    let held = std::sync::Arc::clone(&slots)
+        .try_acquire_many_owned(u32::try_from(super::REGEX_CHECK_SLOTS).unwrap())
+        .unwrap();
+    let mut waiting = tokio::spawn({
+        let slots = std::sync::Arc::clone(&slots);
+        async move { super::check_patterns(&slots, vec![(Kind::Domain, "^a$".to_owned())]).await }
+    });
+    // 编译放在阻塞线程上，停着的时钟在它跑完前不往前走：真去编译了，下面就等得到回答
+    // Compiling runs on a blocking thread, and the paused clock does not move on before it ends: had it compiled, the answer
+    // would arrive below
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_hours(1), &mut waiting)
+            .await
+            .is_err()
+    );
+    drop(held);
+    assert_eq!(waiting.await.unwrap().unwrap(), [Answer::Compiles]);
 }
 
 #[test]

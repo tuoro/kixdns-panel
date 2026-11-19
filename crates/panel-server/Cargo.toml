@@ -46,6 +46,8 @@ zstd = "0.14"
 
 [dev-dependencies]
 maxminddb-writer = "0.1"
+# 停住时钟的测试（start_paused）要它 / Tests on a paused clock (start_paused) need it
+tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 
 [lints]
