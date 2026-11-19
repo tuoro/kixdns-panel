@@ -79,6 +79,42 @@ test('自己写的规则只指出用不上的行；规则页最上面多一行�
   await expect(diff).toContainText('拦截列表 · 自己写的规则')
 })
 
+// 自己写的正则边改边看：没写完的括号当场就指出来；只有服务端看得出的（演示里 kixdns:demo-regex-refused 列的），改的时候那一行留着上一次的原因、
+// 标成在查，回答来了再定，不会先没了再出来。说的原因是写法不对或编译后太大，不再一律说前后断言
+// One's own regex, edited and watched: an unclosed bracket is pointed out at once; one only the server can tell (listed in the demo's
+// kixdns:demo-regex-refused) keeps its line's last reason while being edited, marked as checking, until the answer, never vanishing and
+// coming back. The reason given is the syntax or the size once compiled, no longer always lookaround
+test('自己写的正则：接着改，没用上的那一行不闪，原因照内核说 @responsive', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('kixdns:demo-regex-refused', JSON.stringify(['^ad[a-\\d]x', '^ad[a-\\d]xy']))
+    localStorage.setItem('kixdns:demo-regex-too-big', JSON.stringify(['^ad\\w{60}']))
+  })
+  await open(page)
+  const text = page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true })
+  const problems = page.locator('.bl__problem')
+  await text.fill('||ok.example^\n/^ad(x/')
+  await expect(problems).toHaveCount(1)
+  await expect(problems).toContainText('正则写得不对')
+  await text.fill('||ok.example^\n/^ad[a-\\d]x/')
+  await expect(problems).toHaveCount(1)
+  await expect(problems).not.toHaveAttribute('aria-busy', 'true')
+  await page.evaluate(() => {
+    const state = window as unknown as { problemGone: number }
+    state.problemGone = 0
+    new MutationObserver(() => { if (!document.querySelector('.bl__problem')) state.problemGone++ }).observe(document.body, { childList: true, subtree: true })
+  })
+  await text.fill('||ok.example^\n/^ad[a-\\d]xy/')
+  await expect(problems).toContainText('第 2 行')
+  await expect(problems).not.toHaveAttribute('aria-busy', 'true')
+  await page.evaluate(() => new Promise(requestAnimationFrame))
+  expect(await page.evaluate(() => (window as unknown as { problemGone: number }).problemGone)).toBe(0)
+  // 编译后太大的说大小 / One too big once compiled is said as size
+  await text.fill('||ok.example^\n/^ad\\w{60}/')
+  await expect(problems).toContainText('正则编译出来超过 KixDNS 的 1 MB 上限')
+  await text.fill('||ok.example^\n/^ad\\.example$/')
+  await expect(problems).toHaveCount(0)
+})
+
 test('删掉一个订阅能撤销；关掉一个以后重新合成，规则页那一行只剩开着的', async ({ page }) => {
   await open(page)
   await subscribe(page, ['AdGuard DNS filter', 'OISD big'])

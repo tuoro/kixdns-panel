@@ -84,6 +84,64 @@ test('域名正则照内核读：内核收的不标红，内核不收的标红',
   await expect(chips.nth(0)).not.toHaveClass(/chip--bad/)
 })
 
+// 高级规则里的正则边改边看：已经碰过的框里接着打字，出错提示不会每打一个字先消失、回答来了再出来。没写完的括号本地就看得出，当场就是红的；
+// 只有服务端看得出的（演示里 kixdns:demo-regex-refused 列的），回答来之前留着上一次的结论、标成在查。监视着出错提示，一次都不能没了
+// A regex in an advanced rule, edited and watched: typing on in a box already touched, the error does not vanish with each key only to
+// come back with the answer. An unclosed bracket the page tells itself, so it is red at once; one only the server can tell (listed in the
+// demo's kixdns:demo-regex-refused) keeps the last conclusion until the answer, marked as checking. The error is watched and must never be
+// gone
+test('高级规则里的正则：接着打字，出错提示不闪 @responsive', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-regex-refused', JSON.stringify(['[a-\\d]x', '[a-\\d]xy'])))
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'odd', matchers: [{ type: 'domain_regex', value: '^a\\.example$' }], actions: [{ type: 'log', level: 'info' }, { type: 'deny' }, { type: 'static_response', rcode: 'NXDOMAIN' }] }] }] }
+  await page.goto('/config')
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'raw.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  // 原样保留成高级规则，导入说明一定会出来：等它出来再关 / Kept as an advanced rule, so the import notes always open: wait for them, then close
+  await page.locator('dialog[open]').getByRole('button', { name: '知道了', exact: true }).click()
+  await page.locator('[data-rule]', { hasText: 'odd' }).locator('.rrow__main').click()
+  const editor = testInfo.project.name === 'mobile' ? page.locator('.editor').first() : page.locator('.editor--inspector')
+  const value = editor.getByLabel('条件 1 值')
+  const error = editor.locator('.ui-field-error')
+  // 出错提示没了一次就记一次 / Every time the error is gone, it is counted
+  const watch = () => editor.evaluate((box) => {
+    const state = window as unknown as { regexErrorGone: number }
+    state.regexErrorGone = 0
+    new MutationObserver(() => { if (!box.querySelector('.ui-field-error')) state.regexErrorGone++ }).observe(box, { childList: true, subtree: true })
+  })
+  const gone = async () => {
+    await page.evaluate(() => new Promise(requestAnimationFrame))
+    return page.evaluate(() => (window as unknown as { regexErrorGone: number }).regexErrorGone)
+  }
+  const syntax = '正则写得不对，或者用了 KixDNS 不认的写法，比如前后断言、反向引用'
+
+  await value.fill('(abc')
+  await value.press('Tab')
+  await expect(error).toHaveText(syntax)
+  await watch()
+  await value.press('End')
+  await value.press('d')
+  await expect(value).toHaveValue('(abcd')
+  await expect(error).toHaveText(syntax)
+  await expect(error).not.toHaveClass(/ui-field-error--checking/)
+  expect(await gone()).toBe(0)
+
+  await value.fill('[a-\\d]x')
+  await expect(error).toHaveText(syntax)
+  await expect(error).not.toHaveClass(/ui-field-error--checking/)
+  await watch()
+  await value.press('End')
+  await value.press('y')
+  await expect(value).toHaveValue('[a-\\d]xy')
+  await expect(error).toHaveText(syntax)
+  await expect(error).not.toHaveClass(/ui-field-error--checking/)
+  await expect(value).not.toHaveAttribute('aria-busy', 'true')
+  expect(await gone()).toBe(0)
+
+  // 改成编得出的：回答来了提示就走 / Changed to one that compiles: the error goes with the answer
+  await value.fill('^b\\.example$')
+  await expect(error).toHaveCount(0)
+})
+
 // 中文域名照收，写进内核时换成 punycode，页面上显示写的中文 / Chinese names are taken, written to the kernel as punycode, and shown as written
 test('中文域名：域名映射照收，显示写的中文', async ({ page }) => {
   await page.goto('/config?section=mapping')

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ExternalLink, ListPlus, Plus, RefreshCw, ShieldBan, TriangleAlert, X } from '@lucide/vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, shallowRef, watch, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import type { BlocklistSkippedLine } from '../api/types'
 import UiDotText from '../components/ui/UiDotText.vue'
@@ -329,8 +329,28 @@ function addPicked(): void {
   presetDialog.value?.close()
 }
 
-// 自己写的规则：只把没用上的行指出来，写对了就不打扰 / Own rules: only the lines left unused are pointed out; correct ones stay quiet
-const problems = computed(() => parseOwnRules(model.blocklists.custom).problems)
+// 自己写的规则：只把没用上的行指出来，写对了就不打扰。正则还在问面板服务端的行先留着上一次的原因、标成在查：边打边看时这一行不会先消失、
+// 回答来了再出来（config-model/regex-check.ts）
+// Own rules: only the lines left unused are pointed out; correct ones stay quiet. A line whose regex is still being asked about keeps its
+// last reason, marked as checking: while typing it does not vanish only to come back with the answer (config-model/regex-check.ts)
+const own = computed(() => parseOwnRules(model.blocklists.custom))
+const kept = shallowRef(new Map<number, string>())
+let lastKept = new Map<number, string>()
+watchEffect(() => {
+  const next = new Map<number, string>()
+  for (const p of own.value.problems) next.set(p.line, p.problem)
+  for (const line of own.value.checking) {
+    const before = lastKept.get(line)
+    if (before !== undefined) next.set(line, before)
+  }
+  lastKept = next
+  kept.value = next
+})
+const problems = computed(() => {
+  const lines = model.blocklists.custom.split('\n')
+  const stale = own.value.checking.filter((line) => kept.value.has(line)).map((line) => ({ line, text: (lines[line - 1] ?? '').trim(), problem: kept.value.get(line)!, checking: true }))
+  return [...own.value.problems.map((p) => ({ ...p, checking: false })), ...stale].sort((a, b) => a.line - b.line)
+})
 const customRows = computed(() => Math.min(12, Math.max(5, model.blocklists.custom.split('\n').length + 1)))
 
 // 自动更新：下拉框先显示新选的，没改成就退回去；请求途中不能再改 / The automatic update: the select shows the new choice at once and goes back if
@@ -442,7 +462,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <label class="ui-input ui-input--area bl__text"><textarea v-model="model.blocklists.custom" :rows="customRows" aria-label="自己写的规则，一行一条" spellcheck="false" autocapitalize="off" placeholder="||ads.example.com^&#10;@@||cdn.example.com^"></textarea></label>
         <p class="bl__syntax"><span><code>||example.com^</code>拦截它和子域名</span><span><code>@@||example.com^</code>放行它和子域名</span><span><code>example.com</code>只拦它本身</span></p>
         <ul v-if="problems.length" class="bl__problems" aria-label="没用上的行">
-          <li v-for="p in problems" :key="p.line" class="bl__problem"><span class="bl__lineno">第 {{ p.line }} 行</span><span class="bl__what"><s>{{ p.text }}</s> <span><template v-for="(part, i) in reasonParts(p.problem)" :key="i"><code v-if="part.code" :class="{ nowrap: part.whole }">{{ part.text }}</code><span v-else-if="part.whole" class="nowrap">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></span></span></li>
+          <li v-for="p in problems" :key="p.line" class="bl__problem" :class="{ 'bl__problem--checking': p.checking }" :aria-busy="p.checking || undefined"><span class="bl__lineno">第 {{ p.line }} 行</span><span class="bl__what"><s>{{ p.text }}</s> <span><template v-for="(part, i) in reasonParts(p.problem)" :key="i"><code v-if="part.code" :class="{ nowrap: part.whole }">{{ part.text }}</code><span v-else-if="part.whole" class="nowrap">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></span></span></li>
         </ul>
       </div>
     </section>
@@ -591,6 +611,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__problems { grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--s-2); }
 .bl__problem { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; }
 .bl__lineno { color: var(--l-ink-3); font-variant-numeric: tabular-nums; }
+/* 正则还在查的那一行：留着上一次的原因，颜色淡一档 / A line whose regex is still being checked: the last reason stays, one shade lighter */
+.bl__problem--checking .bl__what > span { color: var(--l-ink-3); }
 .bl__what > span { word-break: keep-all; overflow-wrap: anywhere; }
 .bl__what code { -webkit-box-decoration-break: clone; box-decoration-break: clone; padding: 0 var(--s-1); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink-2); font-family: var(--f-mono); font-size: var(--t-1); }
 .bl__problem s { margin-right: var(--s-1); color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); overflow-wrap: anywhere; }

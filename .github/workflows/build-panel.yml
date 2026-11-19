@@ -13,6 +13,8 @@ on:
       - scripts/fetch-kixdns-release.sh
       - scripts/npm-audit.py
       - scripts/test-npm-audit.py
+      - scripts/check-kernel-regex-versions.py
+      - scripts/test-kernel-regex-versions.py
       - scripts/fetch-builtin-geosite.sh
       - scripts/verify-geosite.py
       - scripts/install.sh
@@ -28,6 +30,7 @@ on:
       - scripts/uninstall.sh
       - tools/kernel-config-check/**
       - web/**
+      - testdata/**
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -40,6 +43,8 @@ on:
       - scripts/fetch-kixdns-release.sh
       - scripts/npm-audit.py
       - scripts/test-npm-audit.py
+      - scripts/check-kernel-regex-versions.py
+      - scripts/test-kernel-regex-versions.py
       - scripts/fetch-builtin-geosite.sh
       - scripts/verify-geosite.py
       - scripts/install.sh
@@ -55,6 +60,7 @@ on:
       - scripts/uninstall.sh
       - tools/kernel-config-check/**
       - web/**
+      - testdata/**
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -197,6 +203,16 @@ jobs:
         run: |
           cargo fmt --manifest-path tools/kernel-config-check/Cargo.toml -- --check
           cargo build --manifest-path tools/kernel-config-check/Cargo.toml
+
+      # 编辑器里的正则由面板照内核编译一遍（crates/panel-server/src/regex_check.rs），回答要和最新的内核（main）一样，正则库就得是
+      # 它用的那一版：拿上面取下来的 main（.upstream/kixdns）的 Cargo.lock，比一比 regex、regex-automata、regex-syntax。
+      # The panel compiles the editor's regexes as the kernel does (crates/panel-server/src/regex_check.rs); to answer as the
+      # latest kernel (main) does, the regex crates must be the ones it uses: compare regex, regex-automata and regex-syntax with
+      # the Cargo.lock of the main fetched above (.upstream/kixdns).
+      - name: Verify the regex crates match the latest kernel (main)
+        run: |
+          python3 -I scripts/test-kernel-regex-versions.py
+          python3 -I scripts/check-kernel-regex-versions.py Cargo.lock .upstream/kixdns/Cargo.lock
 
       # 这里平时靠 rust-cache 里的 ~/.cargo/bin 跳过编译，Cargo.lock 一变缓存失效就要重编约 2 分 45 秒；
       # 预编译包让两种情况都只需几秒，版本不变并校验 SHA-256。

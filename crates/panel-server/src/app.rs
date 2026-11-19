@@ -105,6 +105,7 @@ pub struct AppState {
     trusted_proxies: TrustedProxies,
     login_limiter: Arc<LoginLimiter>,
     password_slots: Arc<Semaphore>,
+    regex_slots: Arc<Semaphore>,
     config_apply_lock: Arc<Mutex<()>>,
     dummy_password_hash: Arc<str>,
     recent_history: Arc<std::sync::Mutex<RecentHistory>>,
@@ -392,6 +393,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         trusted_proxies: settings.trusted_proxies,
         login_limiter: Arc::new(LoginLimiter::default()),
         password_slots: Arc::new(Semaphore::new(4)),
+        regex_slots: Arc::new(Semaphore::new(REGEX_CHECK_SLOTS)),
         config_apply_lock: Arc::new(Mutex::new(())),
         dummy_password_hash: Arc::from(dummy_password_hash),
         recent_history: Arc::default(),
@@ -435,7 +437,10 @@ fn api_router(state: AppState) -> Router {
         .route("/stats/clear", post(clear_query_stats))
         .route("/config", get(get_config).put(save_config))
         .route("/config/validate", post(validate_config))
-        .route("/config/regex-check", post(check_regexes))
+        .route(
+            "/config/regex-check",
+            post(check_regexes).layer(axum::extract::DefaultBodyLimit::max(REGEX_CHECK_BODY_BYTES)),
+        )
         .route("/config/geo-data", get(get_geo_data))
         .route("/config/geo-data/sync", post(sync_geo_data))
         .route(
@@ -906,17 +911,32 @@ async fn validate_config(
 
 /// 一次最多查几个正则：页面按这个分批 / At most this many regexes per request; the page batches by it
 const MAX_REGEX_CHECKS: usize = 200;
+/// 正则检查的请求体上限：200 个内核长度上限（16384 字节）的正则，外加 64 KiB 的 JSON 外壳；页面按它分批，再大的整个不收（413）
+/// The body limit of a regex check: 200 regexes at the kernel's length limit (16384 bytes) plus 64 KiB of JSON around them; the
+/// page batches by it, and anything larger is refused whole (413)
+const REGEX_CHECK_BODY_BYTES: usize =
+    MAX_REGEX_CHECKS * crate::regex_check::MAX_REGEX_BYTES + 64 * 1024;
+/// 同时最多几个请求在编译正则：别的排队。每个请求一次只编译一个正则，所以占的 CPU 不超过这么多个核，内存不超过这么多个正则展开的大小
+/// At most this many requests compile regexes at once, the rest waiting their turn. Each request compiles one regex at a time, so
+/// no more cores are busy than this, and no more memory is taken than this many regexes spelled out
+const REGEX_CHECK_SLOTS: usize = 2;
+
+#[derive(Debug, Deserialize)]
+struct RegexCheckItem {
+    kind: crate::regex_check::Kind,
+    pattern: String,
+}
 
 #[derive(Debug, Deserialize)]
 struct RegexCheckRequest {
-    patterns: Vec<String>,
+    patterns: Vec<RegexCheckItem>,
 }
 
-/// 和请求里的正则一一对应：内核编得出为 null，编不出为内核报的原因 / One per regex of the request: null when the kernel compiles
-/// it, otherwise the cause the kernel gives
+/// 和请求里的正则一一对应：内核编得出、编不出（原因和内核的原话），或者太长不下结论 / One per regex of the request: the kernel
+/// compiles it, or does not (why, and the kernel's words), or it is too long for a verdict
 #[derive(Debug, Serialize)]
 struct RegexCheckResponse {
-    errors: Vec<Option<String>>,
+    answers: Vec<crate::regex_check::Answer>,
 }
 
 /// 编辑器里的正则照内核编译一遍（见 `regex_check.rs`）。只读，和「校验」一样要登录、要 CSRF；编译放到阻塞线程上，几个大的不卡住别的请求
@@ -936,16 +956,29 @@ async fn check_regexes(
             format!("一次最多查 {MAX_REGEX_CHECKS}\u{a0}个正则"),
         ));
     }
-    let errors = tokio::task::spawn_blocking(move || {
-        request
-            .patterns
+    let items = request
+        .patterns
+        .into_iter()
+        .map(|item| (item.kind, item.pattern))
+        .collect();
+    let answers = check_patterns(&state.regex_slots, items).await?;
+    Ok(Json(RegexCheckResponse { answers }))
+}
+
+/// 等到一个位子再编译这一批正则 / Waits for a slot, then compiles this batch of regexes
+async fn check_patterns(
+    slots: &Semaphore,
+    items: Vec<(crate::regex_check::Kind, String)>,
+) -> anyhow::Result<Vec<crate::regex_check::Answer>> {
+    let _slot = slots.acquire().await.context("正则检查的位子已关闭")?;
+    tokio::task::spawn_blocking(move || {
+        items
             .iter()
-            .map(|pattern| crate::regex_check::kernel_regex_problem(pattern))
+            .map(|(kind, pattern)| crate::regex_check::answer(*kind, pattern))
             .collect()
     })
     .await
-    .context("正则检查任务异常结束")?;
-    Ok(Json(RegexCheckResponse { errors }))
+    .context("正则检查任务异常结束")
 }
 
 async fn save_config(

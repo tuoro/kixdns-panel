@@ -129,8 +129,18 @@ impl TrustedProxies {
         leftmost_trusted.unwrap_or(peer)
     }
 
+    /// 地址按 IPv4 写法给进来；比 /96 短的 IPv6 网段（`::/0`、`::/80`）盖住的是映射写法，所以 IPv4 地址也拿
+    /// `::ffff:a.b.c.d` 去对 IPv6 网段，写成哪种网段都认得
+    /// Addresses come in IPv4 form; an IPv6 network shorter than /96 (`::/0`, `::/80`) covers the mapped form, so an IPv4
+    /// address is also tried as `::ffff:a.b.c.d` against IPv6 networks, and a network matches however it is written
     fn contains(&self, address: IpAddr) -> bool {
-        self.0.iter().any(|network| network.contains(&address))
+        let mapped = match address {
+            IpAddr::V4(v4) => Some(IpAddr::V6(v4.to_ipv6_mapped())),
+            IpAddr::V6(_) => None,
+        };
+        self.0.iter().any(|network| {
+            network.contains(&address) || mapped.is_some_and(|mapped| network.contains(&mapped))
+        })
     }
 }
 
@@ -711,5 +721,49 @@ mod tests {
                 "{proxy}"
             );
         }
+    }
+
+    /// 比 /96 短、盖住 `::ffff:0:0/96` 的 IPv6 网段（`::/0`、`::/80`）也照样认 IPv4 的对端和链上的 IPv4 地址：地址按 IPv4
+    /// 写法比，网段却还是 IPv6，比的时候 IPv4 地址也拿它的映射写法去对 IPv6 网段
+    /// An IPv6 network shorter than /96 that covers `::ffff:0:0/96` (`::/0`, `::/80`) still matches an IPv4 peer and an IPv4
+    /// address on the chain: addresses are compared in IPv4 form while the network stays IPv6, so an IPv4 address is also tried
+    /// in its mapped form against IPv6 networks
+    #[test]
+    fn a_short_ipv6_network_covers_mapped_ipv4_addresses() {
+        let forwarded = |value: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", HeaderValue::from_static(value));
+            headers
+        };
+        let client = "198.51.100.7".parse::<IpAddr>().unwrap();
+        for written in ["::/0", "::/80", "::ffff:0:0/96"] {
+            let proxies: TrustedProxies = written.parse().unwrap();
+            for peer in ["::ffff:127.0.0.1", "127.0.0.1"] {
+                assert_eq!(
+                    proxies.client_ip(peer.parse().unwrap(), &forwarded("198.51.100.7")),
+                    client,
+                    "{written} {peer}"
+                );
+            }
+            // 链上的一跳也是 / So is a hop on the chain
+            let proxies: TrustedProxies = format!("{written},2001:db8::/32").parse().unwrap();
+            assert_eq!(
+                proxies.client_ip(
+                    "2001:db8::1".parse().unwrap(),
+                    &forwarded("198.51.100.7, 10.0.0.1")
+                ),
+                client,
+                "{written}"
+            );
+        }
+        // 盖不住映射段的 IPv6 网段照旧不认 IPv4 / An IPv6 network that does not cover the mapped range still matches no IPv4
+        let proxies: TrustedProxies = "2001:db8::/32".parse().unwrap();
+        assert_eq!(
+            proxies.client_ip(
+                "::ffff:127.0.0.1".parse().unwrap(),
+                &forwarded("198.51.100.7")
+            ),
+            "127.0.0.1".parse::<IpAddr>().unwrap()
+        );
     }
 }

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ArrowUpDown, Plus, X } from '@lucide/vue'
-import { computed, reactive, ref, useId } from 'vue'
+import { computed, reactive, ref, useId, watchEffect } from 'vue'
 import UiMenu from '../ui/UiMenu.vue'
 import UiSelect from '../ui/UiSelect.vue'
 import { moveItems, moveTarget, useRowFocus } from './row-list'
-import { isGeoSiteMatcher, matcherFieldErrors } from '../../config-editor/field-validation'
+import { isGeoSiteMatcher, matcherFieldErrors, matcherValueChecking } from '../../config-editor/field-validation'
 import { matcherHint as hint } from '../../config-editor/matcher-hints'
 import { createMatcher, resetMatcher } from '../../config-editor/model'
 import { MATCHER_DEFINITIONS, MATCH_OPERATORS, QTYPE_OPTIONS } from '../../config-editor/schema'
@@ -73,8 +73,26 @@ function touch(index: number, field: string): void {
   touched.add(`${index}:${field}`)
 }
 
+// 正则还在问面板服务端（本地也没看出毛病）的那一格，出错提示停在上一次的结论上、标成在查：每打一个字不会先消失、回答来了再出来
+// （config-model/regex-check.ts）。结论是回答来了以后、或者本地就看得出时的那一个
+// A regex box still being asked about (with nothing wrong found locally) keeps its error at the last conclusion, marked as checking: a
+// keystroke does not hide it only for it to come back with the answer (config-model/regex-check.ts). The conclusion is the one from an
+// answer, or one the page could tell itself
+const checking = computed(() => matchers.value.map((matcher) => matcherValueChecking(matcher)))
+const settled = reactive(new Map<number, string | undefined>())
+watchEffect(() => {
+  errors.value.forEach((error, index) => {
+    if (!checking.value[index]) settled.set(index, error.value)
+  })
+})
+
+/** 这一格的出错提示是上一次的结论，新写的还在查 / This box's error is the last conclusion, what is written now still being checked */
+function staleError(index: number, field: string): boolean {
+  return field === 'value' && Boolean(checking.value[index]) && settled.get(index) !== undefined
+}
+
 function visibleError(index: number, field: string): string | undefined {
-  const error = errors.value[index]?.[field]
+  const error = staleError(index, field) ? settled.get(index) : errors.value[index]?.[field]
   return error && (props.showErrors || touched.has(`${index}:${field}`)) ? error : undefined
 }
 
@@ -94,6 +112,7 @@ function add(): void {
 function remove(index: number): void {
   matchers.value.splice(index, 1)
   touched.clear()
+  settled.clear()
   if (custom.value && matchers.value[0]) matchers.value[0].operator = 'and'
   void focusRow(index, 'type')
 }
@@ -124,6 +143,7 @@ function move(index: number, direction: string): void {
   if (matcher) matchers.value.splice(target, 0, matcher)
   if (custom.value && matchers.value[0]) matchers.value[0].operator = 'and'
   touched.clear()
+  settled.clear()
   void focusRow(target, 'handle')
 }
 </script>
@@ -148,7 +168,7 @@ function move(index: number, direction: string): void {
           <template v-if="fields(matcher).includes('value')">
             <span class="ui-rows__plabel">{{ hint(matcher).label }}</span>
             <UiSelect v-if="matcher.type === 'qtype'" v-model="matcher.value" class="is-enum" :options="qtypeOptions(matcher)" :label="`条件 ${index + 1} 查询类型`" />
-            <label v-else class="ui-input"><input v-model="matcher.value" type="text" :aria-label="`条件 ${index + 1} 值`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(visibleError(index, 'value')) || undefined" :aria-describedby="describedBy(index, 'value', matcher)" @blur="leaveValue(matcher, index)"></label>
+            <label v-else class="ui-input"><input v-model="matcher.value" type="text" :aria-label="`条件 ${index + 1} 值`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(visibleError(index, 'value')) || undefined" :aria-busy="staleError(index, 'value') || undefined" :aria-describedby="describedBy(index, 'value', matcher)" @blur="leaveValue(matcher, index)"></label>
           </template>
           <template v-if="fields(matcher).includes('cidr')">
             <span class="ui-rows__plabel">{{ hint(matcher).label }}</span>
@@ -168,7 +188,7 @@ function move(index: number, direction: string): void {
         </div>
         <span class="ui-rows__act"><button class="ui-icon-btn" type="button" :title="`删除条件 ${index + 1}`" :aria-label="`删除条件 ${index + 1}`" @click="remove(index)"><X :size="16" /></button></span>
         <template v-for="field in ['value', 'cidr', 'country_codes']" :key="field">
-          <p v-if="visibleError(index, field)" :id="fieldId(index, `${field}-error`)" class="ui-field-error ui-rows__error">{{ visibleError(index, field) }}</p>
+          <p v-if="visibleError(index, field)" :id="fieldId(index, `${field}-error`)" class="ui-field-error ui-rows__error" :class="{ 'ui-field-error--checking': staleError(index, field) }">{{ visibleError(index, field) }}</p>
         </template>
         <p v-if="hint(matcher).help" :id="fieldId(index, 'help')" class="matcher-help ui-rows__error">{{ hint(matcher).help }}</p>
       </div>

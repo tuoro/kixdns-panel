@@ -147,7 +147,7 @@ impl GeoDataError {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ResourceKind {
     Mmdb,
     IpDat,
@@ -851,13 +851,15 @@ pub fn replace_path(content: &mut Value, old: &str, new: &str) -> bool {
 
 impl GeoDataManager {
     /// 定时更新以后，把配置里面板自己下载的每个文件换成新下载的同类那份：MMDB 换 MMDB、DAT 换 DAT；`GeoSite` 一个对一个，
-    /// 正是更新前清单里的第几个就换成新的第几个，对不上的（退回了更早的版本、上次更新没被接受）只在清单只有一个 `GeoSite`
-    /// 时换成它。用户自己的路径（不是面板目录里按摘要起名的文件）一个不动，不添也不删设置；换了返回 true
+    /// 正是更新前清单里的第几个就换成新的第几个。对不上的（退回了更早的版本、上次更新没被接受）只在清单只有一个 `GeoSite`、
+    /// 配置里也只有这一份对不上时换成它；换上的路径列表里已经有了就不换，一个文件不列两遍。用户自己的路径（不是面板目录里
+    /// 按摘要起名的文件）一个不动，不添也不删设置；换了返回 true
     /// After a scheduled update, swaps each file the panel itself downloaded that the config names for the new download
     /// of its kind: MMDB for MMDB, DAT for DAT; `GeoSite` one for one, the manifest's n-th file before the update for the
-    /// n-th new one, and one that matches none (an older version restored, an earlier update refused) only when the
-    /// manifest has a single `GeoSite`. The user's own paths (anything but a digest-named file in the panel's directory)
-    /// stay, and no setting is added or removed; true when it changed
+    /// n-th new one. One that matches none (an older version restored, an earlier update refused) becomes the new file only
+    /// when the manifest has a single `GeoSite` and it is the config's one unpaired file; a path already in the list is not
+    /// written again, so no file is listed twice. The user's own paths (anything but a digest-named file in the panel's
+    /// directory) stay, and no setting is added or removed; true when it changed
     #[must_use]
     pub fn replace_downloads(
         &self,
@@ -865,15 +867,14 @@ impl GeoDataManager {
         before: &GeoDataManifest,
         after: &GeoDataManifest,
     ) -> bool {
+        let plan: Vec<Option<String>> = self
+            .successors(content, before, after)
+            .into_iter()
+            .map(|(path, next)| next.filter(|next| *next != path).map(str::to_owned))
+            .collect();
         let mut changed = false;
-        for (kind, slot) in configured_paths_mut(content) {
-            let next = slot
-                .as_str()
-                .and_then(|path| {
-                    self.successor(kind, path, before, after)
-                        .filter(|next| *next != path)
-                })
-                .map(str::to_owned);
+        // 和 successors 一样的顺序走同样的几处 / The same places in the same order as successors
+        for ((_, slot), next) in configured_paths_mut(content).zip(plan) {
             if let Some(next) = next {
                 *slot = Value::String(next);
                 changed = true;
@@ -886,36 +887,70 @@ impl GeoDataManager {
     /// the scheduled update would swap: with none (all switched to files of one's own, say) the update is of no use
     #[must_use]
     pub fn uses_downloads(&self, content: &Value, manifest: &GeoDataManifest) -> bool {
-        configured_paths(content)
-            .any(|(kind, path)| self.successor(kind, path, manifest, manifest).is_some())
+        self.successors(content, manifest, manifest)
+            .iter()
+            .any(|(_, next)| next.is_some())
     }
 
-    /// 配置里这一处的文件该换成新下载的哪一个；不归定时更新管的是 `None` / Which new download the file named here should
-    /// become; `None` when it is not the scheduled update's to swap
-    fn successor<'a>(
+    /// 配置里写着的每一处文件（和 `configured_paths` 同样的顺序）该换成新下载的哪一个，可能就是它自己；不归定时更新管的、
+    /// 换了会让 `GeoSite` 列表里一个文件出现两次的是 `None`
+    /// For each file the config names (in `configured_paths` order), which new download it should become, possibly itself;
+    /// `None` when it is not the scheduled update's to swap, or when swapping it would list one `GeoSite` file twice
+    fn successors<'a, 'c>(
         &self,
-        kind: ResourceKind,
-        path: &str,
+        content: &'c Value,
         before: &GeoDataManifest,
         after: &'a GeoDataManifest,
-    ) -> Option<&'a str> {
-        if !kind.owns(&self.root, path) {
-            return None;
-        }
-        let next = match kind {
-            ResourceKind::Mmdb => after.geoip_mmdb.as_ref(),
-            ResourceKind::IpDat => after.geoip_dat.as_ref(),
-            ResourceKind::Site => before
+    ) -> Vec<(&'c str, Option<&'a str>)> {
+        let paths: Vec<(ResourceKind, &str)> = configured_paths(content).collect();
+        let paired = |path: &str| {
+            before
                 .geosite
                 .iter()
                 .position(|resource| resource.path == path)
                 .and_then(|index| after.geosite.get(index))
-                .or(match after.geosite.as_slice() {
-                    [only] => Some(only),
-                    _ => None,
-                }),
         };
-        next.map(|resource| resource.path.as_str())
+        // 清单只有一个 `GeoSite` 时，配置里唯一一份对不上的才换成它：两份以上不知道哪份该换 / With a single `GeoSite` in the
+        // manifest, only the config's one unpaired file becomes it: with two or more, which one should is unknown
+        let unpaired = paths
+            .iter()
+            .filter(|(kind, path)| {
+                *kind == ResourceKind::Site && kind.owns(&self.root, path) && paired(path).is_none()
+            })
+            .count();
+        let fallback = match after.geosite.as_slice() {
+            [only] if unpaired == 1 => Some(only),
+            _ => None,
+        };
+        // 配置里每一处写下去的路径，换了的随之改 / The path each place will hold, updated as swaps are decided
+        let mut written: Vec<&str> = paths.iter().map(|(_, path)| *path).collect();
+        let mut successors = Vec::with_capacity(paths.len());
+        for (at, &(kind, path)) in paths.iter().enumerate() {
+            if !kind.owns(&self.root, path) {
+                successors.push((path, None));
+                continue;
+            }
+            let next = match kind {
+                ResourceKind::Mmdb => after.geoip_mmdb.as_ref(),
+                ResourceKind::IpDat => after.geoip_dat.as_ref(),
+                ResourceKind::Site => paired(path).or(fallback),
+            }
+            .map(|resource| resource.path.as_str());
+            // `GeoSite` 列表里已经有的路径不再写一遍 / A path the `GeoSite` list already holds is not written again
+            let listed = |next: &str| {
+                paths
+                    .iter()
+                    .zip(&written)
+                    .any(|((other, _), held)| *other == ResourceKind::Site && *held == next)
+            };
+            let next =
+                next.filter(|next| kind != ResourceKind::Site || *next == path || !listed(next));
+            if let Some(next) = next {
+                written[at] = next;
+            }
+            successors.push((path, next));
+        }
+        successors
     }
 }
 
@@ -1705,6 +1740,51 @@ mod tests {
             vec!["https://example.com/geosite.dat"]
         );
         assert!(!request.is_empty());
+    }
+
+    /// 清单只有一个 `GeoSite` 时，对不上号的那份只在它是唯一一份对不上的时才换成它，换上的路径也不能是列表里已经有的：
+    /// 一个文件列两遍，原来那份的分类就没了
+    /// With a single `GeoSite` in the manifest, an unpaired file becomes it only when it is the one unpaired file, and the path
+    /// written must not already be in the list: a file listed twice loses the categories of the one it replaced
+    #[tokio::test]
+    async fn an_unpaired_geosite_never_becomes_a_file_already_listed() {
+        let directory = tempdir().unwrap();
+        let manager = geo_manager(directory.path()).await;
+        let file = |digit| downloaded(&manager, "geosite-", digit, "dat");
+        let before = GeoDataManifest {
+            geosite: vec![site(&file('1'))],
+            ..GeoDataManifest::default()
+        };
+        let after = GeoDataManifest {
+            geosite: vec![site(&file('2'))],
+            ..GeoDataManifest::default()
+        };
+        let paths = |content: &serde_json::Value| content["settings"]["geosite_data_paths"].clone();
+        // 一份对上号、一份对不上：只换对上号的 / One pairs up, one does not: only the paired one is swapped
+        let mut one_paired =
+            serde_json::json!({ "settings": { "geosite_data_paths": [file('1'), file('b')] } });
+        assert!(manager.replace_downloads(&mut one_paired, &before, &after));
+        assert_eq!(
+            paths(&one_paired),
+            serde_json::json!([file('2'), file('b')])
+        );
+        // 两份都对不上：不知道哪份该换，都留着 / Neither pairs up: which to swap is unknown, so both stay
+        let mut two_unpaired =
+            serde_json::json!({ "settings": { "geosite_data_paths": [file('a'), file('b')] } });
+        assert!(!manager.uses_downloads(&two_unpaired, &before));
+        assert!(!manager.replace_downloads(&mut two_unpaired, &before, &after));
+        // 清单里那份已经在列表里（排在后面）：唯一对不上的那份也不换成它 / The manifest's file is listed already (further on):
+        // even the only unpaired one does not become it
+        let mut listed =
+            serde_json::json!({ "settings": { "geosite_data_paths": [file('b'), file('2')] } });
+        assert!(manager.uses_downloads(&listed, &after));
+        assert!(!manager.replace_downloads(&mut listed, &after, &after));
+        assert_eq!(paths(&listed), serde_json::json!([file('b'), file('2')]));
+        // 唯一一份对不上的照旧换成清单里那一个 / The only unpaired one still becomes the manifest's one
+        let mut only = serde_json::json!({ "settings": { "geosite_data_paths": [file('b'), "/srv/own.dat"] } });
+        assert!(manager.uses_downloads(&only, &before));
+        assert!(manager.replace_downloads(&mut only, &before, &after));
+        assert_eq!(paths(&only), serde_json::json!([file('2'), "/srv/own.dat"]));
     }
 
     #[tokio::test]
