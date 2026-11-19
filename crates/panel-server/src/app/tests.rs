@@ -2906,18 +2906,21 @@ async fn regex_check_answers_as_the_kernel_compiles() {
     assert_eq!(body["error"]["code"], "regex_check_invalid");
 }
 
-/// 一次检查花多少有上限：regex-syntax 先把整个正则展开成语法树、编译时才看大小上限，一个 `\w` 就是几 KB。内核在解析之前看长度：
+/// 一次检查花多少有上限：regex-syntax 先把整个正则展开成语法树、编译时才看大小上限，一个 `\pL` 就是几 KB。内核在解析之前看长度：
 /// 域名的正则超过 16384 字节、TXT 的超过 1000 字节都不收，这里一样只看长度、不编译，再长也照样回答；请求体照 200 个 16 KiB 算，
-/// 再大的整个不收
+/// 再大的整个不收。正好到上限的用 `\pL` 连写（照旧是 Unicode 字母类，编出来太大）：`\w` 在域名的正则里按 ASCII 理解（kixdns #232），
+/// 连写到上限也编得出
 /// What one check costs is bounded: regex-syntax spells the whole regex out as a syntax tree and the size limits only apply when it
-/// compiles, a single `\w` being several KB. The kernel looks at the length before parsing: a name regex over 16384 bytes or a TXT
+/// compiles, a single `\pL` being several KB. The kernel looks at the length before parsing: a name regex over 16384 bytes or a TXT
 /// one over 1000 is refused, and here too only the length is looked at, nothing compiled, so any length is answered; the body is
-/// sized for 200 of 16 KiB, and a larger one is refused whole
+/// sized for 200 of 16 KiB, and a larger one is refused whole. The one right at the limit is `\pL` written out (still the Unicode
+/// letter class, too big once compiled): `\w` reads as ASCII in a name regex (kixdns #232), and written out to the limit it compiles
 #[tokio::test]
 async fn regex_check_bounds_what_one_request_costs() {
     let context = authenticated_app().await;
     let cap = crate::regex_check::MAX_REGEX_BYTES;
-    let at_cap = r"\w".repeat(cap / 2);
+    let at_cap = format!("{}a", r"\pL".repeat(cap / 3));
+    assert_eq!(at_cap.len(), cap);
     let over = format!("{at_cap}a");
     let txt = r"\pL".repeat(cap);
     let items = [
