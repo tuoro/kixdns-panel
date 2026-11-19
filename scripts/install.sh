@@ -717,14 +717,11 @@ record_problem() {
     return 0
   fi
   while IFS= read -r -d '' entry; do
-    # 接手旧位置的记录时（第三个参数是 links），v4.3.4 用 systemctl link 装的 unit 备份成的符号链接可以照它指着的文件算
-    # Adopting a record from the old place (third argument links), a symlink v4.3.4 backed up for a unit installed with
-    # systemctl link may count by the file it points at
-    if [[ ${3:-} == links && -L ${entry} ]] && trusted_record_link "${entry}"; then
-      continue
-    fi
+    # 符号链接一律不收：照 readlink -f 只查得到最后指着的文件，中间经过面板能改的一层时，它能把链接引到任何只有 root 能读的文件上
+    # No symlink is taken: readlink -f checks only the file at the end, and through a hop the panel can change, the panel
+    # can lead the link to any file only root may read
     if [[ -L ${entry} ]]; then
-      printf '里面的 %s 是符号链接，指着的文件或它上面的目录不是只有 root 能改\n' "${entry##*/}"
+      printf '里面的 %s 是符号链接\n' "${entry##*/}"
       return 0
     fi
     if [[ ! -f ${entry} ]]; then
@@ -745,35 +742,6 @@ record_problem() {
   elif ! grep -q "^${key}=" -- "${record}/install.env"; then
     printf 'install.env 里没有 %s\n' "${key}"
   fi
-}
-
-# R1、(b)：记录里的符号链接能不能照它指着的文件算：链接本身归 root，指着的是普通文件、只有一个链接，它和上面每一层目录都归 root、
-# 别人写不进。参数：链接。
-# R1, (b): whether a symlink in a record may count by the file it points at: the link itself root's, pointing at a regular
-# file with one link that, with every directory above it, is root's and not writable by others. Argument: the link.
-trusted_record_link() {
-  local link=$1
-  local target
-  [[ -L ${link} && $(stat -c '%u' -- "${link}") == "${ROOT_UID}" ]] || return 1
-  target="$(readlink -f -- "${link}")" || return 1
-  [[ -f ${target} && ! -L ${target} && $(stat -c '%h' -- "${target}") == 1 ]] || return 1
-  root_only_path "${target}"
-}
-
-# (b)：把复制过来的记录里能信的符号链接换成它指着的文件的内容（普通文件，只有 root 能读写），接手以后记录里就只有普通文件。
-# 不能信的链接留着，后面的检查会拒绝它。参数：复制过来的记录。
-# (b): replace each trusted symlink in a copied record with the content of the file it points at (a regular file only root
-# can read and write), so the adopted record holds regular files only. An untrusted link stays for the check after to
-# refuse. Argument: the copied record.
-materialize_record_links() {
-  local entry
-  while IFS= read -r -d '' entry; do
-    trusted_record_link "${entry}" || continue
-    rm -f -- "${entry}.material"
-    cp -L -- "${entry}" "${entry}.material"
-    chmod 0600 -- "${entry}.material"
-    mv -fT -- "${entry}.material" "${entry}"
-  done < <(find "$1" -mindepth 1 -maxdepth 1 -type l -print0)
 }
 
 # 两个目录在不在同一个文件系统：在才能一次 rename 挪过去。/ Whether two directories are on one filesystem: only then can one
@@ -941,25 +909,27 @@ adopt_old_records() {
       printf '%s 没有用（%s）：只有 root 能进的 %s 里已经有一份，用的是那份。\n' "${old}" "${where}" "${new}"
       continue
     fi
-    problem="$(record_problem "${old}" "${name}" links)"
+    problem="$(record_problem "${old}" "${name}")"
     if [[ -n ${problem} ]]; then
       quarantine_record "${old}" "${name}"
       destination=${QUARANTINED_TO}
       where="已删掉"
       [[ -z ${destination} ]] || where="挪到了 ${destination}"
       printf '%s 不能信（%s），没有用它（%s）；这台主机就当作没有这份记录。\n' "${old}" "${problem}" "${where}"
+      # 迁移前的 unit 是 systemctl link 装的时，备份里就是符号链接：说清原来的 unit 怎么手动装回，不说它指着哪里（面板能改）
+      # When the unit before migration was installed with systemctl link, the backup holds a symlink: say how to put the
+      # original unit back by hand, without printing where it points (the panel can change that)
       [[ -z ${destination} || ${problem} != *符号链接* ]] ||
-        printf '确认它就是迁移前的备份的话：把里面的符号链接换成它指着的那个文件（sudo cp --remove-destination 指着的文件 那个链接），再 sudo mv %s %s，然后再运行一次。\n' \
-          "${destination}" "${new}"
+        printf '原来的 unit 不会照它恢复，要手动装回：卸载面板时选移除 KixDNS，再用 sudo readlink %s/*.service 看它原来指着哪个文件，核对那就是原来的 unit，然后 sudo systemctl link 那个文件、sudo systemctl enable --now 原来的 unit 名（写在 %s/install.env 的 KIXDNS_SERVICE_UNIT）。\n' \
+          "${destination}" "${destination}"
       continue
     fi
     ensure_root_records
-    if same_filesystem "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}" && [[ -z "$(find "${old}" -mindepth 1 -type l -print -quit)" ]]; then
+    if same_filesystem "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}"; then
       mv -T -- "${old}" "${new}"
     else
       rm -rf -- "${new}.incoming"
       cp -a -- "${old}" "${new}.incoming"
-      materialize_record_links "${new}.incoming"
       problem="$(record_problem "${new}.incoming" "${name}")"
       if [[ -n ${problem} ]]; then
         rm -rf -- "${new}.incoming"

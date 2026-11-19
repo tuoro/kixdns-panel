@@ -2150,14 +2150,7 @@ assert_contains "${output}" "不能信（它不是 root 建的）" "面板建的
 for record_case in symlink hardlink writable; do
   legacy_host_tree 'User=kxu\n'
   case ${record_case} in
-    # 指着别人能改的文件的符号链接（指着只有 root 能改的文件的，(b) 照它指着的内容接手，见下面）/ A symlink to a file others can
-    # change (one to a file only root can change is adopted by its content, (b), see below)
-    symlink)
-      mkdir -p "${root}/shared"
-      chmod 0777 "${root}/shared"
-      : > "${root}/shared/extra"
-      ln -s -- "${root}/shared/extra" "${root}/state/external-backup/extra"
-      ;;
+    symlink) ln -s -- "${root}/etc/foo.json" "${root}/state/external-backup/extra" ;;
     hardlink) ln -- "${root}/etc/foo.json" "${root}/state/external-backup/extra" ;;
     writable) chmod 0770 "${root}/state/external-backup" ;;
   esac
@@ -3172,67 +3165,38 @@ legacy_host_tree 'User=kxu\n'
 output="$(FORGED_RECORDS=true config_directory_run)"
 assert_contains "${output}" "chown -hR 0:$(id -g) -- ${root}/records/quarantine/external-backup." "挪进 quarantine 的东西应整个交给 root"
 
-# 回归（(b)）：v4.3.4 用 systemctl link 装的原 unit，备份里的 kixdns.service 是符号链接，接手时被当作不能信挪走，以后恢复不了。现在
-# 链接本身归 root、指着的文件和它上面每一层都只有 root 能写时，接手时换成指着的文件的内容；不然照旧挪走，并说明管理员能怎么办。
-# Regression ((b)): v4.3.4 backed up a unit installed with systemctl link as a symlink, and adoption moved it away as
-# untrusted, so it could never be restored. Now, with the link root's and the file it points at and every level above it
-# writable by root alone, adoption replaces it with that file's content; otherwise it is moved away as before, saying what
-# the admin can do.
+# 回归（第六轮 MUST 1）：上一轮的 (b) 照 readlink -f 接手记录里的符号链接，只查最后指着的文件。中间经过面板能改的一层时，面板把它
+# 指向任何只有 root 能读的文件（容器里是 /etc/shadow），root 就把那个文件复制进备份，卸载恢复原来的 KixDNS 时装成 0644 的 unit。
+# 现在不接手符号链接：记录里哪里有符号链接都照旧挪走，什么也不复制，提示说清原来的 unit 怎么手动装回。
+# Regression (sixth review, MUST 1): last round's (b) adopted a symlink in a record by readlink -f, checking only the file
+# at the end. With a hop through something the panel can change, the panel points it at any file only root can read
+# (/etc/shadow in the container), root copied that file into the backup, and an uninstall restoring the original KixDNS
+# installed it as a 0644 unit. Now no symlink is adopted: a record with a symlink anywhere is moved away as before,
+# nothing is copied, and the message says how to put the original unit back by hand.
 legacy_host_tree 'User=kxu\n'
-mkdir -p "${root}/linked-units"
-cp -- "${root}/state/external-backup/kixdns.service" "${root}/linked-units/kixdns.service"
-# unit 文件通常是 0644：接手以后照样只有 root 能读写 / Unit files are usually 0644: adopted, it is still root's alone to read
-# and write
-chmod 0644 "${root}/linked-units/kixdns.service"
+mkdir -p "${root}/root-only" "${root}/panel-hop"
+printf 'SECRET-LINE only root may read\n' > "${root}/root-only/secret"
+chmod 0600 "${root}/root-only/secret"
+ln -s -- "${root}/root-only/secret" "${root}/panel-hop/kixdns.service"
 rm -f -- "${root}/state/external-backup/kixdns.service"
-ln -s -- "${root}/linked-units/kixdns.service" "${root}/state/external-backup/kixdns.service"
+ln -s -- "${root}/panel-hop/kixdns.service" "${root}/state/external-backup/kixdns.service"
 output="$(config_directory_run)"
-assert_contains "${output}" "的记录已验过，挪到只有 root 能进的 ${root}/records/external-backup。" "指着只有 root 能改的文件的符号链接应照它的内容接手"
-[[ -f ${root}/records/external-backup/kixdns.service && ! -L ${root}/records/external-backup/kixdns.service ]] ||
-  { printf '断言失败：接手以后记录里应是普通文件\n' >&2; exit 1; }
-cmp -s -- "${root}/linked-units/kixdns.service" "${root}/records/external-backup/kixdns.service" ||
-  { printf '断言失败：接手以后应是指着的文件的内容\n' >&2; exit 1; }
-[[ $(stat -c '%a' -- "${root}/records/external-backup/kixdns.service") == 600 ]] ||
-  { printf '断言失败：接手以后的文件应只有 root 能读写\n' >&2; exit 1; }
-# 链接本身要归 root，指着的要是只有一个链接的普通文件 / The link itself must be root's, and what it points at a regular file
-# with one link
-link_verdicts="$(
-  umask 022
-  base="${WORK}/record-links"
-  rm -rf -- "${base}"
-  mkdir -p "${base}/units/dir.service" "${base}/record"
-  printf 'unit\n' > "${base}/units/one.service"
-  printf 'unit\n' > "${base}/units/two.service"
-  ln -- "${base}/units/two.service" "${base}/units/two-again.service"
-  ln -s -- "${base}/units/one.service" "${base}/record/plain"
-  ln -s -- "${base}/units/two.service" "${base}/record/hardlinked"
-  ln -s -- "${base}/units/dir.service" "${base}/record/directory"
-  ln -s -- "${base}/units/one.service" "${base}/record/foreign"
-  ROOT_CHAIN_TOP=${base}
-  ROOT_UID="$(id -u)"
-  stat() {
-    if [[ $1 == -c && $2 == %u && ${4:-} == "${base}/record/foreign" ]]; then
-      printf '12345\n'
-    else
-      command stat "$@"
-    fi
-  }
-  for link in plain hardlinked directory foreign; do
-    if trusted_record_link "${base}/record/${link}"; then printf '%s trusted\n' "${link}"; else printf '%s not\n' "${link}"; fi
-  done
-)"
-assert_equals "${link_verdicts}" $'plain trusted\nhardlinked not\ndirectory not\nforeign not' \
-  "只有归 root、指着只有一个链接的普通文件的符号链接才能照它指着的算"
-legacy_host_tree 'User=kxu\n'
-mkdir -p "${root}/linked-units"
-chmod 0777 "${root}/linked-units"
-cp -- "${root}/state/external-backup/kixdns.service" "${root}/linked-units/kixdns.service"
-rm -f -- "${root}/state/external-backup/kixdns.service"
-ln -s -- "${root}/linked-units/kixdns.service" "${root}/state/external-backup/kixdns.service"
-output="$(config_directory_run)"
-assert_contains "${output}" "里面的 kixdns.service 是符号链接，指着的文件或它上面的目录不是只有 root 能改" "指着别人能改的文件的符号链接不能信"
-assert_contains "${output}" "确认它就是迁移前的备份的话：把里面的符号链接换成它指着的那个文件" "不能信时应说明管理员能怎么办"
-[[ ! -e ${root}/records/external-backup ]] || { printf '断言失败：不能信的符号链接记录不能接手\n' >&2; exit 1; }
+assert_contains "${output}" "${root}/state/external-backup 不能信（里面的 kixdns.service 是符号链接）" "记录里的符号链接不能接手"
+assert_contains "${output}" "原来的 unit 不会照它恢复，要手动装回" "挪走符号链接的记录时应说明原来的 unit 怎么手动装回"
+[[ ! -e ${root}/records/external-backup ]] || { printf '断言失败：有符号链接的记录不能接手\n' >&2; exit 1; }
+if grep -rqs 'SECRET-LINE' -- "${root}/records"; then
+  printf '断言失败：经过面板能改的一层的符号链接，指着的文件不能被复制进记录\n' >&2
+  exit 1
+fi
+quarantined_link="$(find "${root}/records/quarantine" -path '*/external-backup.*/kixdns.service' -print -quit 2>/dev/null)"
+[[ -n ${quarantined_link} && -L ${quarantined_link} ]] ||
+  { printf '断言失败：挪进 quarantine 的还是原来那个符号链接，没有换成内容\n' >&2; exit 1; }
+for script_name in install uninstall; do
+  if grep -qE '^(trusted_record_link|materialize_record_links)\(\)' "${PACKAGE_ROOT}/scripts/${script_name}.sh"; then
+    printf '断言失败：%s.sh 里不能再有接手符号链接的代码\n' "${script_name}" >&2
+    exit 1
+  fi
+done
 
 # R3：内核包的身份目录已经有时不用 install -d；里面的文件先删掉同名的再写。/ R3: an existing bundle directory gets no
 # install -d; its files are removed by name before being written.
