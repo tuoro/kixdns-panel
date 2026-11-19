@@ -135,7 +135,10 @@ fake_systemctl_show() {
     User) awk '/^User=/ { value = $0; sub(/^User=/, "", value) } END { print value }' "${files[@]}" ;;
   esac
 }
-systemctl() { [[ $1 != show ]] || fake_systemctl_show "$@"; }
+use_fake_systemctl() {
+  systemctl() { [[ $1 != show ]] || fake_systemctl_show "$@"; }
+}
+use_fake_systemctl
 
 PANEL_ENV="${PACKAGE_ROOT}/.missing-panel.env"
 EXTERNAL_BACKUP="${PACKAGE_ROOT}/.missing-external-backup"
@@ -304,7 +307,8 @@ wait_for_unit_inactive kixdns-panel.service
 [[ ${UNIT_CALLS} == *"stop kixdns-panel.service"* ]]
 [[ ${UNIT_CALLS} == *"kill --kill-who=all kixdns-panel.service"* ]]
 [[ ${UNIT_CALLS} == *"reset-failed kixdns-panel.service"* ]]
-systemctl() { [[ $1 != show ]] || fake_systemctl_show "$@"; }
+unset -f systemctl
+use_fake_systemctl
 
 # 安装器关闭过 systemd-resolved 的本机监听：移除 KixDNS 时恢复原样，保留 KixDNS 时只给出恢复命令。
 # The installer turned systemd-resolved's stub off: removing KixDNS restores it, keeping KixDNS only prints the commands.
