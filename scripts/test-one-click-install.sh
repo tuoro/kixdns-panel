@@ -2,6 +2,9 @@
 # shellcheck disable=SC1090,SC1091,SC2016,SC2034
 set -Eeuo pipefail
 
+# 临时目录和 CI 一样只有自己能写：panel.env 上面每一层都没人能写才信它（R4）/ Scratch directories writable by their owner
+# alone, as in CI: panel.env is trusted only with no level above it writable by others (R4)
+umask 022
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ONE_CLICK="${PACKAGE_ROOT}/scripts/one-click-install.sh"
 WORK="$(mktemp -d)"
@@ -59,6 +62,10 @@ assert_not_contains "${help}" "仅安装面板" "帮助不应再提仅安装面�
 # source 时脚本末尾的守卫跳过 main，只加载函数；它自带的 set -Eeuo pipefail 正好也用于断言。
 # Sourcing skips main via the guard at the end and only loads functions; its set -Eeuo pipefail suits the assertions.
 source "${ONE_CLICK}"
+# 临时目录里的东西归跑测试的用户，由他代替 root / What is in the scratch tree belongs to the user running the tests, who
+# stands in for root
+ROOT_UID="$(id -u)"
+ROOT_CHAIN_TOP=${WORK}
 
 # ---- 参数解析 / argument parsing ----
 VERSION="" REINSTALL=false INSTALLER_ARGUMENTS=()
@@ -199,6 +206,17 @@ printf 'KIXDNS_MANAGEMENT_ENABLED=true\nKIXDNS_PANEL_INSTALLED_RELEASE=v3.1.0\n'
 mv "${PANEL_SERVER}" "${PANEL_SERVER}.gone"
 if already_installed v3.1.0; then printf '断言失败：卸载后残留的 panel.env 不应算已安装\n' >&2; exit 1; fi
 mv "${PANEL_SERVER}.gone" "${PANEL_SERVER}"
+# 回归（S2，R4）：面板能改的 panel.env 记的版本不能让这次安装跳过（v4.3.4 把 /etc/kixdns-panel 交给面板的主机上，面板写上新版本号，
+# 升级就说「已安装，无需重复安装」）。
+# Regression (S2, R4): the version a panel.env the panel can change records must not skip this install (on a host where
+# v4.3.4 gave /etc/kixdns-panel to the panel, the panel wrote the new version in and the upgrade said "already installed").
+chmod 0666 "${PANEL_ENV}"
+if already_installed v3.1.0; then printf '断言失败：面板能改的 panel.env 记的版本不能让安装跳过\n' >&2; exit 1; fi
+chmod 0644 "${PANEL_ENV}"
+chmod 0777 "${WORK}"
+if already_installed v3.1.0; then printf '断言失败：panel.env 上面一层别人能写时，它记的版本不能让安装跳过\n' >&2; exit 1; fi
+chmod 0700 "${WORK}"
+already_installed v3.1.0 || { printf '断言失败：能信的 panel.env 记的版本照旧用来短路\n' >&2; exit 1; }
 
 # ---- 端到端（桩 curl） / end to end with a stubbed curl ----
 architecture="$(detect_architecture)"
@@ -343,5 +361,27 @@ STUB_ARGV="${STUB_ARGV}" STUB_CALLS="${STUB_CALLS}" STUB_RELEASE="${STUB_RELEASE
 download_argv="$(cat -- "${STUB_ARGV}")"
 assert_contains "${download_argv}" "--progress-bar" "终端下载应显示进度条"
 assert_not_contains " ${download_argv} " " --silent " "终端下载不应使用 --silent"
+
+# 回归（P1）：一键安装读的 Token 在面板的状态目录里，面板账号能把它换成指向 root 才能读的文件的符号链接；按文件属主的身份去读。
+# Regression (P1): the token one-click installs read lives in the panel's state directory, where the panel account can swap
+# it for a symlink to a file only root may read; it is read as the file's owner.
+token_dir="${WORK}/token"
+mkdir -p "${token_dir}"
+printf 'ghp_fromfile\n' > "${token_dir}/github-token"
+chmod 0600 "${token_dir}/github-token"
+sed -e "s|^readonly GITHUB_TOKEN_FILE=.*|readonly GITHUB_TOKEN_FILE=\"${token_dir}/github-token\"|" "${ONE_CLICK}" > "${token_dir}/one-click.sh"
+output="$(bash -c "
+  source '${token_dir}/one-click.sh'
+  TEMP_DIRECTORY='${token_dir}'
+  stat() { case \$2 in %u | %g) printf '990\\n' ;; *) command stat \"\$@\" ;; esac; }
+  setpriv() { printf 'setpriv %s\\n' \"\$*\" >&2; printf 'ghp_fromsetpriv\\n'; }
+  # timeout 是外部命令，跑不到上面的替身 / timeout is an external command and would miss the stand-in above
+  timeout() { shift; \"\$@\"; }
+  prepare_github_api_config
+  cat \"\${GITHUB_API_CONFIG}\"
+" 2>&1 || true)"
+assert_contains "${output}" "setpriv --reuid=990 --regid=990 --clear-groups -- head -c 300 -- ${token_dir}/github-token" \
+  "一键安装应按 Token 文件属主的身份读它"
+assert_contains "${output}" "Bearer ghp_fromsetpriv" "一键安装用的是按属主身份读到的 Token"
 
 printf '一键安装策略检查通过。\n'

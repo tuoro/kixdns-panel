@@ -10,6 +10,11 @@ readonly TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
 # Tests rewrite these paths, so they are not readonly and the policy test can run sandboxed.
 PANEL_ENV="/etc/kixdns-panel/panel.env"
 PANEL_SERVER="/usr/local/bin/kixdns-panel-server"
+# R4、S2：panel.env 和它上面每一层都归 root（这个 UID）、别人写不进时，它记的版本才能用来跳过这次安装；查到 ROOT_CHAIN_TOP 为止
+# R4, S2: the version panel.env records may skip this install only when it and every level above it are root's (this UID)
+# and nobody else can write them; checked up to ROOT_CHAIN_TOP
+ROOT_UID=0
+ROOT_CHAIN_TOP=/
 TEMP_PARENT="/var/tmp"
 VERSION=""
 REINSTALL=false
@@ -156,6 +161,52 @@ cleanup() {
   fi
 }
 
+# SHOULD 2：以别的身份运行一条命令，参数原样交给 setpriv；--timeout N 时由 root 的 timeout 限时（降了权的那个身份停不掉它）。
+# 降权之前先关掉 2 以上的每一个文件描述符：锁、管道和打开的文件都不跟着过去，那个身份就没法经 /proc/<pid>/fd 或 pidfd_getfd
+# 拿到它们。每一个降权的子进程都经这里。参数：[--timeout 秒数]、setpriv 的参数和命令。
+# SHOULD 2: run a command under another identity, the arguments going to setpriv as they are; with --timeout N, root's
+# timeout bounds it (the dropped identity cannot stop it). Every descriptor above 2 is closed before privileges drop: no
+# lock, pipe or open file goes along, so that identity cannot reach them through /proc/<pid>/fd or pidfd_getfd. Every
+# child that drops privileges goes through here. Arguments: [--timeout seconds], setpriv's arguments and the command.
+drop_privileges() {
+  local seconds=""
+  if [[ $1 == --timeout ]]; then
+    seconds=$2
+    shift 2
+  fi
+  (
+    for fd in /proc/"${BASHPID}"/fd/*; do
+      fd=${fd##*/}
+      if [[ ${fd} =~ ^[0-9]+$ ]] && ((fd > 2)) && [[ -e /proc/${BASHPID}/fd/${fd} ]]; then
+        exec {fd}>&-
+      fi
+    done
+    if [[ -n ${seconds} ]]; then
+      timeout "${seconds}" setpriv "$@"
+    else
+      setpriv "$@"
+    fi
+  )
+}
+
+# Token 文件放在面板的状态目录里，面板账号能在检查和读取之间把它换成指向别处的符号链接或管道。按文件属主的身份去读（换了也只能
+# 读到那个身份本来就能读的），最多等 5 秒、最多读 300 字节。
+# The token file lives in the panel's state directory, where the panel account can swap it between the check and the read
+# for a symlink elsewhere or a pipe. It is read as the file's owner (a swap then only reaches what that owner could read
+# anyway), waiting 5 s and reading 300 bytes at most.
+read_token_file() {
+  local file=$1
+  local owner
+  local group
+  owner="$(stat -c '%u' -- "${file}")"
+  group="$(stat -c '%g' -- "${file}")"
+  if [[ ${owner} == "$(id -u)" ]]; then
+    timeout 5 head -c 300 -- "${file}"
+  else
+    drop_privileges --timeout 5 --reuid="${owner}" --regid="${group}" --clear-groups -- head -c 300 -- "${file}"
+  fi
+}
+
 prepare_github_api_config() {
   local mode
   local token
@@ -165,7 +216,7 @@ prepare_github_api_config() {
   [[ ${mode} =~ ^[0-7]{3,4}$ ]] || fail "GitHub Token 文件权限无效"
   (((8#${mode} & 8#077) == 0)) || fail "GitHub Token 文件权限必须为 0600"
   [[ $(stat -c '%s' -- "${GITHUB_TOKEN_FILE}") -le 257 ]] || fail "GitHub Token 文件过大"
-  token="$(<"${GITHUB_TOKEN_FILE}")"
+  token="$(read_token_file "${GITHUB_TOKEN_FILE}")" || fail "GitHub Token 读取失败"
   [[ ${token} =~ ^(github_pat_|gh[pousr]_)[A-Za-z0-9_-]+$ ]] || fail "GitHub Token 格式无效"
   GITHUB_API_CONFIG="${TEMP_DIRECTORY}/github-api.conf"
   (umask 077; printf 'header = "Authorization: Bearer %s"\n' "${token}" > "${GITHUB_API_CONFIG}")
@@ -225,10 +276,26 @@ fetch_release_json() {
   cat -- "${body_file}"
 }
 
+# R4：panel.env 能不能信：它和它上面的每一层目录都归 root、别人写不进、不是符号链接。/ R4: whether panel.env can be
+# trusted: it and every directory above it are root's, not writable by others, and no symlink.
+panel_env_trusted() {
+  local path=${PANEL_ENV}
+  while :; do
+    [[ -e ${path} && ! -L ${path} ]] || return 1
+    [[ $(stat -c '%u' -- "${path}") == "${ROOT_UID}" ]] || return 1
+    (((8#$(stat -c '%a' -- "${path}") & 8#022) == 0)) || return 1
+    [[ ${path} != "${ROOT_CHAIN_TOP}" && ${path} != / ]] || return 0
+    path="$(dirname -- "${path}")"
+  done
+}
+
+# panel.env 里的一项；面板能改的 panel.env 一项也不给（S2：它记的版本不能让这次安装被跳过）。
+# A setting from panel.env; one the panel can change yields nothing (S2: the version it records must not skip this install).
 panel_env_value() {
   local key=$1
-  [[ -f ${PANEL_ENV} ]] || return 1
-  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
+  [[ -f ${PANEL_ENV} ]] && panel_env_trusted || return 1
+  AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
 }
 
 # 同版本重跑时在下载前结束，省下整包下载，也不打扰正在运行的 KixDNS。
@@ -402,7 +469,8 @@ main() {
   archive="${TEMP_DIRECTORY}/${asset_name}"
   extract_directory="${TEMP_DIRECTORY}/package"
   printf '正在下载 %s（%s MB）…\n' "${asset_name}" \
-    "$(awk -v bytes="${asset_size}" 'BEGIN { printf "%.1f", bytes / 1048576 }')"
+    "$(AWK_BYTES="${asset_size}" awk 'BEGIN { bytes = ENVIRON["AWK_BYTES"] }
+    BEGIN { printf "%.1f", bytes / 1048576 }')"
   download_archive "${asset_url}" "${archive}"
   printf '%s  %s\n' "${asset_digest#sha256:}" "${archive}" |
     sha256sum --check --strict --status ||
