@@ -75,6 +75,8 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   expect(path).toMatch(/^M[\d.]+,[\d.]+( C[\d., -]+)+$/)
   await expect(page.locator('.overview-bars-cols > i')).toHaveCount(24)
   await expect(page.locator('.overview-bars-cols > i').last()).toHaveClass(/is-live/)
+  await expect(page.locator('.overview-bars-cols > i.is-live')).toHaveCount(1)
+  await expect(page.locator('.overview-spark-line--live')).toHaveCount(1)
   await expect(page.locator('.overview-bars-axis .is-end')).toContainText('现在')
 
   const runtimeTab = page.getByRole('tab', { name: '运行情况' })
@@ -227,7 +229,14 @@ for (const stopped of [true, false]) {
     // 底栏只说按钮什么时候能用，不再复述状态 / The foot says only when the button becomes usable, without restating the state
     await expect(page.locator('.overview-runtime-note')).toHaveText(stopped ? 'KixDNS 运行后才能清空缓存' : '实时数据恢复后才能清空缓存')
     await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
-    await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
+    // 快照里的曲线停在最后一次采样那一刻：时段从那一刻说，不说「最近」（演示的采样到打开页面那一刻为止）
+    // The snapshot's curve stops at its last sample: the period is told from that moment, never as 最近 (the demo samples up to when
+    // the page opened)
+    const sampled = await page.evaluate(async () => {
+      const { mockRequest } = await import('/src/api/mock.ts')
+      return ((await mockRequest('/api/v1/overview')) as { trend: { sampled_until_unix: number } }).trend.sampled_until_unix * 1000
+    })
+    await expect(page.locator('.overview-trend-label')).toHaveText(`截至 ${await clockText(page, sampled)} 的 24 小时 3,835,000 次`)
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
     // 已停止才叫「最后运行配置」；服务还在跑、只是读不到实时数据时仍是「当前运行配置」
     await expect(page.getByRole('heading', { name: stopped ? '最后运行配置' : '当前运行配置', exact: true })).toBeVisible()
@@ -744,19 +753,40 @@ const clockText = (page: Page, ms: number) => page.evaluate((at) => {
   return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${time}`
 }, ms)
 
-test('停了 6 小时的快照：时段从快照那一刻说起，页头不下判定；采样早停的趋势从它停下的那一刻说起', async ({ page }) => {
-  await wrapClient(page, 'ended-original', `
+// 和服务端一样造趋势：每次读都从「现在」往回切 24 个一小时的桶，只留停下之前采到的那些，另报最后一次采样在哪一刻（stopAt）。
+// active：服务还是 active（KixDNS 读不到，不是停了）。每读一次概览 __reads 加一
+// The trend built as the server builds it: every read cuts 24 hourly buckets back from now, keeps those sampled before the stop, and
+// reports the last sample's moment (stopAt) on its own. active: the service still reads active (KixDNS unreadable rather than
+// stopped). Each overview read adds one to __reads
+const stoppedTrend = (stopAgoSeconds: number, active = false) => `
+  const stopAt = Math.floor(Date.now() / 1000) - ${stopAgoSeconds};
+  globalThis.__trendEnd = stopAt * 1000;
+  globalThis.__reads = 0;
+  function trend() {
     const now = Math.floor(Date.now() / 1000);
-    // 采样停在 6 小时前：18 个一小时的桶，最后一个在 6 小时前结束 / Sampling stopped 6 hours ago: 18 hourly buckets, the last ending 6 hours ago
-    const points = Array.from({ length: 18 }, (_, i) => ({ start_unix: now - 24 * 3600 + i * 3600, requests: 4000 + (i % 5) * 500 }));
-    globalThis.__trendEnd = (now - 6 * 3600) * 1000;
-    export async function apiRequest(path, init) {
-      const result = await original(path, init);
-      if (path === '/api/v1/service') return { ...result, active_state: 'inactive', sub_state: 'dead', main_pid: 0 };
-      if (path === '/api/v1/overview') return { ...result, live: false, service_active: false, captured_at_unix: now - 6 * 3600, trend: { bucket_seconds: 3600, points, total: points.reduce((s, p) => s + p.requests, 0) } };
-      return result;
+    const points = [];
+    for (let k = 0; k < 24; k++) {
+      const start = now - (24 - k) * 3600;
+      if (start < stopAt) points.push({ start_unix: start, requests: 4000 + (k % 5) * 500 });
     }
-  `)
+    return { bucket_seconds: 3600, points, total: points.reduce((s, p) => s + p.requests, 0), sampled_until_unix: stopAt };
+  }
+  export async function apiRequest(path, init) {
+    const result = await original(path, init);
+    if (path === '/api/v1/service') return ${active} ? result : { ...result, active_state: 'inactive', sub_state: 'dead', main_pid: 0 };
+    if (path === '/api/v1/overview') { globalThis.__reads += 1; return { ...result, live: false, service_active: ${active}, captured_at_unix: stopAt, trend: trend() }; }
+    if (path.startsWith('/api/v1/stats/top')) return { ...result, live: false, captured_at_unix: stopAt };
+    return result;
+  }
+`
+const trendEnd = (page: Page) => page.evaluate(() => (globalThis as unknown as { __trendEnd: number }).__trendEnd)
+const overviewReads = (page: Page) => page.evaluate(() => (globalThis as unknown as { __reads: number }).__reads)
+
+test('停了 6 小时的快照：时段从快照那一刻说起，页头不下判定；采样早停的趋势从它停下的那一刻说起', async ({ page }) => {
+  // 停在 6 小时 23 分钟前：最后一个桶要到 6 小时前才结束，「截至」说的是最后一次采样，不是桶的末尾 / Stopped 6 h 23 min ago: the last
+  // bucket ends only 6 hours ago, and 截至 names the last sample, not the bucket's end
+  await wrapClient(page, 'ended-original', stoppedTrend(6 * 3600 + 23 * 60))
+  await page.clock.install()
   await page.goto('/')
   await expect(page.locator('.overview-total-value')).toBeVisible()
   const facts = page.locator('.overview-heading .ui-facts > div')
@@ -769,11 +799,117 @@ test('停了 6 小时的快照：时段从快照那一刻说起，页头不下�
   await expect(page.locator('.overview-subs dt').nth(2)).toContainText('快照前一小时')
   await expect(page.locator('.overview-subs dt').nth(2)).not.toContainText('最近')
   // 趋势说它自己停在哪一刻，图上的说明也一样 / The trend names the moment it stopped, as do the charts' labels
-  const ended = await clockText(page, await page.evaluate(() => (globalThis as unknown as { __trendEnd: number }).__trendEnd))
+  const ended = await clockText(page, await trendEnd(page))
   const total = (4000 + 4500 + 5000 + 5500 + 6000) * 3 + 4000 + 4500 + 5000
-  await expect(page.locator('.overview-trend-label')).toHaveText(`截至 ${ended} 的 18 小时 ${total.toLocaleString('zh-CN')} 次`)
+  const label = `截至 ${ended} 的 18 小时 ${total.toLocaleString('zh-CN')} 次`
+  await expect(page.locator('.overview-trend-label')).toHaveText(label)
   await expect(page.locator('.overview-spark')).toHaveAttribute('aria-label', `截至 ${ended} 的 18 小时请求量趋势`)
   await expect(page.locator('.overview-bars')).toHaveAttribute('aria-label', `截至 ${ended} 的 18 小时每小时查询量`)
+  // 柱图右端也写停下的那一刻，不写那个桶的整点 / The bar chart's right end names the moment it stopped too, not the bucket's hour
+  await expect(page.locator('.overview-bars-axis .is-end')).toHaveText(ended)
+  // 几分钟以后定时刷新又读了几次：桶跟着现在挪，「截至」不动 / Minutes later the timed refresh has read again: the buckets follow now, 截至 stays
+  const reads = await overviewReads(page)
+  await page.clock.fastForward(3 * 60_000)
+  await expect.poll(() => overviewReads(page)).toBeGreaterThan(reads)
+  await expect(page.locator('.overview-trend-label')).toHaveText(label)
+  await expect(page.locator('.overview-bars-axis .is-end')).toHaveText(ended)
+  // 查询排行也是快照：和别处一样从快照往前说，不说「最近」 / The rankings are a snapshot too: counted back from it as elsewhere, never 最近
+  await page.getByRole('tab', { name: '查询排行', exact: true }).click()
+  await expect(page.locator('.overview-toolbar p').first()).toContainText('快照前 24 小时')
+  await expect(page.locator('.overview-toolbar p').first()).not.toContainText('最近')
+})
+
+// 排行和概览各读各的：KixDNS 刚停、手上的排行还是停之前读的（一分钟才重读一次），或者概览读得到、排行读到的却是快照，都从快照往前说
+// The rankings and the overview are read apart: KixDNS just stopped with the rankings in hand read before the stop (they re-read once
+// a minute), or the overview reads live while the rankings come back as a snapshot; either way they count back from the snapshot
+for (const [which, overviewLive, statsLive] of [['概览是快照', false, true], ['排行是快照', true, false]] as const) {
+  test(`查询排行的时段：${which}时写「快照前」`, async ({ page }) => {
+    await wrapClient(page, `stats-${overviewLive}-${statsLive}-original`, `
+      export async function apiRequest(path, init) {
+        const result = await original(path, init);
+        if (path === '/api/v1/service' && !${overviewLive}) return { ...result, active_state: 'inactive', sub_state: 'dead', main_pid: 0 };
+        if (path === '/api/v1/overview' && !${overviewLive}) return { ...result, live: false, service_active: false };
+        if (path.startsWith('/api/v1/stats/top')) return { ...result, live: ${statsLive} };
+        return result;
+      }
+    `)
+    await openOverview(page)
+    await page.getByRole('tab', { name: '查询排行', exact: true }).click()
+    const line = page.locator('.overview-toolbar p').first()
+    await expect(line).toContainText('快照前 24 小时')
+    // 概览读得到时还能换窗口，一小时那一档也照快照说 / With the overview live the window can still change, and the hour is told as a snapshot too
+    if (overviewLive) {
+      await page.getByRole('button', { name: '1 小时', exact: true }).click()
+      await expect(line).toContainText('快照前一小时')
+    }
+  })
+}
+
+// 停了还不到一个半桶：最后一个桶看着还「新」，但采样已经停了，趋势不能还说「最近」、把最后一小时画成正在进行、右端写「现在」。
+// KixDNS 读不到（服务还是 active）时走同一条路
+// Stopped less than a bucket and a half ago: the last bucket still looks recent, but sampling has stopped, so the trend must not say 最近,
+// draw the last hour as in progress, or write 现在 at the right end. KixDNS unreadable (the service still active) takes the same path
+for (const [state, active] of [['已停止', false], ['读不到', true]] as const) {
+  test(`停了 20 分钟（${state}）：趋势照停下的那一刻说，不当成还在采`, async ({ page }) => {
+    await wrapClient(page, `stopped-20-${active}-original`, stoppedTrend(20 * 60, active))
+    await page.goto('/')
+    await expect(page.locator('.overview-total-value')).toBeVisible()
+    const ended = await clockText(page, await trendEnd(page))
+    await expect(page.locator('.overview-trend-label')).toHaveText(/^截至 /)
+    await expect(page.locator('.overview-trend-label')).toContainText(`截至 ${ended} 的 24 小时`)
+    await expect(page.locator('.overview-bars')).toHaveAttribute('aria-label', `截至 ${ended} 的 24 小时每小时查询量`)
+    await expect(page.locator('.overview-bars-axis .is-end')).toHaveText(ended)
+    // 最后一根柱子、最后一段曲线不画成正在进行 / The last bar and the curve's last segment are not drawn as in progress
+    await expect(page.locator('.overview-bars-cols > i')).toHaveCount(24)
+    await expect(page.locator('.overview-bars-cols > i.is-live')).toHaveCount(0)
+    await expect(page.locator('.overview-spark-line--live')).toHaveCount(0)
+  })
+}
+
+// 前一天的快照：趋势说明带着日期，最长。手机上标题「查询量 · 启动以来」照样一行写完，说明换到标题下面一行；宽屏上两个仍在同一行
+// A snapshot from the day before: the trend note carries the date and is at its longest. On phones the title 查询量 · 启动以来 still
+// fits one line and the note moves to the line under it; on wide screens both stay on one line
+test.describe('前一天的快照', () => {
+  test.use({ timezoneId: 'Asia/Shanghai' })
+  test('趋势说明长了也不挤标题：标题一行写完，手机上说明换到下一行 @responsive', async ({ page }, testInfo) => {
+    // 本地 11/18 10:00，停在 11/17 21:00 / Local 11/18 10:00, stopped at 11/17 21:00
+    await page.clock.install({ time: new Date('2026-11-18T02:00:00Z') })
+    await wrapClient(page, 'yesterday-original', stoppedTrend(13 * 3600))
+    await page.goto('/')
+    const label = page.locator('.overview-trend-label')
+    await expect(label).toContainText('截至 11/17 21:00 的 11 小时')
+    const widths = testInfo.project.name === 'mobile' ? [320, 360, 375, 414, 640] : [1440, 1280]
+    for (const width of widths) {
+      await page.setViewportSize({ width, height: 900 })
+      const layout = await page.locator('.overview-card--volume').evaluate((card) => {
+        const title = card.querySelector('h2')!
+        const note = card.querySelector<HTMLElement>('.overview-trend-label')!
+        const parts = [...title.children].map((part) => part.getBoundingClientRect())
+        const box = (element: Element) => element.getBoundingClientRect()
+        const inner = box(card).right - parseFloat(getComputedStyle(card).paddingRight)
+        return {
+          // 标题的两项在同一行 / The title's two items share one line
+          titleLines: new Set(parts.map((part) => Math.round(part.top))).size,
+          noteBelow: box(note).top >= box(title).bottom - 1,
+          noteInside: box(note).right <= inner + 1,
+          noteLines: note.getClientRects().length && Math.round(box(note).height / parseFloat(getComputedStyle(note).lineHeight)),
+          scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        }
+      })
+      expect(layout.titleLines, `${width}px`).toBe(1)
+      expect(layout.noteInside, `${width}px`).toBe(true)
+      // 柱图右端带日期的「MM/DD HH:MM」和「现在 HH:MM」一样宽：整点刻度给它让开，不叠在一起 / The bar chart's dated right end
+      // 「MM/DD HH:MM」 is as wide as 「现在 HH:MM」: the hour ticks give way and nothing overlaps
+      await expect(page.locator('.overview-bars-axis .is-end')).toHaveText('11/17 21:00')
+      const ticks = await page.locator('.overview-bars-axis > span').evaluateAll((spans) => spans.map((span) => span.getBoundingClientRect()).sort((a, b) => a.left - b.left).map((box) => ({ left: box.left, right: box.right })))
+      for (let i = 1; i < ticks.length; i++) expect(ticks[i]!.left, `${width}px`).toBeGreaterThan(ticks[i - 1]!.right + 2)
+      expect(layout.scroll, `${width}px`).toBeLessThanOrEqual(0)
+      // 窄手机上放不下就整句换到下一行（640 宽的卡片放得下，照旧同一行），宽屏上和标题同一行 / On narrow phones the note moves whole
+      // to the next line (a 640 card has room and keeps one line), on wide screens it shares the title's
+      if (width !== 640) expect(layout.noteBelow, `${width}px`).toBe(width <= 414)
+      expect(layout.noteLines, `${width}px`).toBe(1)
+    }
+  })
 })
 
 // 配置页的上游组卡片和概览的上游状态用同一个时段说法：手上是快照时两页都从快照那一刻往前说
@@ -814,7 +950,8 @@ test('面板刚启动、柱子是 5 分钟一根：卡片不叫「每小时查�
       if (path === '/api/v1/overview') {
         const now = Math.floor(Date.now() / 1000);
         const points = Array.from({ length: 24 }, (_, i) => ({ start_unix: now - (24 - i) * 300, requests: 400 + (i % 5) * 50 }));
-        return { ...result, trend: { bucket_seconds: 300, points, total: points.reduce((s, p) => s + p.requests, 0) } };
+        // 还在采：最后一次采样就在刚才 / Still sampling: the last sample was just now
+        return { ...result, captured_at_unix: now, trend: { bucket_seconds: 300, points, total: points.reduce((s, p) => s + p.requests, 0), sampled_until_unix: now - 20 } };
       }
       return result;
     }
