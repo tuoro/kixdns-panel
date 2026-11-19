@@ -1781,6 +1781,7 @@ named_output="$(
   printf '[Service]\nExecStart=/usr/local/bin/other -c /etc/kixdns/pipeline.json\n' > "${SYSTEMD_UNIT_DIRECTORY}/other.service"
   printf '[Service]\nExecStart=/opt/kixdns run -c relative.json\n' > "${SYSTEMD_UNIT_DIRECTORY}/kx.service"
   printf '[Service]\nExecStart=/opt/bin/kixdns run\n' > "${SYSTEMD_UNIT_DIRECTORY}/bare.service"
+  printf '[Service]\nExecStart=/usr/bin/sleep infinity\n' > "${SYSTEMD_UNIT_DIRECTORY}/sleeper.service"
   configs_named_by_units | sort
 )"
 assert_not_contains "${named_output}" "keepalive.service" "sh 的 -c 不能算 KixDNS 的配置参数"
@@ -1788,6 +1789,7 @@ assert_not_contains "${named_output}" "mosdns.service" "别的程序的相对路
 assert_contains "${named_output}" "other.service"$'\t'"/etc/kixdns/pipeline.json" "任何程序写着的绝对路径都照旧算"
 assert_contains "${named_output}" "kx.service"$'\t'"?relative.json" "KixDNS 的相对路径配置看不出指着哪里"
 assert_contains "${named_output}" "bare.service"$'\t'"?" "没写配置参数的 KixDNS 看不出用哪份配置"
+assert_not_contains "${named_output}" "sleeper.service" "没写配置参数的别的程序不能算"
 # S3：有 unit 用着、交给 root 的配置也不放宽权限：算出来的和它现在的取交集
 # S3: a config a unit uses and that goes to root is not widened either: the computed mode intersected with the current one
 narrowed_file="${scratch}/narrowed"
@@ -1796,6 +1798,21 @@ chmod 0600 "${narrowed_file}"
 assert_equals "$(narrowed_mode "${narrowed_file}" 0640)" "0600" "交还时算出来的权限不能比现在的宽"
 chmod 0644 "${narrowed_file}"
 assert_equals "$(narrowed_mode "${narrowed_file}" 0640)" "0640" "交还时可以收紧到算出来的权限"
+# 有 unit 用着的配置交给 root 时照这样取交集：0600 的不会变成 0640 / A config a unit uses goes to root with that intersection:
+# a 0600 one does not become 0640
+named_config="${scratch}/named/pipeline.json"
+mkdir -p "${scratch}/named"
+: > "${named_config}"
+chmod 0600 "${named_config}"
+(
+  kept_unit_files() { :; }
+  original_config_access() { printf 'kixdns 0640\n'; }
+  panel_owned() { [[ -e $1 ]]; }
+  chown() { :; }
+  hand_back_directory() { :; }
+  hand_named_config_to_root user.service "${named_config}" > /dev/null
+)
+assert_equals "$(stat -c '%a' "${named_config}")" "600" "有 unit 用着的配置交给 root 时不能放宽权限"
 
 # 回归（M1，结构 2）：保留 KixDNS、删除面板数据时，配置里写着一个带空格的「Geo 路径」（只要以 geo/ 开头），以前拿 " ${keep[*]} " 做
 # 子串比较，空格隔开的别的路径也就算「留下」：面板在旧位置放的一份备份（停下时才放，躲过开头的检查）交给了 root，下一次安装当它是
@@ -1861,6 +1878,35 @@ assert_not_contains "${output}" "RUN-FAILED" "保留的 KixDNS 的配置在面�
   { printf '断言失败：面板配置目录里别的都应删掉\n' >&2; exit 1; }
 assert_contains "$(cat "${chown_log}")" "chown -h root:kixdns -- ${host}/panel-etc/pipeline.json" "留着的配置应交给 root、组照 unit"
 assert_equals "$(stat -c '%a' "${host}/panel-etc/pipeline.json")" "640" "留着的配置不能放宽权限"
+# 保留的 KixDNS 的配置 0600 时也不放宽成 0640；列 unit 的时候漏了它（configs_named_by_units 看不到），也照它的 unit 认出来留着
+# The kept KixDNS's config at 0600 is not widened to 0640 either; and with the unit listing missing it
+# (configs_named_by_units sees nothing), its unit still keeps it
+kept_host "${host}"
+mv -- "${host}/etc-kixdns/pipeline.json" "${host}/panel-etc/pipeline.json"
+printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_CONFIG=%s\n' "${host}/panel-etc/pipeline.json" > "${host}/panel-etc/panel.env"
+sed -i "s|${host}/etc-kixdns/pipeline.json|${host}/panel-etc/pipeline.json|" "${host}/units/kixdns.service"
+chmod 0600 "${host}/panel-etc/pipeline.json"
+output="$(
+  configs_named_by_units() { :; }
+  PANEL_OWNED=true ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes
+)"
+[[ -f ${host}/panel-etc/pipeline.json ]] || { printf '断言失败：保留的 KixDNS 的配置照它的 unit 认出来也要留着\n' >&2; exit 1; }
+assert_equals "$(stat -c '%a' "${host}/panel-etc/pipeline.json")" "600" "保留的 KixDNS 的配置不能放宽权限"
+# 不是保留的 KixDNS、别的 unit 用着面板配置目录里的配置（R4 下认不出归属时也一样）：留着，交给 root，别的删掉
+# A unit other than the kept KixDNS uses a config in the panel config directory (as when R4 cannot tell ownership): it
+# stays, goes to root, and the rest goes
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+printf '{}\n' > "${host}/panel-etc/user.json"
+chmod 0640 "${host}/panel-etc/user.json"
+printf '[Service]\nUser=kixdns\nGroup=kixdns\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${host}/panel-etc/user.json" \
+  > "${host}/units/user-kixdns.service"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "别的 unit 用着面板配置目录里的配置时卸载不应失败"
+[[ -f ${host}/panel-etc/user.json && ! -e ${host}/panel-etc/panel.env ]] ||
+  { printf '断言失败：别的 unit 用着的配置留着、面板配置目录里别的删掉\n' >&2; exit 1; }
+assert_contains "$(cat "${chown_log}")" "chown -h root:kixdns -- ${host}/panel-etc/user.json" "别的 unit 用着的配置应交给 root"
+assert_contains "${output}" "user-kixdns.service 还在用 ${host}/panel-etc/user.json，这份配置留着" "别的 unit 用着的配置留着时应说明"
 
 # 回归（结构 1）：「接手过」的标记卸载以后也留着：放记录的目录不删；quarantine 里有东西时说一声。
 # Regression (structural change 1): the "adopted" marker outlives an uninstall: the records directory is not removed;

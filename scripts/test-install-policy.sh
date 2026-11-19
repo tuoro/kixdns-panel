@@ -2761,6 +2761,20 @@ lock_output="$(
 )" || true
 assert_contains "${lock_output}" "LOCKED" "没人拿着锁时应拿到"
 assert_not_contains "${lock_output}" "STALE-FD-USED" "环境里写着、却不是这把锁的文件描述符不能当成锁"
+# 环境里写着的文件描述符开着别的文件：不能拿它的锁顶替（锁在别人手里时照样停下）/ The descriptor named in the environment
+# holds some other file: its lock does not stand in (with the lock held elsewhere the run still stops)
+exec 5>> "${lock_file}"
+flock -n 5
+exec 7>> "${WORK}/not-the-lock"
+lock_output="$(
+  ROOT_LOCK=${lock_file}
+  KIXDNS_PANEL_ROOT_LOCK_FD=7
+  fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+  take_root_lock
+  printf 'LOCKED\n'
+)" || true
+exec 7>&- 5>&-
+assert_not_contains "${lock_output}" "LOCKED" "环境里写着的文件描述符不是这把锁时不能当成拿到了锁"
 
 # R3：内核包的身份目录已经有时不用 install -d；里面的文件先删掉同名的再写。/ R3: an existing bundle directory gets no
 # install -d; its files are removed by name before being written.

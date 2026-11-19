@@ -1766,7 +1766,7 @@ hand_kept_kixdns_to_root() {
     if [[ -d ${path} || ${path} == "${state}/bin/kixdns" ]]; then
       chmod "${directory_mode}" -- "${path}"
     else
-      chmod "${mode}" -- "${path}"
+      chmod "$(narrowed_mode "${path}" "${mode}")" -- "${path}"
     fi
   done < <(find "${state}" ! -type l -print0)
   if [[ -n ${config} ]] && plain_single_file "${config}"; then
@@ -1779,7 +1779,7 @@ hand_kept_kixdns_to_root() {
     done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
     if panel_owned "${config}"; then
       chown -h "root:${group}" -- "${config}"
-      chmod "${mode}" -- "${config}"
+      chmod "$(narrowed_mode "${config}" "${mode}")" -- "${config}"
     fi
     if [[ ! -d ${directory} || -L ${directory} ]]; then
       # 配置所在的目录换成了符号链接：不跟着它改（R3）/ The config's directory became a symlink: not followed (R3)
