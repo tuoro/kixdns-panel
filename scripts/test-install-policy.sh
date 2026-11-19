@@ -1772,6 +1772,105 @@ render_panel_environment "${environment_source}" "${environment_output}" \
 assert_equals "$(grep -c '^KIXDNS_PANEL_BIND=0\.0\.0\.0:5738$' "${environment_output}")" "1" \
   "没设过监听地址时应补上默认值"
 
+# v4.3.4 及更早的示例写的是「默认信任本机代理」，从那时装起的 panel.env 都带着它。升级保留这个值：改掉的话，本机 Nginx 后面的
+# 每个人几次输错就全被锁住，比它挡住的本机伪造更糟。值和上面那行说明都还是旧示例原样时，把说明换成新示例的，在安装结果里
+# 提醒一次；说明换过以后不再提醒。
+# Up to v4.3.4 the example trusted the local proxy by default, and every panel.env made from it still carries that. An upgrade
+# keeps the value: changing it would lock everyone behind a local Nginx out after a few wrong logins, worse than the local
+# spoofing it stops. When the value and the comment above it are still the old example's, the comment becomes the new
+# example's and the install result says so once; with the comment replaced, it says nothing again.
+trusted_proxies_round() {
+  (
+    PANEL_ENV=$1
+    PANEL_CONFIG_DIRECTORY="$(dirname -- "$1")"
+    chown() { :; }
+    TRUSTED_PROXIES_NOTICE=false
+    update_panel_environment kixdns-commit 42 fork
+    printf 'NOTICE=%s\n' "${TRUSTED_PROXIES_NOTICE}"
+  )
+}
+trusted_env="${WORK}/trusted-proxies/panel.env"
+mkdir -p "$(dirname -- "${trusted_env}")"
+old_trusted_comment='# 仅这些代理 CIDR 可以提供 X-Forwarded-For；多个网段用逗号分隔。'
+printf '%s\n' 'KIXDNS_PANEL_SECURE_COOKIE=false' "${old_trusted_comment}" 'KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' \
+  'RUST_LOG=info' > "${trusted_env}"
+assert_equals "$(trusted_proxies_round "${trusted_env}")" "NOTICE=true" "旧示例的默认值和说明都还在时应提醒"
+new_trusted_comments="$(awk '/^KIXDNS_TRUSTED_PROXIES=/ { print comments; exit } /^#/ { comments = comments (comments == "" ? "" : "\n") $0; next } { comments = "" }' \
+  "${PACKAGE_ROOT}/deploy/panel.env.example")"
+assert_equals "$(grep -B2 '^KIXDNS_TRUSTED_PROXIES=' "${trusted_env}")" \
+  "${new_trusted_comments}"$'\n''KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' "旧说明应换成新示例的说明，值保持不变"
+assert_equals "$(grep -c '^KIXDNS_TRUSTED_PROXIES=' "${trusted_env}")" "1" "可信代理只能有一行"
+assert_equals "$(grep -cxF "${old_trusted_comment}" "${trusted_env}" || true)" "0" "旧说明不应留下"
+assert_equals "$(trusted_proxies_round "${trusted_env}")" "NOTICE=false" "说明换过以后不再提醒"
+# 用户改过值或说明的，是自己的设置，不动也不提醒。/ A value or comment the user changed is their own setting: left alone, no notice.
+for trusted_lines in "${old_trusted_comment}|KIXDNS_TRUSTED_PROXIES=10.0.0.0/8" \
+  "# 我自己的反向代理|KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128" "KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128"; do
+  tr '|' '\n' <<< "${trusted_lines}" > "${trusted_env}"
+  before="$(cat "${trusted_env}")"
+  assert_equals "$(trusted_proxies_round "${trusted_env}")" "NOTICE=false" "改过的可信代理设置不应提醒（${trusted_lines}）"
+  assert_equals "$(grep -B1 '^KIXDNS_TRUSTED_PROXIES=' "${trusted_env}")" "${before}" "改过的可信代理设置不应改动（${trusted_lines}）"
+done
+output="$(
+  INSTALL_KIND=upgrade
+  KIXDNS_WAS_ACTIVE=true
+  KIXDNS_BINARY_CHANGED=false
+  KIXDNS_UNIT_CHANGED=false
+  PORT_CONFLICT=none
+  RESOLVED_CHANGED=false
+  PANEL_BUILD_COMMIT=${commit_a}
+  KIXDNS_BUILD_COMMIT=${commit_b}
+  TRUSTED_PROXIES_NOTICE=true
+  PANEL_ENV=/etc/kixdns-panel/panel.env
+  print_summary http://192.168.1.20:5738
+)"
+assert_equals "$(tail -n 2 <<< "${output}" | head -n 1)" "只在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。" \
+  "可信代理的提醒也在安全提醒之前"
+assert_contains "${output}" "反向代理：panel.env 还信任本机代理（旧版的默认值 127.0.0.1/32,::1/128）；这台主机上没有反向代理时，清空它更安全：" \
+  "旧默认值留着时安装结果应提醒"
+assert_contains "${output}" \
+  "  sudo sed -i 's|^KIXDNS_TRUSTED_PROXIES=.*|KIXDNS_TRUSTED_PROXIES=|' /etc/kixdns-panel/panel.env && sudo systemctl restart kixdns-panel.service" \
+  "提醒应给出清空的命令"
+
+# 文档里照抄就要能用：panel.env 是 root:kixdns 0640，普通 sudo 用户读不了。回归：「代理就在本机」那段的 grep 没带 sudo，
+# 读不到就当没有这一项，又追加了一行重复的。文档 bash 代码块里每条碰 panel.env 的命令都要以 sudo 开头。
+# The docs must work when copied: panel.env is root:kixdns 0640, which an ordinary sudo user cannot read. Regression: the
+# grep in the "proxy on the same host" snippet lacked sudo, read nothing and appended a duplicate line. Every command in a
+# bash block of the docs that touches panel.env must start with sudo.
+unprivileged_panel_env_commands() {
+  python3 -I - "$@" <<'PY'
+import shlex
+import sys
+
+for path in sys.argv[1:]:
+    block = None
+    logical = ""
+    for line in open(path, encoding="utf-8"):
+        line = line.rstrip("\n")
+        if line.startswith("```"):
+            block = None if block is not None else line[3:].strip()
+            continue
+        if block != "bash":
+            continue
+        logical += line.rstrip("\\").strip() + " "
+        if line.endswith("\\"):
+            continue
+        # 引号外的 ||、&&、|、; 把一行分成几条命令 / ||, &&, | and ; outside quotes split a line into commands
+        lexer = shlex.shlex(logical, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        command = []
+        for token in list(lexer) + [";"]:
+            if token in ("||", "&&", "|", ";"):
+                if "/etc/kixdns-panel/panel.env" in command and command[0] != "sudo":
+                    print(f"{path}: {' '.join(command)}")
+                command = []
+            else:
+                command.append(token)
+        logical = ""
+PY
+}
+assert_equals "$(unprivileged_panel_env_commands "${PACKAGE_ROOT}/docs/deployment.md" "${PACKAGE_ROOT}/docs/deployment.en.md")" "" \
+  "文档里碰 panel.env 的命令都要带 sudo"
+
 is_private_ipv4 10.0.0.8
 is_private_ipv4 172.31.255.254
 is_private_ipv4 192.168.1.20

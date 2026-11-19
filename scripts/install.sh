@@ -85,6 +85,16 @@ RESOLV_CONF=/etc/resolv.conf
 RESOLVED_UPLINK_RESOLV_CONF=/run/systemd/resolve/resolv.conf
 RESOLVED_STATE=/var/lib/kixdns-panel/resolved-stub
 ONE_CLICK_URL="https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh"
+# v4.3.4 及更早的 panel.env 示例里，可信代理那一行和它上面的说明：默认信任本机代理。现在的示例默认谁都不信，说明是下面两行。
+# The trusted-proxies line of the panel.env example up to v4.3.4 and the comment above it: the local proxy was trusted by
+# default. The current example trusts none by default, with the two comment lines below.
+OLD_TRUSTED_PROXIES_COMMENT='# 仅这些代理 CIDR 可以提供 X-Forwarded-For；多个网段用逗号分隔。'
+OLD_TRUSTED_PROXIES_LINE='KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128'
+TRUSTED_PROXIES_COMMENT_1='# 仅这些代理 CIDR 可以提供 X-Forwarded-For；多个网段用逗号分隔。默认谁都不信。'
+TRUSTED_PROXIES_COMMENT_2='# 面板在本机 Nginx 后面时写 127.0.0.1/32,::1/128；代理在容器或别的主机上时写它的精确 CIDR。'
+# panel.env 还是旧示例的默认值和说明，这次换了说明：安装结果提醒一次 / panel.env still had the old example's default and
+# comment, and this run replaced the comment: the install result says so once
+TRUSTED_PROXIES_NOTICE=false
 
 usage() {
   cat <<'EOF'
@@ -1322,7 +1332,23 @@ render_panel_environment() {
     -v kixdns_source="${kixdns_source}" \
     -v config_path="${KIXDNS_CONFIG_PATH}" -v binary_path="${KIXDNS_BINARY_PATH}" \
     -v control_socket="${KIXDNS_CONTROL_SOCKET}" -v helper_socket="${KIXDNS_SERVICE_HELPER_SOCKET}" \
-    -v service_unit="${KIXDNS_SERVICE_UNIT}" '
+    -v service_unit="${KIXDNS_SERVICE_UNIT}" \
+    -v old_trusted_comment="${OLD_TRUSTED_PROXIES_COMMENT}" -v old_trusted_line="${OLD_TRUSTED_PROXIES_LINE}" \
+    -v trusted_comment_1="${TRUSTED_PROXIES_COMMENT_1}" -v trusted_comment_2="${TRUSTED_PROXIES_COMMENT_2}" '
+    # 旧示例的可信代理说明先压着，看下一行：还是旧示例的默认值时只换说明，值留着（为什么见 update_panel_environment）。
+    # The trusted-proxies comment of the old example is held to look at the next line: when that is still the old default,
+    # only the comment is replaced and the value stays (update_panel_environment says why).
+    held_trusted_comment {
+      held_trusted_comment = 0
+      if ($0 == old_trusted_line) {
+        print trusted_comment_1
+        print trusted_comment_2
+        print
+        next
+      }
+      print old_trusted_comment
+    }
+    $0 == old_trusted_comment { held_trusted_comment = 1; next }
     # 内核改从 fork 的发布页更新：按补丁集构建找 Artifact 的这几项和它们的说明不再读取，删掉免得误导手工编辑的人。
     # Kernels now update from fork releases: the settings that located patchset Artifacts, and their comments, are no
     # longer read, so drop them to keep hand edits from being misled.
@@ -1381,6 +1407,7 @@ render_panel_environment() {
     /^KIXDNS_UPDATE_RELEASE_WORKFLOW=/ { next }
     { print }
     END {
+      if (held_trusted_comment) print old_trusted_comment
       if (!bind_found) print "KIXDNS_PANEL_BIND=0.0.0.0:5738"
       if (!config_found) print "KIXDNS_CONFIG=" config_path
       if (!binary_found) print "KIXDNS_BINARY=" binary_path
@@ -1396,11 +1423,33 @@ render_panel_environment() {
   ' "${source}" > "${output}"
 }
 
+# panel.env 里可信代理还是旧示例的默认值（信任本机代理），上面那行说明也还是旧示例的原样。
+# The trusted proxies in panel.env are still the old example's default (the local proxy trusted), with its comment above
+# still as the old example had it.
+old_trusted_proxies_default() {
+  [[ -f $1 ]] || return 1
+  awk -v comment="${OLD_TRUSTED_PROXIES_COMMENT}" -v line="${OLD_TRUSTED_PROXIES_LINE}" '
+    previous == comment && $0 == line { found = 1 }
+    { previous = $0 }
+    END { exit !found }
+  ' "$1"
+}
+
 update_panel_environment() {
   local kixdns_commit=$1
   local kixdns_source_id=$2
   local kixdns_source=$3
   local temporary
+  # 旧示例默认信任本机代理，从那时装起的主机都还写着。升级不改这个值：本机 Nginx 后面的人改成谁都不信以后，登录限流把所有人
+  # 算在代理一个地址上，几次输错就全被锁住，比它挡住的本机伪造更糟。只把说明换成新示例的，在安装结果里提醒一次；说明换过，
+  # 下次就不再提醒。
+  # The old example trusted the local proxy by default, and hosts installed back then still say so. An upgrade keeps the
+  # value: trusting none behind a local Nginx makes the login limit count everyone against the proxy's one address, locking
+  # all out after a few wrong passwords, which is worse than the local spoofing it stops. Only the comment becomes the new
+  # example's and the install result says so once; with the comment replaced, the next run says nothing.
+  if old_trusted_proxies_default "${PANEL_ENV}"; then
+    TRUSTED_PROXIES_NOTICE=true
+  fi
   temporary="$(mktemp "${PANEL_CONFIG_DIRECTORY}/.panel.env.XXXXXX")"
   render_panel_environment "${PANEL_ENV}" "${temporary}" "${kixdns_commit}" \
     "${PANEL_BUILD_COMMIT}" "${PANEL_RELEASE}" "${kixdns_source_id}" "${kixdns_source}"
@@ -1644,6 +1693,11 @@ print_summary() {
       ;;
   esac
   print_port53_notice
+  if [[ ${TRUSTED_PROXIES_NOTICE} == true ]]; then
+    printf '反向代理：panel.env 还信任本机代理（旧版的默认值 127.0.0.1/32,::1/128）；这台主机上没有反向代理时，清空它更安全：\n'
+    printf "  sudo sed -i 's|^KIXDNS_TRUSTED_PROXIES=.*|KIXDNS_TRUSTED_PROXIES=|' %s && sudo systemctl restart kixdns-panel.service\n" \
+      "${PANEL_ENV}"
+  fi
   # 下一步放在端口 53 的提醒后面：那条要在启动 KixDNS 之前先做 / The next step comes after the port-53 notice, which has to happen before KixDNS starts
   [[ ${INSTALL_KIND} == fresh ]] && printf '下一步：打开面板地址，创建管理员，然后在概览页点「启动 KixDNS」\n'
   printf '只在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。\n'

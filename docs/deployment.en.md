@@ -172,12 +172,19 @@ By default the panel trusts `X-Forwarded-For` from no proxy: without a reverse p
 
 ```bash
 sudo sed -i 's|^KIXDNS_TRUSTED_PROXIES=.*|KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128|' /etc/kixdns-panel/panel.env
-grep -q '^KIXDNS_TRUSTED_PROXIES=' /etc/kixdns-panel/panel.env || \
+sudo grep -q '^KIXDNS_TRUSTED_PROXIES=' /etc/kixdns-panel/panel.env || \
   echo 'KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' | sudo tee -a /etc/kixdns-panel/panel.env
 sudo systemctl restart kixdns-panel.service
 ```
 
-When the proxy is in a container or on another host, write its exact CIDR. Panels up to v4.3.4 trusted loopback by default; after upgrading, a deployment behind a reverse proxy without this setting gets one reminder in the runtime log.
+When the proxy is in a container or on another host, write its exact CIDR. Behind a reverse proxy without the right setting, the panel gives one reminder in the runtime log.
+
+Up to v4.3.4 the example trusted the local proxy by default, and on hosts installed back then `panel.env` still says `127.0.0.1/32,::1/128`. An upgrade keeps this value: trusting no proxy would lock out everyone behind a local Nginx after a few wrong passwords. The installer only replaces the comment above it with the new one and says so once in the install result. When there is no reverse proxy on the host, clearing it is safer:
+
+```bash
+sudo sed -i 's|^KIXDNS_TRUSTED_PROXIES=.*|KIXDNS_TRUSTED_PROXIES=|' /etc/kixdns-panel/panel.env
+sudo systemctl restart kixdns-panel.service
+```
 
 ## Permission model
 

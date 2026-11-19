@@ -172,12 +172,19 @@ sudo systemctl restart kixdns-panel.service
 
 ```bash
 sudo sed -i 's|^KIXDNS_TRUSTED_PROXIES=.*|KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128|' /etc/kixdns-panel/panel.env
-grep -q '^KIXDNS_TRUSTED_PROXIES=' /etc/kixdns-panel/panel.env || \
+sudo grep -q '^KIXDNS_TRUSTED_PROXIES=' /etc/kixdns-panel/panel.env || \
   echo 'KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' | sudo tee -a /etc/kixdns-panel/panel.env
 sudo systemctl restart kixdns-panel.service
 ```
 
-代理在容器或其他主机上时，写它的精确 CIDR。v4.3.4 及更早的面板默认信任回环地址；升级以后没写这一项、又在反向代理后面的，面板会在运行日志里提醒一次。
+代理在容器或其他主机上时，写它的精确 CIDR。没写对、又在反向代理后面的，面板会在运行日志里提醒一次。
+
+v4.3.4 及更早的示例默认信任本机代理，从那时装起的主机，`panel.env` 里还写着 `127.0.0.1/32,::1/128`。升级不改这个值：改成谁都不信以后，本机 Nginx 后面的人几次输错就全被锁住。安装器只把它上面那行说明换成新的，并在安装结果里提醒一次。这台主机上没有反向代理时，把它清空更安全：
+
+```bash
+sudo sed -i 's|^KIXDNS_TRUSTED_PROXIES=.*|KIXDNS_TRUSTED_PROXIES=|' /etc/kixdns-panel/panel.env
+sudo systemctl restart kixdns-panel.service
+```
 
 ## 权限模型
 
