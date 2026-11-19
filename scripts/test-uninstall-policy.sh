@@ -707,7 +707,13 @@ uninstall_scratch_host() {
     groupdel() { [[ -z ${ACCOUNT_LOG:-} ]] || printf 'groupdel %s\n' "$*" >> "${ACCOUNT_LOG}"; }
     terminate_account_processes() { :; }
     account_has_processes() { [[ ${ACCOUNT_BUSY:-} == true ]]; }
-    chown() { :; }
+    # CHOWN_LOG 非空时记下每个 chown；PANEL_OWNED=true 时临时主机上的文件都算面板账号的（它们其实归跑测试的用户）。
+    # With CHOWN_LOG set every chown is recorded; with PANEL_OWNED=true every file of the scratch host counts as the panel
+    # account's (they really belong to the user running the test).
+    chown() { [[ -z ${CHOWN_LOG:-} ]] || printf 'chown %s\n' "$*" >> "${CHOWN_LOG}"; }
+    if [[ ${PANEL_OWNED:-} == true ]]; then
+      panel_owned() { [[ -e $1 || -L $1 ]]; }
+    fi
     install() {
       local arguments=()
       while [[ $# -gt 0 ]]; do
@@ -911,6 +917,82 @@ assert_not_contains "${output}" "RUN-FAILED" "再次卸载不应失败"
 assert_equals "$(cat "${host}/panel-etc/kixdns/pipeline.json" 2>/dev/null || printf missing)" '{"edited":true}' \
   "再次卸载也不能删掉保留的 KixDNS 用的副本"
 
+# 保留 KixDNS、删除面板数据：面板账号随后删掉，它名下还留着的东西就归了一个空出来的 UID，以后建的账号拿到这个 UID 就能改正在
+# 运行的 DNS 的配置。保留的 KixDNS 要用的（程序、配置、配置里写着的面板目录里的文件，比如面板导入的 GeoSite）改归 root，组和权限
+# 按 systemd 加载的 unit 运行用的账号定（和交还原配置一样）；面板的其他数据（查询日志、内核版本、没用到的 Geo 文件、写到一半的
+# 临时文件）删掉。回归：配置目录和配置还归删掉的面板账号；面板导入的 GeoSite 随 geo 目录删掉，保留的 KixDNS 下次重启就少了它；
+# 查询日志等留着、也归那个 UID；程序交给了 kixdns 账号自己，DNS 进程能改写自己的程序。
+# Keeping KixDNS and removing the panel data: the panel account goes right after, so whatever it still owns falls to a freed
+# UID, and a later account given that UID could rewrite the running DNS's config. What the kept KixDNS needs (its program,
+# its config, the files in the panel's directories its config names, such as the GeoSite the panel imported) is handed to
+# root, with the group and mode set by the account the loaded unit runs as (as for handing back an original config); the
+# panel's other data (query log, kernel versions, unused Geo files, half-written temporary files) goes. Regression: the
+# config directory and config stayed with the removed panel account; the imported GeoSite went with the geo directory, so the
+# kept KixDNS lost it at its next restart; the query log and others stayed, owned by that UID; the program was handed to the
+# kixdns account itself, so the DNS process could rewrite its own program.
+kept_host() {
+  local root=$1
+  rm -rf -- "${root}"
+  mkdir -p "${root}/etc-kixdns" "${root}/units" "${root}/state/bin" "${root}/state/geo" "${root}/state/querylog" \
+    "${root}/state/bundle" "${root}/state/versions/2026.11.07" "${root}/panel-etc"
+  printf 'geosite\n' > "${root}/state/geo/site-abc.dat"
+  printf 'old\n' > "${root}/state/geo/site-old.dat"
+  : > "${root}/state/querylog/2026-11-19T00.jsonl.zst"
+  : > "${root}/state/bundle/KIXDNS_SOURCE.json"
+  : > "${root}/state/versions/2026.11.07/kixdns"
+  : > "${root}/state/panel.db"
+  printf '{"settings":{"geosite_data_paths":["%s"]}}\n' "${root}/state/geo/site-abc.dat" > "${root}/etc-kixdns/pipeline.json"
+  : > "${root}/etc-kixdns/.kixdns-panel-Ab12Cd"
+  printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_CONFIG=%s\n' "${root}/etc-kixdns/pipeline.json" > "${root}/panel-etc/panel.env"
+  printf '[Service]\nUser=kixdns\nGroup=kixdns\nExecStart=%s run --config %s --admin-socket /run/kixdns/admin.sock\n' \
+    "${root}/state/bin/kixdns" "${root}/etc-kixdns/pipeline.json" > "${root}/units/kixdns.service"
+  printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
+  chmod 0755 "${root}/state/bin/kixdns"
+}
+chown_log="${scratch}/chown.log"
+kept_owner_of() { grep -Fx "chown $1 -- $2" "${chown_log}" > /dev/null && printf '%s %s\n' "$1" "$(stat -c '%a' "$2")"; }
+kept_host "${host}"
+: > "${chown_log}"
+: > "${systemctl_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} SYSTEMCTL_LOG=${systemctl_log} ACCOUNTS_PRESENT=true \
+  uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "保留 KixDNS、删除面板数据不应失败"
+for kept_path in etc-kixdns state state/bin state/geo; do
+  assert_equals "$(kept_owner_of root:kixdns "${host}/${kept_path}")" "root:kixdns 750" "${kept_path} 应归 root、kixdns 组能进"
+done
+assert_equals "$(kept_owner_of root:kixdns "${host}/state/bin/kixdns")" "root:kixdns 750" "保留的程序应归 root、kixdns 组能运行"
+for kept_path in etc-kixdns/pipeline.json state/geo/site-abc.dat; do
+  assert_equals "$(kept_owner_of root:kixdns "${host}/${kept_path}")" "root:kixdns 640" "${kept_path} 应归 root、kixdns 组只读"
+done
+assert_not_contains "$(cat "${chown_log}")" "kixdns:kixdns" "保留的东西不能交给 kixdns 账号自己"
+for gone_path in state/geo/site-old.dat state/querylog state/bundle state/versions state/panel.db etc-kixdns/.kixdns-panel-Ab12Cd; do
+  [[ ! -e ${host}/${gone_path} ]] || { printf '断言失败：面板的数据 %s 应删掉\n' "${gone_path}" >&2; exit 1; }
+done
+assert_equals "$(cat "${host}/state/geo/site-abc.dat" 2>/dev/null || printf missing)" "geosite" "保留的 KixDNS 配置里写着的 GeoSite 必须留着"
+assert_not_contains "$(cat "${systemctl_log}")" "kixdns.service" "保留 KixDNS 时不能停它"
+assert_contains "${output}" "保留的 KixDNS 用到的程序、配置和文件改归 root，面板的其他数据已删除。" "交还时应说明"
+# 上次卸载是旧版卸载器做的，已经留下了归空 UID 的配置：没有 panel.env 时按保留的 unit 认出它的配置，照样交还。
+# An older uninstaller already left the config to a freed UID: without panel.env the config is found from the kept unit and
+# handed back all the same.
+kept_host "${host}"
+rm -f -- "${host}/panel-etc/panel.env"
+rm -rf -- "${host}/state/geo/site-old.dat" "${host}/state/querylog" "${host}/state/bundle" "${host}/state/versions"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "旧版卸载器之后再卸载不应失败"
+assert_equals "$(kept_owner_of root:kixdns "${host}/etc-kixdns/pipeline.json")" "root:kixdns 640" "没有 panel.env 时也应按保留的 unit 交还它的配置"
+# 迁移来的主机保留增强版：它用的是 /etc/kixdns-panel/kixdns 里的副本，那个目录和它上面的面板配置目录也交给 unit 运行用的组。
+# A migrated host keeping the enhanced KixDNS runs the copy in /etc/kixdns-panel/kixdns: that directory and the panel config
+# directory above it go to the unit's group too.
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+sed -i 's|^\[Service\]$|[Service]\nUser=kixdns\nGroup=kixdns|' "${host}/units/kixdns.service"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "保留增强版删除数据不应失败"
+assert_equals "$(kept_owner_of root:kixdns "${host}/panel-etc/kixdns")" "root:kixdns 750" "副本的目录应归 root、kixdns 组能进"
+assert_equals "$(kept_owner_of root:kixdns "${host}/panel-etc/kixdns/pipeline.json")" "root:kixdns 640" "副本应归 root、kixdns 组只读"
+assert_equals "$(kept_owner_of root:kixdns "${host}/panel-etc")" "root:kixdns 750" "副本上面的面板配置目录 kixdns 组也要能进"
+
 # 旧版安装器原地迁移的主机：没有副本，卸载照旧不动它的配置，但要说明那是面板改过的内容。
 # A host an older installer migrated in place: there is no copy, uninstall leaves its config alone as before, but says
 # it holds what the panel saved.
@@ -933,6 +1015,17 @@ inplace_host() {
   chmod 0750 "${root}/etc"
   chmod 0640 "${root}/etc/kixdns.json"
 }
+# 旧版原地迁移、配置在公共目录里的主机保留增强版：公共目录只交还 root:root 0755，不能收紧成 0750；unit 以 root 运行时配置只留给 root。
+# A host an older version migrated in place, its config in a shared directory, keeping the enhanced KixDNS: the shared
+# directory is only handed back as root:root 0755, never tightened to 0750; with the unit running as root the config is left
+# to root alone.
+inplace_host "${host}"
+: > "${host}/etc/passwd-like"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "公共目录里的配置保留时不应失败"
+assert_equals "$(kept_owner_of root:root "${host}/etc")" "root:root 755" "公共目录只交还 root、谁都能进"
+assert_equals "$(kept_owner_of root:root "${host}/etc/kixdns.json")" "root:root 600" "unit 以 root 运行时配置只留给 root"
 inplace_host "${host}"
 output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
 assert_not_contains "${output}" "RUN-FAILED" "原地迁移的主机卸载不应失败"

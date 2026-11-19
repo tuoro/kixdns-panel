@@ -331,7 +331,8 @@ sudo kixdns-panel-uninstall
 - 移除面板自己的 KixDNS 而保留面板配置时，`panel.env` 同样记下 KixDNS 已不归面板管：以后再运行卸载器，不会停、不会删同名的 unit（比如之后自己装的 KixDNS，unit 放在哪里都一样，按 systemd 实际加载的认）。之后删除面板配置时，`/etc/kixdns` 里只有面板写的文件才整个删掉，还有别的文件就只删面板的配置、目录交还 root；kixdns 账号还有别的进程或服务在用时，它和 kixdns 组都保留
 - 选择移除 KixDNS 时，安装器关闭过的 systemd-resolved 本机监听和 `/etc/resolv.conf` 一并恢复
 - 早期「仅安装面板」模式的主机，卸载器始终保留原来的 KixDNS
-- 上次卸载保留了 KixDNS 并删除了配置，再次运行卸载器时 KixDNS 仍然保留，即使指定 `--remove-kixdns`
+- 保留 KixDNS、删除面板配置时，面板账号随之删掉。保留的 KixDNS 要用的程序、配置，和配置里写着的面板目录里的文件（比如面板导入的 GeoSite），改归 root，组按它的 unit 运行用的账号（通常是 kixdns，只读、不能改）；查询日志、下载的内核版本、没用到的 Geo 文件等面板数据删掉。不会留下归一个已删账号的文件
+- 上次卸载保留了 KixDNS 并删除了配置，再次运行卸载器时 KixDNS 仍然保留，即使指定 `--remove-kixdns`；旧版卸载器留下的、还归已删面板账号的配置，这时也会交还 root
 - 保留的程序已经不在、只剩 unit 时（v3.1.1 重复卸载留下的状态），面板创建的 unit 随面板移除，其他 unit 原样保留并给出提示
 
 无人值守：

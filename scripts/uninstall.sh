@@ -736,13 +736,7 @@ remove_panel_state() {
   # The kept KixDNS lives in the state directory: while any unit points at it, remove only the panel's data, never the whole directory.
   if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep ]] || managed_binary_in_use; then
     kept_kixdns=true
-    rm -f -- "${state}/panel.db" "${state}/panel.db-shm" "${state}/panel.db-wal"
-    rm -rf -- "${state}/versions" "${state}/geo" "${state}/external-backup"
-    if [[ -f ${state}/bin/kixdns ]]; then
-      chown kixdns:kixdns -- "${state}" "${state}/bin" "${state}/bin/kixdns"
-      chmod 0750 -- "${state}" "${state}/bin"
-      chmod 0755 -- "${state}/bin/kixdns"
-    fi
+    hand_kept_kixdns_to_root
   else
     rm -rf -- "${state}"
   fi
@@ -775,6 +769,126 @@ remove_panel_state() {
   else
     rm -rf -- "${PANEL_CONFIG_DIRECTORY}"
   fi
+}
+
+# 这个路径还归面板账号，或者已经归了一个没有账号的 UID（旧版卸载器删掉面板账号以后留下的）。
+# The path still belongs to the panel account, or already to a UID with no account (left once an older uninstaller removed
+# the panel account).
+panel_owned() {
+  local owner
+  owner="$(stat -c '%U' -- "$1" 2>/dev/null)" || return 1
+  [[ ${owner} == kixdns-panel || ${owner} == UNKNOWN ]]
+}
+
+# 保留的 KixDNS 的 unit 里 systemd 加载的那几个文件：主文件和 drop-in，一行一个。
+# The files systemd loads for the kept KixDNS's unit: the main file and the drop-ins, one per line.
+kept_unit_files() {
+  local fragment
+  local dropins
+  local file
+  fragment="$(systemctl show --property=FragmentPath --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
+  printf '%s\n' "${fragment:-${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}}"
+  dropins="$(systemctl show --property=DropInPaths --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
+  if [[ -n ${dropins} ]]; then
+    tr ' ' '\n' <<< "${dropins}"
+  else
+    for file in "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}.d"/*.conf; do
+      [[ ! -f ${file} ]] || printf '%s\n' "${file}"
+    done
+  fi
+}
+
+# 保留的 KixDNS 读的配置：它的 unit 的 --config，看不出来时用 panel.env 记下的。
+# The config the kept KixDNS reads: its unit's --config, or what panel.env records when that cannot be told.
+kept_kixdns_config() {
+  local exec_start
+  exec_start="$(systemctl show --property=ExecStart --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
+  if [[ ${exec_start} =~ --config[=[:space:]]+([^[:space:];]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  elif [[ -n ${MANAGED_CONFIG} ]]; then
+    printf '%s\n' "${MANAGED_CONFIG}"
+  fi
+}
+
+# 保留 KixDNS、删除面板数据时，面板账号随后就删：它名下还留着的东西会归一个空出来的 UID，以后建的账号拿到这个 UID 就能改正在
+# 运行的 DNS 的配置。所以在状态目录里只留保留的 KixDNS 要用的：它的程序，它的配置里写着的、状态目录里的文件（比如面板导入的
+# GeoSite），和安装器关掉 resolved 监听时的记录（恢复命令要用，本来就归 root）；别的都是面板的数据，删掉。留下的、和它的配置连同
+# 所在的目录一起交给 root，组和权限按 systemd 加载的 unit 运行用的账号定（original_config_access）：程序和目录可进可运行，文件只读，
+# 不再交给 kixdns 账号自己，DNS 进程改写不了自己的程序和配置。放着别的东西的公共目录（旧版原地迁移留下的）只交还 root:root 0755。
+# Keeping KixDNS and removing the panel data, the panel account goes right after: whatever it still owns would fall to a
+# freed UID, and a later account given that UID could rewrite the running DNS's config. So the state directory keeps only
+# what the kept KixDNS needs: its program, the files in the state directory its config names (such as the GeoSite the panel
+# imported), and the record the installer left when it turned resolved's stub off (the restore commands need it, and it is
+# root's anyway); everything else is panel data and goes. What is left, and its config with the config's directory, goes to
+# root, with group and mode set by the account the loaded unit runs as (original_config_access): the program and directories
+# can be entered and run, files only read, and nothing is handed to the kixdns account itself, so the DNS process cannot
+# rewrite its own program or config. A shared directory holding other things (left by an older in-place migration) is only
+# handed back as root:root 0755.
+hand_kept_kixdns_to_root() {
+  local state=${PANEL_STATE_DIRECTORY}
+  local config
+  local directory
+  local group
+  local mode
+  local directory_mode
+  local path
+  local name
+  local unit_files=()
+  local keep=("${state}/bin/kixdns")
+  mapfile -t unit_files < <(kept_unit_files)
+  read -r group mode < <(original_config_access "${unit_files[@]}")
+  case ${mode} in
+    0600) directory_mode=0700 ;;
+    0640) directory_mode=0750 ;;
+    *) directory_mode=0755 ;;
+  esac
+  config="$(kept_kixdns_config)"
+  if [[ -n ${config} && -f ${config} ]]; then
+    while IFS= read -r path; do
+      [[ ${path} != "${state}"/* || ! -f ${path} || -L ${path} ]] || keep+=("${path}")
+    done < <(grep -oE '"/[^"\\]*"' -- "${config}" 2>/dev/null | sed -e 's/^"//' -e 's/"$//' | sort -u)
+  fi
+  while IFS= read -r -d '' path; do
+    [[ ${path} != "${RESOLVED_STATE}"/* ]] || continue
+    [[ " ${keep[*]} " == *" ${path} "* ]] || rm -f -- "${path}"
+  done < <(find "${state}" \( -type f -o -type l \) -print0)
+  find "${state}" -mindepth 1 -depth -type d -empty ! -path "${state}/bin" ! -path "${RESOLVED_STATE}" -delete
+  while IFS= read -r -d '' path; do
+    [[ ${path} != "${RESOLVED_STATE}" && ${path} != "${RESOLVED_STATE}"/* ]] || continue
+    chown "root:${group}" -- "${path}"
+    if [[ -d ${path} || ${path} == "${state}/bin/kixdns" ]]; then
+      chmod "${directory_mode}" -- "${path}"
+    else
+      chmod "${mode}" -- "${path}"
+    fi
+  done < <(find "${state}" ! -type l -print0)
+  if [[ -n ${config} && -f ${config} && ! -L ${config} ]]; then
+    directory="$(dirname -- "${config}")"
+    # 面板写到一半留下的临时文件是面板的数据 / Temporary files a panel write cut short are panel data
+    while IFS= read -r -d '' name; do
+      if [[ ${name} =~ ^\.kixdns-panel-[A-Za-z0-9]{6}$ ]] && panel_owned "${directory}/${name}"; then
+        rm -f -- "${directory:?}/${name}"
+      fi
+    done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
+    if panel_owned "${config}"; then
+      chown "root:${group}" -- "${config}"
+      chmod "${mode}" -- "${config}"
+    fi
+    if [[ ${directory} == "${PANEL_CONFIG_DIRECTORY}"/* ]] ||
+      { panel_owned "${directory}" && [[ -z $(find "${directory}" -mindepth 1 -maxdepth 1 ! -name "${config##*/}" -print -quit) ]]; }; then
+      # 只放着这份配置的目录（包括迁移副本的目录）：交给 unit 运行用的组 / A directory holding this config alone (the
+      # migration copy's included): handed to the group the unit runs as
+      chown "root:${group}" -- "${directory}"
+      chmod "${directory_mode}" -- "${directory}"
+      if [[ ${directory} == "${PANEL_CONFIG_DIRECTORY}"/* ]]; then
+        chown "root:${group}" -- "${PANEL_CONFIG_DIRECTORY}"
+        chmod "${directory_mode}" -- "${PANEL_CONFIG_DIRECTORY}"
+      fi
+    elif panel_owned "${directory}"; then
+      hand_back_directory "${directory}"
+    fi
+  fi
+  printf '保留的 KixDNS 用到的程序、配置和文件改归 root，面板的其他数据已删除。\n'
 }
 
 state_value() {
