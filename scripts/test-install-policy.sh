@@ -302,10 +302,20 @@ path_verdict() {
 for bad_path in /etc/kixdns/../x.json /etc/kixdns-panel/x/../pipeline.json /etc/kixdns/./pipeline.json \
   /etc//kixdns/pipeline.json /etc/kixdns/ /etc/kixdns/.. /etc/kixdns/. / //pipeline.json; do
   output="$(path_verdict "${bad_path}")"
-  assert_contains "${output}" "安装失败：路径必须是绝对路径，不含空白和控制字符，不含 \ \" ' % \$ 这几个符号（systemd 会解开它们），也不含 .、.. 或空的一段（//）" "${bad_path} 应被拒绝"
+  assert_contains "${output}" "安装失败：路径必须是绝对路径，是合法的 UTF-8，不含空白和控制字符，不含 \ \" ' % \$ 这几个符号（systemd 会解开它们），也不含 .、.. 或空的一段（//）" "${bad_path} 应被拒绝"
   assert_not_contains "${output}" "accepted" "${bad_path} 不能被接受"
 done
-for good_path in /etc/kixdns/pipeline.json /srv/..kixdns/pipeline.json /srv/kixdns./x.json /run/kixdns/admin.sock; do
+# NIT（第六轮）：写进 unit 和 panel.env 的路径要是合法的 UTF-8 / NIT (sixth review): a path written into a unit or panel.env
+# must be valid UTF-8
+for bad_path in "/etc/kixdns/a"$'\xff'"b.json" "/etc/kixdns/"$'\xc3'".json" "/etc/kixdns/"$'\xed\xa0\x80'".json"; do
+  output="$(path_verdict "${bad_path}")"
+  assert_contains "${output}" "是合法的 UTF-8" "不是 UTF-8 的路径应被拒绝"
+  assert_not_contains "${output}" "accepted" "不是 UTF-8 的路径不能被接受"
+done
+panel_env_value_valid KIXDNS_CONFIG "/etc/kixdns/a"$'\xff'".json" &&
+  { printf '断言失败：不是 UTF-8 的路径不能写进 panel.env\n' >&2; exit 1; }
+for good_path in /etc/kixdns/pipeline.json /srv/..kixdns/pipeline.json /srv/kixdns./x.json /run/kixdns/admin.sock \
+  /srv/配置/pipeline.json; do
   assert_equals "$(path_verdict "${good_path}")" "accepted" "${good_path} 应被接受"
 done
 for flag in --kixdns-config --kixdns-binary --control-socket; do
@@ -3078,6 +3088,57 @@ done
 # 新建 panel.env 也照示例渲染，不再用 sed 填值 / A new panel.env is rendered from the example too, sed no longer fills values
 assert_not_contains "$(declare -f install_configuration)" "sed -e" "新建 panel.env 不能再用 sed 填值"
 
+# NIT（第六轮）：安装包里没有内核摘要时，读它的地方不往终端报错（重定向写在前面，2>/dev/null 管不到它）
+# NIT (sixth review): a package without the kernel digest makes no noise where it is read (the redirection came first, out
+# of reach of 2>/dev/null)
+labels_noise="$(
+  PACKAGE_ROOT="${WORK}/no-such-package"
+  MANAGED_KIXDNS_BINARY="${WORK}/no-such-kernel"
+  PANEL_ENV_TRUSTED=false
+  installed_kixdns_labels 2>&1
+)"
+assert_equals "${labels_noise}" "" "安装包里没有内核摘要时不该有报错"
+
+# NIT（第六轮）：面板能左右的值（不能信的 panel.env、旧位置记录里的文件名、KixDNS 配置里写的路径、面板能写的目录里的文件名）
+# 写进提示时都经同一个 shown：控制字符写成 \xHH、反斜杠写成 \\，改不了终端上的提示。
+# NIT (sixth review): every value the panel can influence (an untrusted panel.env, file names in an old-place record,
+# paths written in the KixDNS config, file names in a directory the panel can write) goes into a message through the
+# one function shown: control characters as \xHH and backslashes as \\, so it cannot rewrite the message in a terminal.
+# shellcheck disable=SC1003 # 要的就是字面的反斜杠 / Literal backslashes are the point
+assert_equals "$(shown $'a\x1b[2Jb\nc\\d')" 'a\x1b[2Jb\x0ac\\d' "控制字符和反斜杠应写成转义"
+assert_equals "$(shown '/etc/kixdns/配置.json')" '/etc/kixdns/配置.json' "正常的值照原样"
+shown_output="$(
+  base="${WORK}/shown"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/units"
+  printf 'KIXDNS_CONFIG=/x\x1b[31m\n' > "${base}/panel.env"
+  PANEL_ENV="${base}/panel.env"
+  SYSTEMD_UNIT_DIRECTORY="${base}/units"
+  panel_env_trusted() { return 1; }
+  managed_unit_config() { printf '/etc/kixdns/pipeline.json\n'; }
+  fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+  check_panel_env_trust
+)" || true
+assert_contains "${shown_output}" 'KixDNS 配置 /x\x1b[31m 和' "不能信的 panel.env 里的值写进提示时应转义"
+assert_not_contains "${shown_output}" $'\x1b' "提示里不能有原样的控制字符"
+shown_output="$(
+  umask 022
+  base="${WORK}/shown-record"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/record"
+  printf 'KIXDNS_SERVICE_UNIT=x.service\n' > "${base}/record/install.env"
+  ln -s /etc/hostname "${base}/record/"$'evil\x1b]0;name'
+  ROOT_UID="$(id -u)"
+  record_problem "${base}/record" external-backup
+)"
+assert_contains "${shown_output}" '里面的 evil\x1b]0;name 是符号链接' "记录里的文件名写进提示时应转义"
+for shown_function in require_dedicated_config_directory require_original_files_readable note_panel_unreadable_files; do
+  # shellcheck disable=SC2016 # 找的就是没展开的写法 / The unexpanded text is what is looked for
+  assert_contains "$(declare -f "${shown_function}")" '$(shown ' "${shown_function} 写进提示的文件名应经 shown"
+done
+[[ $(bash -c "source '${PACKAGE_ROOT}/scripts/uninstall.sh' && declare -f shown") == "$(declare -f shown)" ]] ||
+  { printf '断言失败：uninstall.sh 的 shown 应和 install.sh 的一字不差\n' >&2; exit 1; }
+
 # 回归（第六轮 SHOULD 3）：老实的 v4.3.4 主机上 panel.env 也会因为目录归了面板而不能信；照示例重写把管理员自己加固的设置
 # 都还原了（监听 127.0.0.1 变成 0.0.0.0、Secure Cookie 关掉、可信代理清空，两个系统 6 种都这样）。现在只管面板这个进程自己的
 # 几项照原来的保留，每一项照格式严格验，验不过的才换成示例的值并说明；路径这些照旧只照 root 的事实和 unit。
@@ -4248,6 +4309,12 @@ assert_equals "${output}" "complete 面板已更新到 v3.1.2" "安装器成功�
 output="$(online_update_status "printf 'panel.env 面板能改，已照安装包的示例重写\n' > '${online_update_root}/status/notice'; exit 0" "${latest_release}")"
 assert_equals "${output}" "complete 面板已更新到 v3.1.2。panel.env 面板能改，已照安装包的示例重写" "安装器留下的说明应带进结果"
 [[ ! -e ${online_update_root}/status/notice ]] || { printf '断言失败：带进结果以后说明应删掉\n' >&2; exit 1; }
+# NIT（第六轮）：panel.env 里面板能改的版本不进提示 / NIT (sixth review): the version in panel.env, which the panel can
+# change, stays out of the message
+printf 'KIXDNS_PANEL_INSTALLED_RELEASE=v3\033[2J\n' > "${online_update_root}/panel.env"
+output="$(online_update_status "exit 0" "${latest_release}")"
+printf 'KIXDNS_PANEL_INSTALLED_RELEASE=v3.1.1\n' > "${online_update_root}/panel.env"
+assert_equals "${output}" "failed 在线更新失败：panel.env 里记录的面板版本无效" "panel.env 里的值不能原样进在线更新的结果"
 printf 'stale\n' > "${online_update_root}/status/notice"
 output="$(online_update_status "exit 0" "${latest_release}")"
 assert_equals "${output}" "complete 面板已更新到 v3.1.2" "上一次留下的说明不能带进这一次的结果"

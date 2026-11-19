@@ -278,11 +278,11 @@ check_panel_env_trust() {
   if [[ -n ${recorded} && ${recorded} == "${unit_config}" ]]; then
     PANEL_ENV_VERIFIED=true
     printf '%s 面板能改，它记的不能都信：KixDNS 配置照 %s 认（%s），账号和归属这些项这次不照它做。\n' \
-      "${PANEL_ENV}" "${unit_file}" "${recorded}"
+      "${PANEL_ENV}" "$(shown "${unit_file}")" "$(shown "${recorded}")"
     return 0
   fi
   printf '%s 面板能改，它记的不能信：它写的 KixDNS 配置和 %s 对不上，这次当作 KixDNS 不归面板管，KixDNS、它的配置和 kixdns 账号都保留。\n' \
-    "${PANEL_ENV}" "${unit_file}"
+    "${PANEL_ENV}" "$(shown "${unit_file}")"
 }
 
 unit_runs_managed_binary() {
@@ -451,6 +451,35 @@ root_only_path() {
   done
 }
 
+# NIT：面板能左右的值（不能信的 panel.env、旧位置记录里的文件名、KixDNS 配置里写的路径、面板能写的目录里的文件名）写进提示
+# 之前都经这里：控制字符写成 \xHH，反斜杠写成 \\，终端上显示的就是它本来的样子，改不了提示。参数：值。
+# NIT: every value the panel can influence (an untrusted panel.env, file names in an old-place record, paths written in
+# the KixDNS config, file names in a directory the panel can write) passes through here before going into a message:
+# control characters as \xHH and backslashes as \\, so a terminal shows it as it is and it cannot rewrite the message.
+# Argument: the value.
+shown() {
+  local value=$1
+  local out=""
+  local char
+  local index
+  if [[ ${value} != *[[:cntrl:]\\]* ]]; then
+    printf '%s' "${value}"
+    return 0
+  fi
+  for ((index = 0; index < ${#value}; index++)); do
+    char=${value:index:1}
+    if [[ ${char} == \\ ]]; then
+      out+="\\\\"
+    elif [[ ${char} == [[:cntrl:]] ]]; then
+      printf -v char '\\x%02x' "'${char}"
+      out+=${char}
+    else
+      out+=${char}
+    fi
+  done
+  printf '%s' "${out}"
+}
+
 # R1：一份记录（目录）哪里不对，说成一句话；没问题时什么也不输出。记录是 root 建的：目录归 root、不是符号链接、别人写不进，里面
 # 只有归 root 的普通文件、每个只有一个链接，还有它该有的 install.env 和里面的那一项。参数：记录，记录的名字。
 # R1: what is wrong with a record (a directory), in one sentence; nothing when it is fine. A record is root's making: the
@@ -483,19 +512,19 @@ record_problem() {
     # No symlink is taken: readlink -f checks only the file at the end, and through a hop the panel can change, the panel
     # can lead the link to any file only root may read
     if [[ -L ${entry} ]]; then
-      printf '里面的 %s 是符号链接\n' "${entry##*/}"
+      printf '里面的 %s 是符号链接\n' "$(shown "${entry##*/}")"
       return 0
     fi
     if [[ ! -f ${entry} ]]; then
-      printf '里面的 %s 不是普通文件\n' "${entry##*/}"
+      printf '里面的 %s 不是普通文件\n' "$(shown "${entry##*/}")"
       return 0
     fi
     if [[ $(stat -c '%u' -- "${entry}") != "${ROOT_UID}" ]]; then
-      printf '里面的 %s 不是 root 建的\n' "${entry##*/}"
+      printf '里面的 %s 不是 root 建的\n' "$(shown "${entry##*/}")"
       return 0
     fi
     if [[ $(stat -c '%h' -- "${entry}") != 1 ]]; then
-      printf '里面的 %s 有别的硬链接\n' "${entry##*/}"
+      printf '里面的 %s 有别的硬链接\n' "$(shown "${entry##*/}")"
       return 0
     fi
   done < <(find "${record}" -mindepth 1 -print0)

@@ -281,7 +281,7 @@ main() {
   current_version_floor=${current_binary_release}
   if [[ -n ${current_release} ]]; then
     [[ ${current_release} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-      fail_because "panel.env 里记录的面板版本 ${current_release} 无效"
+      fail_because "panel.env 里记录的面板版本无效"
     current_version_floor="$(printf '%s\n%s\n' "${current_release}" "${current_binary_release}" |
       sort -V | tail -n 1)"
   fi

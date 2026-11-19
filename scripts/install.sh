@@ -306,7 +306,7 @@ validate_absolute_path() {
   local label=$1
   local path=$2
   safe_absolute_path "${path}" ||
-    fail "${label}必须是绝对路径，不含空白和控制字符，不含 \ \" ' % \$ 这几个符号（systemd 会解开它们），也不含 .、.. 或空的一段（//）"
+    fail "${label}必须是绝对路径，是合法的 UTF-8，不含空白和控制字符，不含 \ \" ' % \$ 这几个符号（systemd 会解开它们），也不含 .、.. 或空的一段（//）"
 }
 
 # 能写进 unit、panel.env 的绝对路径：不含空白和控制字符；不含反斜杠、引号、% 和 $（systemd 读 unit 的 Exec 行、ReadWritePaths
@@ -317,7 +317,14 @@ validate_absolute_path() {
 safe_absolute_path() {
   local path=$1
   [[ ${path} == /* && ${#path} -le 4096 && ${path} != *[[:space:][:cntrl:]\\\"\'%\$]* &&
-    ${path}/ != *//* && ${path}/ != */./* && ${path}/ != */../* ]]
+    ${path}/ != *//* && ${path}/ != */./* && ${path}/ != */../* ]] && utf8_valid "${path}"
+}
+
+# NIT：是不是合法的 UTF-8（不完整的、多余的字节和代理码位都不算）；systemd 和面板都按 UTF-8 读这些路径。参数：值。
+# NIT: whether a value is valid UTF-8 (no truncated or stray bytes, no surrogates); systemd and the panel read these paths
+# as UTF-8. Argument: the value.
+utf8_valid() {
+  printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 > /dev/null 2>&1
 }
 
 # unit 名照 validate_unit 的规则对不对；只在子 shell 里换一下来验，外面的不动。参数：unit 名。
@@ -394,10 +401,10 @@ check_panel_env_trust() {
   if [[ ${recorded} == "${unit_config}" ]]; then
     PANEL_ENV_VERIFIED=true
     printf '%s 面板能改，它记的不能都信：KixDNS 配置照 %s 认（%s），账号和归属这些项这次不照它做。\n' \
-      "${PANEL_ENV}" "${unit_file}" "${recorded}"
+      "${PANEL_ENV}" "$(shown "${unit_file}")" "$(shown "${recorded}")"
     return 0
   fi
-  fail "${PANEL_ENV} 面板能改，它记的不能信：它写的 KixDNS 配置 ${recorded} 和 ${unit_file} 里的 ${unit_config:-（没有写）} 对不上，安装器不会照它做事。
+  fail "${PANEL_ENV} 面板能改，它记的不能信：它写的 KixDNS 配置 $(shown "${recorded}") 和 $(shown "${unit_file}") 里的 $(shown "${unit_config:-（没有写）}") 对不上，安装器不会照它做事。
 查明 panel.env 是谁改的以后，把 KIXDNS_CONFIG 改成和 unit 里的一样再运行；现有安装未作修改。"
 }
 
@@ -697,6 +704,35 @@ root_only_path() {
   done
 }
 
+# NIT：面板能左右的值（不能信的 panel.env、旧位置记录里的文件名、KixDNS 配置里写的路径、面板能写的目录里的文件名）写进提示
+# 之前都经这里：控制字符写成 \xHH，反斜杠写成 \\，终端上显示的就是它本来的样子，改不了提示。参数：值。
+# NIT: every value the panel can influence (an untrusted panel.env, file names in an old-place record, paths written in
+# the KixDNS config, file names in a directory the panel can write) passes through here before going into a message:
+# control characters as \xHH and backslashes as \\, so a terminal shows it as it is and it cannot rewrite the message.
+# Argument: the value.
+shown() {
+  local value=$1
+  local out=""
+  local char
+  local index
+  if [[ ${value} != *[[:cntrl:]\\]* ]]; then
+    printf '%s' "${value}"
+    return 0
+  fi
+  for ((index = 0; index < ${#value}; index++)); do
+    char=${value:index:1}
+    if [[ ${char} == \\ ]]; then
+      out+="\\\\"
+    elif [[ ${char} == [[:cntrl:]] ]]; then
+      printf -v char '\\x%02x' "'${char}"
+      out+=${char}
+    else
+      out+=${char}
+    fi
+  done
+  printf '%s' "${out}"
+}
+
 # R1：一份记录（目录）哪里不对，说成一句话；没问题时什么也不输出。记录是 root 建的：目录归 root、不是符号链接、别人写不进，里面
 # 只有归 root 的普通文件、每个只有一个链接，还有它该有的 install.env 和里面的那一项。参数：记录，记录的名字。
 # R1: what is wrong with a record (a directory), in one sentence; nothing when it is fine. A record is root's making: the
@@ -729,19 +765,19 @@ record_problem() {
     # No symlink is taken: readlink -f checks only the file at the end, and through a hop the panel can change, the panel
     # can lead the link to any file only root may read
     if [[ -L ${entry} ]]; then
-      printf '里面的 %s 是符号链接\n' "${entry##*/}"
+      printf '里面的 %s 是符号链接\n' "$(shown "${entry##*/}")"
       return 0
     fi
     if [[ ! -f ${entry} ]]; then
-      printf '里面的 %s 不是普通文件\n' "${entry##*/}"
+      printf '里面的 %s 不是普通文件\n' "$(shown "${entry##*/}")"
       return 0
     fi
     if [[ $(stat -c '%u' -- "${entry}") != "${ROOT_UID}" ]]; then
-      printf '里面的 %s 不是 root 建的\n' "${entry##*/}"
+      printf '里面的 %s 不是 root 建的\n' "$(shown "${entry##*/}")"
       return 0
     fi
     if [[ $(stat -c '%h' -- "${entry}") != 1 ]]; then
-      printf '里面的 %s 有别的硬链接\n' "${entry##*/}"
+      printf '里面的 %s 有别的硬链接\n' "$(shown "${entry##*/}")"
       return 0
     fi
   done < <(find "${record}" -mindepth 1 -print0)
@@ -1678,7 +1714,7 @@ require_dedicated_config_directory() {
     # holding anything else, it is not handed over, like any other directory
     other="$(other_file_in "${config_parent}" "${KIXDNS_CONFIG_PATH##*/}")"
     [[ -n ${other} ]] || return 0
-    fail "KixDNS 配置要放在 ${config_parent}，面板要能写这个目录，可里面还放着别的文件（${other}）。先把它们移走再重新运行。"
+    fail "KixDNS 配置要放在 ${config_parent}，面板要能写这个目录，可里面还放着别的文件（$(shown "${other}")）。先把它们移走再重新运行。"
   elif [[ ! -e ${config_parent} || ${config_parent} == "${MIGRATED_KIXDNS_CONFIG_DIRECTORY}" ]]; then
     return 0
   else
@@ -1798,7 +1834,7 @@ require_original_files_readable() {
     if [[ -z ${reason} ]] && ! kixdns_can_read "${file}"; then
       reason="kixdns 账号没有读取权限"
     fi
-    [[ -z ${reason} ]] || unreadable+="  ${file}：${reason}"$'\n'
+    [[ -z ${reason} ]] || unreadable+="  $(shown "${file}")：${reason}"$'\n'
   done <<< "${files}"
   [[ -z ${unreadable} ]] || fail "迁移后的 KixDNS 以 kixdns 账号运行，读不到原配置 ${ORIGINAL_KIXDNS_CONFIG_PATH} 里写的这些文件：
 ${unreadable}迁移不会改动原来的文件和目录。让 kixdns 账号能读到它们（放宽权限，或移到别处并改原配置）后重新运行；现有 KixDNS 未作修改。"
@@ -1817,7 +1853,7 @@ note_panel_unreadable_files() {
   PANEL_UNREADABLE_FILES=""
   while IFS= read -r file; do
     [[ -n ${file} ]] || continue
-    panel_can_read "${file}" || PANEL_UNREADABLE_FILES+="  ${file}：kixdns-panel 账号没有读取权限"$'\n'
+    panel_can_read "${file}" || PANEL_UNREADABLE_FILES+="  $(shown "${file}")：kixdns-panel 账号没有读取权限"$'\n'
   done < <(original_config_geo_files || true)
 }
 
@@ -2926,7 +2962,10 @@ installed_kixdns_labels() {
       return 0
     fi
   fi
-  package_sum="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_BINARY_SHA256" 2>/dev/null || true)"
+  package_sum=""
+  # NIT：先看文件在不在：重定向写在 2>/dev/null 前面时，打不开的报错照样落到终端上 / NIT: check the file is there first:
+  # with the redirection ahead of 2>/dev/null, a failure to open it still reached the terminal
+  [[ ! -f ${PACKAGE_ROOT}/KIXDNS_BINARY_SHA256 ]] || package_sum="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_BINARY_SHA256")"
   if [[ -f ${MANAGED_KIXDNS_BINARY} && ! -L ${MANAGED_KIXDNS_BINARY} && ${package_sum} =~ ^[0-9a-f]{64}$ &&
     $(file_sha256 "${MANAGED_KIXDNS_BINARY}") == "${package_sum}" ]]; then
     return 0
@@ -3637,6 +3676,7 @@ main() {
   trap 'exit 129' HUP
   command -v getent >/dev/null || fail "系统缺少 getent"
   command -v sha256sum >/dev/null || fail "系统缺少 sha256sum"
+  command -v iconv >/dev/null || fail "系统缺少 iconv"
   require_file "${PACKAGE_ROOT}/bin/kixdns"
   require_file "${PACKAGE_ROOT}/bin/kixdns-panel-server"
   require_file "${PACKAGE_ROOT}/bin/kixdns-panel-helper"

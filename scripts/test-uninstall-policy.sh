@@ -614,7 +614,8 @@ for shared_function in wait_for_service_stable port_accepts_connection owner_and
   ensure_root_records root_only_path record_problem same_filesystem quarantine_record refuse_record trusted_record \
   old_records_present adopt_old_records secure_root_records panel_process_uids account_signal account_live_processes \
   quiesce_panel_account refuse_with_panel_held adoption_done mark_adoption_done discard_old_records take_root_lock \
-  panel_env_trusted managed_unit_config original_unit_files panel_owned root_lock_holder root_lock_file_ready drop_privileges; do
+  panel_env_trusted managed_unit_config original_unit_files panel_owned root_lock_holder root_lock_file_ready drop_privileges \
+  shown; do
   installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   [[ -n ${installer_copy} && ${installer_copy} == "${uninstaller_copy}" ]] || {
@@ -2068,5 +2069,20 @@ rm -rf -- "${scratch}"
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"
 [[ ${one_click_help} == *"--version"* ]]
 [[ -f "${PACKAGE_ROOT}/scripts/panel-online-update.sh" ]]
+
+# NIT（第六轮）：卸载器写进提示的、不能信的 panel.env 里的值也经 shown 转义 / NIT (sixth review): values from an untrusted
+# panel.env the uninstaller puts into a message go through shown too
+shown_output="$(
+  base="${scratch}/shown"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/units"
+  printf 'KIXDNS_CONFIG=/x\x1b[31m\nKIXDNS_SERVICE_UNIT=a\x1b[2J.service\n' > "${base}/panel.env"
+  PANEL_ENV="${base}/panel.env"
+  SYSTEMD_UNIT_DIRECTORY="${base}/units"
+  panel_env_trusted() { return 1; }
+  check_panel_env_trust
+)"
+assert_contains "${shown_output}" 'a\x1b[2J.service' "卸载器提示里不能信的值应转义"
+assert_not_contains "${shown_output}" $'\x1b' "卸载器提示里不能有原样的控制字符"
 
 printf '卸载策略检查通过。\n'
