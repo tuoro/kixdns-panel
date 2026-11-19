@@ -471,6 +471,147 @@ test('更新内核时检查更新还在路上：更新以后的检查结果是�
   await expect(kernelRow.locator('.update-row__from-to')).toContainText('2026.10.13 → 2026.10.13.2')
 })
 
+// 保存 Token 以后重读的内核状态还在路上就换了内核：那次读是换之前的，晚回来也不把页面退回换之前（回退也一样）
+// After a token save the kernel state is read again, and the kernel is switched while that read is still out: it predates the switch,
+// so landing late it does not put the page back to before it (a rollback likewise)
+test('读内核状态还在路上就更新、回退了内核：之前发出的那次晚回来也不把页面退回去', async ({ page }) => {
+  await wrapClient(page, 'kernel-read-original', `
+    const state = globalThis.__held = { hold: false, held: [], failService: false };
+    export async function apiRequest(path, init) {
+      if (path === '/api/v1/service' && state.failService) throw new Error('服务状态读不到（模拟）');
+      if (path !== '/api/v1/kixdns/kernel') return original(path, init);
+      const said = await original(path, init);
+      if (state.hold) await new Promise((resolve) => state.held.push(resolve));
+      return said;
+    }
+  `)
+  await open(page, '/system')
+  const installedVersion = page.locator('.install-version b')
+  await expect(installedVersion).toHaveText('2026.10.13')
+  const held = () => page.evaluate(() => (globalThis as unknown as { __held: Held }).__held.held.length)
+  const holdNextRead = async () => {
+    await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = true })
+    await page.locator('input[aria-label="GitHub Token"]').fill('github_pat_e2e_placeholder')
+    await page.getByRole('button', { name: /^(保存|替换)$/ }).click()
+    await expect.poll(held).toBe(1)
+    await page.evaluate(() => { (globalThis as unknown as { __held: Held }).__held.hold = false })
+  }
+  await holdNextRead()
+  // 更新以后那次服务状态读失败：页顶出读取失败的提示条，借它的「重试」看「读取中」收没收（读取中时它按不下）
+  // The service read after the update fails: the read-failure banner shows, and its 重试 tells whether 读取中 ended (it is held while reading)
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held & { failService: boolean } }).__held.failService = true })
+  await page.locator('.update-row').first().getByRole('button', { name: '更新', exact: true }).click()
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: '内核已更新' })).toBeVisible()
+  await expect(installedVersion).toHaveText('2026.10.13.2')
+  await release(page)
+  await expect.poll(held).toBe(0)
+  await expect(page.locator('input[aria-label="GitHub Token"]')).toBeEnabled()
+  await expect(installedVersion).toHaveText('2026.10.13.2')
+  // 作废的那次读不再替自己收尾，「读取中」由更新的回应收起，不一直挂着 / The voided read no longer winds itself up; the update's answer
+  // ends 读取中, so it does not hang on
+  const banner = page.locator('.status-banner')
+  await expect(banner).toContainText('服务状态：服务状态读不到（模拟）')
+  await expect(banner.getByRole('button', { name: '重试' })).toBeEnabled()
+  await page.evaluate(() => { (globalThis as unknown as { __held: Held & { failService: boolean } }).__held.failService = false })
+
+  await holdNextRead()
+  await page.locator('.runtime-panel').getByRole('button', { name: '回退', exact: true }).click()
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: '已回退到上一个内核' })).toBeVisible()
+  await expect(installedVersion).toHaveText('2026.10.13')
+  await release(page)
+  await expect.poll(held).toBe(0)
+  await expect(page.locator('input[aria-label="GitHub Token"]')).toBeEnabled()
+  await expect(installedVersion).toHaveText('2026.10.13')
+})
+
+// 读内核状态失败过一次（页面照旧留着上次读到的），之后更新成功：更新的回应就是新状态，「内核：…」那条读取失败不再挂着
+// A kernel-state read failed once (the page keeps what it read last), then an update succeeds: its answer is the new state, so the
+// 「内核：…」 read failure no longer stays up
+test('读内核状态失败过，之后更新成功：内核那条读取失败收起', async ({ page }) => {
+  await wrapClient(page, 'kernel-fail-original', `
+    const state = globalThis.__kernelFail = { fail: false };
+    export async function apiRequest(path, init) {
+      if (path === '/api/v1/kixdns/kernel' && state.fail) throw new Error('内核状态读不到（模拟）');
+      return original(path, init);
+    }
+  `)
+  await open(page, '/system')
+  await expect(page.locator('.install-version b')).toHaveText('2026.10.13')
+  await page.evaluate(() => { (globalThis as unknown as { __kernelFail: { fail: boolean } }).__kernelFail.fail = true })
+  // 保存 Token 以后会重读内核状态：这一次读失败 / A token save re-reads the kernel state: this read fails
+  await page.locator('input[aria-label="GitHub Token"]').fill('github_pat_e2e_placeholder')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  const banner = page.locator('.status-banner')
+  await expect(banner).toContainText('内核：内核状态读不到（模拟）')
+  await page.evaluate(() => { (globalThis as unknown as { __kernelFail: { fail: boolean } }).__kernelFail.fail = false })
+  await page.locator('.update-row').first().getByRole('button', { name: '更新', exact: true }).click()
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: '内核已更新' })).toBeVisible()
+  await expect(page.locator('.install-version b')).toHaveText('2026.10.13.2')
+  await expect(banner).toHaveCount(0)
+})
+
+// 检查更新以后会重读 Token 状态（剩余次数）：那次读还在路上时保存了 Token，晚回来也不把「已配置」改回「匿名」，读失败了也不挂出错误。
+// 保存途中（还在等检查结果、自己那次重读还没发）回来，和保存完以后回来，都一样
+// 检查更新 re-reads the token status (the remaining quota): a token saved while that read is still out stays 已配置 when it lands late,
+// and a failure of that read puts up no error. Alike whether it lands mid-save (waiting on the check, before the save's own re-read) or
+// after the save
+type TokenHeld = Held & { landed: number; fail: boolean; holdChecks: boolean; checks: (() => void)[] }
+for (const [when, fails] of [['保存途中', false], ['保存以后', false], ['保存以后、读失败', true]] as const) {
+  test(`读 Token 状态还在路上就保存了 Token（${when}回来）：不改回「匿名」，不挂错误`, async ({ page }) => {
+    await wrapClient(page, `token-status-${when === '保存途中' ? 'mid' : 'after'}-${fails}-original`, `
+      const state = globalThis.__held = { hold: false, held: [], landed: 0, fail: ${fails}, holdChecks: false, checks: [] };
+      export async function apiRequest(path, init) {
+        if (path === '/api/v1/updates/status' && state.holdChecks) {
+          const said = await original(path, init);
+          await new Promise((resolve) => state.checks.push(resolve));
+          return said;
+        }
+        if (path !== '/api/v1/settings/github-token' || (init?.method ?? 'GET') !== 'GET') return original(path, init);
+        const said = await original(path, init);
+        if (state.hold) {
+          await new Promise((resolve) => state.held.push(resolve));
+          state.landed += 1;
+          if (state.fail) throw new Error('Token 状态读不到（模拟）');
+        }
+        return said;
+      }
+    `)
+    const held = () => page.evaluate(() => (globalThis as unknown as { __held: TokenHeld }).__held)
+    await open(page, '/system')
+    const tag = page.locator('.ui-tag', { hasText: /^(匿名|已配置)$/ })
+    const tokenError = page.locator('.system-error')
+    await expect(tag).toHaveText('匿名')
+    await page.evaluate(() => { (globalThis as unknown as { __held: TokenHeld }).__held.hold = true })
+    await page.getByRole('button', { name: '检查更新', exact: true }).click()
+    await expect.poll(async () => (await held()).held.length).toBe(1)
+    await page.evaluate((mid) => { const state = (globalThis as unknown as { __held: TokenHeld }).__held; state.hold = false; state.holdChecks = mid }, when === '保存途中')
+    await page.locator('input[aria-label="GitHub Token"]').fill('github_pat_e2e_placeholder')
+    await page.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(page.locator('.toast--success').filter({ hasText: 'GitHub Token 已验证并保存' })).toBeVisible()
+    await expect(tag).toHaveText('已配置')
+    if (when === '保存途中') {
+      // 保存还在等检查结果：这时之前那次读回来 / The save still waits on the check: the earlier read lands now
+      await expect.poll(async () => (await held()).checks.length).toBeGreaterThan(0)
+      await release(page)
+      await expect.poll(async () => (await held()).landed).toBe(1)
+      await expect(tag).toHaveText('已配置')
+      await expect(tokenError).toHaveCount(0)
+      await page.evaluate(() => { const state = (globalThis as unknown as { __held: TokenHeld }).__held; state.holdChecks = false; state.checks.forEach((go) => go()); state.checks = [] })
+      await expect(page.locator('input[aria-label="GitHub Token"]')).toBeEnabled()
+    } else {
+      await expect(page.locator('input[aria-label="GitHub Token"]')).toBeEnabled()
+      await release(page)
+      await expect.poll(async () => (await held()).landed).toBe(1)
+    }
+    await expect(tag).toHaveText('已配置')
+    await expect(tokenError).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '删除 Token', exact: true })).toBeEnabled()
+  })
+}
+
 test('保存 GitHub Token 时检查更新还在路上：保存以后的检查结果是带上 Token 的，不再说检查失败', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-kernel-check-failed', 'true'))
   await wrapClient(page, 'token-check-original', `

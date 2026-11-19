@@ -880,11 +880,12 @@ onBeforeUnmount(() => {
       <RouterLink class="ui-btn ui-btn--secondary" to="/system">去系统页</RouterLink>
     </UiEmpty>
   </section>
-  <!-- 读取失败：和运行日志一样一条提示，有行时只说可能过期 / A load failure: one notice as in the runtime log; with rows on screen it only says they may be stale -->
+  <!-- 读取失败：和运行日志一样一条提示；按现在的筛选读到过列表（空的也算）时只说可能过期 / A load failure: one notice as in the
+       runtime log; once a list was read with the current filters (an empty one too) it only says it may be stale -->
   <!-- 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the top banner says it; no second copy here -->
   <div v-else-if="loadError && !panelDown && !reconnecting" class="ui-notice ui-notice--err logs-notice" role="alert">
     <CircleAlert :size="16" aria-hidden="true" />
-    <span>{{ !entries.length ? '读取失败' : staleRows ? '下面还是换筛选之前的结果' : '数据可能已过期' }}</span>
+    <span>{{ rowsCurrent ? '数据可能已过期' : staleRows ? '下面还是换筛选之前的结果' : '读取失败' }}</span>
     <small><template v-for="(run, k) in glued(loadError)" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></small>
     <!-- 目录打不开时重试没用，要重启面板 / With the directory unusable a retry cannot help; the panel needs a restart -->
     <button v-if="!unavailable" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="loading" @click="load()">重试</button>
@@ -905,11 +906,13 @@ onBeforeUnmount(() => {
       </div>
     </header>
     <!-- 从别处带进来、或点「只看这个客户端」加上的筛选，一个一个能去掉 / Filters brought in from elsewhere or added by 只看这个客户端, each removable -->
+    <!-- 名字一行写完；长的值在点、斜杠这些地方折行（域名同详情标题，地址同字面量），不把名字挤成竖排 / The name stays on one line; a long
+         value wraps at dots, slashes and the like (a domain as in the detail title, an address as a literal), never squeezing the name into a column -->
     <div v-if="qname || client || rule || upstream" class="qlog-filters">
-      <span v-if="qname" class="qlog-filter">域名 <span class="qlog-lit">{{ qname }}</span><button type="button" :aria-label="`去掉筛选：域名 ${qname}`" @click="dropFilter({ qname: undefined })"><X :size="14" aria-hidden="true" /></button></span>
-      <span v-if="client" class="qlog-filter">客户端 <span class="qlog-lit">{{ client }}</span><button type="button" :aria-label="`去掉筛选：客户端 ${client}`" @click="dropFilter({ client: undefined })"><X :size="14" aria-hidden="true" /></button></span>
-      <span v-if="rule" class="qlog-filter">{{ rulePhase ? '回答后检查' : '规则' }}「{{ ruleTitle }}」<button type="button" :aria-label="`去掉筛选：${rulePhase ? '回答后检查' : '规则'}「${ruleTitle}」`" @click="dropFilter({ rule: undefined, in: undefined, phase: undefined })"><X :size="14" aria-hidden="true" /></button></span>
-      <span v-if="upstream" class="qlog-filter">问过上游 <span class="qlog-lit">{{ upstream }}</span><button type="button" :aria-label="`去掉筛选：问过上游 ${upstream}`" @click="dropFilter({ upstream: undefined })"><X :size="14" aria-hidden="true" /></button></span>
+      <span v-if="qname" class="qlog-filter"><span class="qlog-filter__name">域名</span> <span class="qlog-lit"><template v-for="(seg, i) in domainParts(qname)" :key="i"><wbr v-if="i" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><button type="button" :aria-label="`去掉筛选：域名 ${qname}`" @click="dropFilter({ qname: undefined })"><X :size="14" aria-hidden="true" /></button></span>
+      <span v-if="client" class="qlog-filter"><span class="qlog-filter__name">客户端</span> <span class="qlog-lit"><template v-for="(seg, i) in literalParts(client)" :key="i"><wbr v-if="i" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><button type="button" :aria-label="`去掉筛选：客户端 ${client}`" @click="dropFilter({ client: undefined })"><X :size="14" aria-hidden="true" /></button></span>
+      <span v-if="rule" class="qlog-filter"><span class="qlog-filter__text">{{ rulePhase ? '回答后检查' : '规则' }}「{{ ruleTitle }}」</span><button type="button" :aria-label="`去掉筛选：${rulePhase ? '回答后检查' : '规则'}「${ruleTitle}」`" @click="dropFilter({ rule: undefined, in: undefined, phase: undefined })"><X :size="14" aria-hidden="true" /></button></span>
+      <span v-if="upstream" class="qlog-filter"><span class="qlog-filter__name">问过上游</span> <span class="qlog-lit"><template v-for="(seg, i) in literalParts(upstream)" :key="i"><wbr v-if="i" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><button type="button" :aria-label="`去掉筛选：问过上游 ${upstream}`" @click="dropFilter({ upstream: undefined })"><X :size="14" aria-hidden="true" /></button></span>
     </div>
     <!-- 表格和详情：宽屏上详情在表格下方，表格不变形；手机上详情从底边升起 / The table and the detail: on wide screens the detail sits under the table, which keeps its shape; on phones it rises from the bottom -->
     <div class="qlog-body" @keydown="onKey">
@@ -948,7 +951,9 @@ onBeforeUnmount(() => {
           <button class="ui-btn ui-btn--secondary qlog-continue" type="button" @click="continueOlder">继续往前查</button>
         </UiEmpty>
         <!-- 清空以后日志本来就是空的：不管有没有筛选，都说还没有查询 / After a clear the log is empty: whatever the filters, it says there are no queries yet -->
-        <UiEmpty v-if="!loading && !entries.length && !loadError && stoppedAt === null" :icon="FileSearch" :title="filtered && newestMs !== null ? '没有符合条件的查询' : '还没有查询'" :desc="filtered && newestMs !== null ? (q.trim() ? '换个搜索词，或者清除筛选' : '清除筛选就能看到全部查询') : '有设备来解析域名，就会出现在这里。'">
+        <!-- 读到的列表是空的、之后又读失败了：空卡照旧说为什么是空的；一次也没按现在的筛选读到时不出 / An empty list was read and a
+             later read failed: the empty card still says why it is empty; never read with the current filters, it is not shown -->
+        <UiEmpty v-if="!loading && !entries.length && (!loadError || rowsCurrent) && stoppedAt === null" :icon="FileSearch" :title="filtered && newestMs !== null ? '没有符合条件的查询' : '还没有查询'" :desc="filtered && newestMs !== null ? (q.trim() ? '换个搜索词，或者清除筛选' : '清除筛选就能看到全部查询') : '有设备来解析域名，就会出现在这里。'">
           <button v-if="filtered && newestMs !== null" class="ui-btn ui-btn--secondary" type="button" @click="clearFilters">清除筛选</button>
         </UiEmpty>
       </div>
@@ -1260,8 +1265,13 @@ onBeforeUnmount(() => {
 /* 筛选标签那一行只占自己的高度：卡片里的 div 默认会被拉伸，列表短时会撑成一大块灰底 / The chip row takes only its own height: a div
    in the card stretches by default, and with a short list it became a tall grey slab */
 .logs-page .qlog-filters { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: var(--s-2); padding: var(--s-2) var(--s-5); border-bottom: 1px solid var(--l-hair); }
-.logs-page .qlog-filter { display: inline-flex; align-items: center; gap: var(--s-1); padding-left: var(--s-2); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-size: var(--t-2); }
-.logs-page .qlog-filter > button { position: relative; display: inline-grid; place-items: center; width: var(--h-sm); height: var(--h-sm); border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; }
+/* 长的值折成几行时名字和去掉按钮都在第一行：名字和值上下各留半格，单行时三样一样高、居中 / When a long value folds onto several
+   lines the name and the remove button sit on its first line: the name and the value keep half the slack above and below, so on a
+   single line all three are one height and centred */
+.logs-page .qlog-filter { --chip-pad: calc((var(--h-sm) - var(--t-2) * var(--lh-base)) / 2); display: inline-flex; align-items: flex-start; gap: var(--s-1); padding-left: var(--s-2); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-size: var(--t-2); line-height: var(--lh-base); }
+.logs-page .qlog-filter__name { flex: none; padding-block: var(--chip-pad); }
+.logs-page .qlog-filter > :is(.qlog-lit, .qlog-filter__text) { padding-block: var(--chip-pad); overflow-wrap: anywhere; }
+.logs-page .qlog-filter > button { position: relative; flex: none; display: inline-grid; place-items: center; width: var(--h-sm); height: var(--h-sm); border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; }
 .logs-page .qlog-dest { flex: 0 1 13rem; min-width: 9rem; }
 /* 详情、设置开着时背后的页面不跟着滚 / With the detail sheet or the settings open, the page behind does not scroll */
 :root:has(.qlog-sheet[open], .qlog-drawer[open]) { overflow: hidden; }
