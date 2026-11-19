@@ -206,7 +206,7 @@ sudo systemctl restart kixdns-panel.service
 1. 迁移前的备份、关掉 systemd-resolved 监听时的记录，和 `/var/lib/kixdns-panel-backup/` 里的一切，每读一次都先验：这个目录和它上面每一层都归 root、不是符号链接，目录是 `0700`；记录里只有归 root 的普通文件，每个只有一个链接。验不过的挪进 `/var/lib/kixdns-panel-backup/quarantine/`（名字带时间；不在同一个文件系统就直接删掉），这次和以后都不再用，并说清是哪一份、为什么、接下来怎么办。旧版放在面板状态目录里的记录只接手一次，之后那里再有的都不用（见上面「迁移」）
 2. 面板账号还有进程时，root 不碰它能写的路径：先停 `kixdns-panel-helper`（面板能请它以 root 起在线更新），再停面板，再以它的身份 `kill -KILL -1`，一直到一个都不剩；这些路径上的事全做完（安装失败的回滚也一样）才重新启动 helper 和面板。安装器、卸载器和在线更新同一时间只跑一个（锁在只有 root 能进的 `/run/kixdns-panel-root/` 里，锁文件是 root 的 0600，每次打开都查过；以面板账号这类别的身份运行的子进程，开始之前先关掉 2 以上的文件描述符，锁不会经它们落到面板手里；整个运行都拿着；锁在别人手里时说出拿着它的进程）。在线更新走同一条路
 3. 面板能写的路径上不跟着符号链接走：`chown -h`；`chmod` 只用在停了面板以后查过不是符号链接的目录和普通文件上；已有的、面板能写的目录不用 `install -d`
-4. `panel.env` 只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才能改的 KixDNS unit 认，对不上安装器就停下，卸载器就当作 KixDNS 不归面板管：KixDNS、它的 unit 用着的配置（哪怕在 `/etc/kixdns-panel` 里）和 kixdns 账号都留着；它记的账号和归属一律不认；重写时照安装包的示例写，它里面的一项也不带过来（原来那份挪进 quarantine），要用其中的设置就照着改回去。写进 `panel.env` 的每一项都照格式验过（提交、编号、来源、路径、unit 名）
+4. `panel.env` 只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才能改的 KixDNS unit 认，对不上安装器就停下，卸载器就当作 KixDNS 不归面板管：KixDNS、它的 unit 用着的配置（哪怕在 `/etc/kixdns-panel` 里）和 kixdns 账号都留着；它记的账号和归属一律不认；重写时照安装包的示例写，只照原来的保留面板这个进程自己的几项（监听地址、Secure Cookie、可信代理、日志级别、诊断服务器），每一项照格式严格验过，验不过的换成示例的值并说明；别的一项也不带过来（原来那份挪进 quarantine，不在同一个文件系统时复制一份，都只有 root 能读）。在线更新时这段说明也接在系统页上的更新结果后面。写进 `panel.env` 的每一项都照格式验过（提交、编号、来源、路径、unit 名）
 
 **日志页的权限边界**：日志页需要 `kixdns-panel` 属于 `systemd-journal` 组，而 journald 不支持按 unit 授权，所以该组能读宿主机全部 journal。不接受的话，把 `kixdns-panel` 移出该组并停用日志页；不要改用带通配符的 sudoers 规则，那会扩大命令执行范围。
 

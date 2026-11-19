@@ -2980,7 +2980,7 @@ assert_contains "${output}" "CONFIG-LINES=1" "重写的 panel.env 里只能有�
 assert_contains "${output}" "FIRST-CONFIG=KIXDNS_CONFIG=${WORK}/escape/etc-kixdns/pipeline.json" "KIXDNS_CONFIG 只能是验过的那一个"
 assert_not_contains "${output}" "INJECTED" "不能信的 panel.env 里的值不能带进重写的那份"
 assert_not_contains "${output}" "CARRIED-OVER" "不能信的 panel.env 里认不得的行不能带过来"
-assert_contains "${output}" "KIXDNS_PANEL_BIND=0.0.0.0:5738" "不能信的 panel.env 照安装包的示例重写"
+assert_contains "${output}" "KIXDNS_PANEL_BIND=0.0.0.0:1" "不能信的 panel.env 里面板自己的设置照原来的保留"
 assert_contains "${output}" "OLD-QUARANTINED" "不能信的 panel.env 应挪进 quarantine 留给管理员看"
 # 回滚放回原来的 panel.env 以后，这次挪进 quarantine 的那份只是它的副本：记下它，回滚时删掉（容器里中断在重写以后的那几处，
 # quarantine 里多出一份）/ Once a rollback puts the old panel.env back, the copy this run moved into quarantine is only a
@@ -2993,7 +2993,8 @@ restore_env_line="$(grep -n 'restore_path "${PANEL_ENV}" panel-env' <<< "$(decla
 drop_env_line="$(grep -n 'rm -f -- "${PANEL_ENV_QUARANTINED}"' <<< "$(declare -f rollback_install)" | head -n 1 | cut -d: -f1 || true)"
 [[ -n ${restore_env_line} && -n ${drop_env_line} && ${drop_env_line} -eq $((restore_env_line + 1)) ]] ||
   { printf '断言失败：回滚放回 panel.env 以后应删掉这次挪进 quarantine 的那份（restore=%s drop=%s）\n' "${restore_env_line}" "${drop_env_line}" >&2; exit 1; }
-assert_contains "${output}" "面板能改，这次照安装包的示例重写，里面原来的设置一项也没用" "重写不能信的 panel.env 时应说明"
+assert_contains "${output}" "面板能改，这次照安装包的示例重写：面板自己的设置（监听地址、Secure Cookie、可信代理、日志级别、诊断服务器）照原来的保留，别的一项也没用" \
+  "重写不能信的 panel.env 时应说明"
 # 内核的来源、提交、编号照 root 的事实定：面板目录里的内核和这个包的一字不差，就是包里的；不然写成空
 # The kernel's source, commit and id from root's facts: a kernel identical to this package's is the package's; otherwise
 # empty
@@ -3076,6 +3077,102 @@ for script_name in install uninstall panel-online-update one-click-install; do
 done
 # 新建 panel.env 也照示例渲染，不再用 sed 填值 / A new panel.env is rendered from the example too, sed no longer fills values
 assert_not_contains "$(declare -f install_configuration)" "sed -e" "新建 panel.env 不能再用 sed 填值"
+
+# 回归（第六轮 SHOULD 3）：老实的 v4.3.4 主机上 panel.env 也会因为目录归了面板而不能信；照示例重写把管理员自己加固的设置
+# 都还原了（监听 127.0.0.1 变成 0.0.0.0、Secure Cookie 关掉、可信代理清空，两个系统 6 种都这样）。现在只管面板这个进程自己的
+# 几项照原来的保留，每一项照格式严格验，验不过的才换成示例的值并说明；路径这些照旧只照 root 的事实和 unit。
+# Regression (sixth review, SHOULD 3): on an honest v4.3.4 host panel.env is untrusted too once its directory went to
+# the panel, and rewriting it from the example undid the admin's own hardening (127.0.0.1 became 0.0.0.0, the Secure
+# cookie went off, the trusted proxies were cleared; 6 of 6 on both systems). Now just the settings of the panel process
+# itself are kept, each validated strictly; only one failing validation becomes the example's value, and that is said.
+# Paths still come from root's facts and the unit alone.
+settings_run() {
+  local base="${WORK}/settings"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/package/deploy" "${base}/panel-etc" "${base}/records" "${base}/update"
+  chmod 0700 "${base}/records"
+  cp "${PACKAGE_ROOT}/deploy/panel.env.example" "${base}/package/deploy/"
+  printf '%s\n' "KIXDNS_CONFIG=${base}/etc-kixdns/pipeline.json" "$@" > "${base}/panel-etc/panel.env"
+  (
+    PACKAGE_ROOT="${base}/package"
+    PANEL_CONFIG_DIRECTORY="${base}/panel-etc"
+    PANEL_ENV="${base}/panel-etc/panel.env"
+    PANEL_UPDATE_DIRECTORY="${base}/update"
+    KIXDNS_CONFIG_PATH="${base}/etc-kixdns/pipeline.json"
+    ROOT_RECORDS="${base}/records"
+    ROOT_CHAIN_TOP=${base}
+    ROOT_UID="$(id -u)"
+    ROOT_GID="$(id -g)"
+    PANEL_ENV_TRUSTED=false
+    PANEL_ENV_VERIFIED=true
+    INSTALL_KIND=${SETTINGS_KIND:-upgrade}
+    PANEL_BUILD_COMMIT=5555555555555555555555555555555555555555
+    PANEL_RELEASE=""
+    KIXDNS_GROUP=$(id -gn)
+    chown() { :; }
+    install() { mkdir -p "${@: -1}"; chmod 0700 "${@: -1}"; }
+    if [[ ${SETTINGS_SAME_FS:-true} == false ]]; then
+      same_filesystem() { return 1; }
+    fi
+    update_panel_environment 6666666666666666666666666666666666666666 88 fork
+  ) 2>&1
+  printf 'NEW:\n'
+  grep -E '^(KIXDNS_PANEL_BIND|KIXDNS_PANEL_SECURE_COOKIE|KIXDNS_TRUSTED_PROXIES|RUST_LOG|KIXDNS_DIAGNOSTIC_SERVER|KIXDNS_EXTRA)=' \
+    "${base}/panel-etc/panel.env"
+  [[ ! -f ${base}/update/notice ]] || printf 'NOTICE: %s\n' "$(cat -- "${base}/update/notice")"
+  find "${base}/records/quarantine" -name 'panel.env.*' -type f -exec grep -l 'KIXDNS_PANEL_BIND' {} + 2>/dev/null |
+    sed 's/^/KEPT /'
+  return 0
+}
+output="$(settings_run 'KIXDNS_PANEL_BIND=127.0.0.1:5738' 'KIXDNS_PANEL_SECURE_COOKIE=true' \
+  'KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' 'RUST_LOG=warn' 'KIXDNS_DIAGNOSTIC_SERVER=127.0.0.1:5301' 'KIXDNS_EXTRA=1')"
+for kept in KIXDNS_PANEL_BIND=127.0.0.1:5738 KIXDNS_PANEL_SECURE_COOKIE=true KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128 \
+  RUST_LOG=warn KIXDNS_DIAGNOSTIC_SERVER=127.0.0.1:5301; do
+  assert_contains "$(sed -n '/^NEW:/,$p' <<< "${output}")" "${kept}" "重写时面板自己的设置照原来的保留（${kept%%=*}）"
+done
+assert_not_contains "${output}" "KIXDNS_EXTRA=1" "别的设置照旧不带过来"
+assert_not_contains "${output}" "格式不对" "都合格式时不说换了值"
+output="$(settings_run 'KIXDNS_PANEL_BIND=0.0.0.0:5738' 'KIXDNS_PANEL_BIND="[::1]:5738"' "RUST_LOG='kixdns_panel=debug,info'")"
+assert_contains "${output}" $'NEW:\nKIXDNS_PANEL_BIND=[::1]:5738' "同一项写了几次时照 systemd 用最后一次，去掉一对引号"
+assert_contains "${output}" "RUST_LOG=kixdns_panel=debug,info" "单引号也照 systemd 去掉"
+# shellcheck disable=SC2016 # 要的就是没展开的 $(id) / The unexpanded $(id) is the point
+output="$(SETTINGS_KIND=panel-only settings_run 'KIXDNS_PANEL_BIND=0.0.0.0:99999' 'KIXDNS_PANEL_SECURE_COOKIE=yes' \
+  'KIXDNS_TRUSTED_PROXIES=10.0.0.0/8;x' 'RUST_LOG=info$(id)' 'KIXDNS_DIAGNOSTIC_SERVER=dns.example:53')"
+for fallback in KIXDNS_PANEL_BIND=0.0.0.0:5738 KIXDNS_PANEL_SECURE_COOKIE=false RUST_LOG=info KIXDNS_DIAGNOSTIC_SERVER=127.0.0.1:53; do
+  assert_contains "$(sed -n '/^NEW:/,$p' <<< "${output}")" "${fallback}" "验不过的换成示例的值（${fallback%%=*}）"
+done
+assert_contains "${output}" $'\nKIXDNS_TRUSTED_PROXIES=\n' "验不过的可信代理换成示例的空值"
+assert_contains "${output}" "其中 KIXDNS_PANEL_BIND、KIXDNS_PANEL_SECURE_COOKIE、KIXDNS_TRUSTED_PROXIES、RUST_LOG、KIXDNS_DIAGNOSTIC_SERVER 格式不对，换成了安装包示例的值" \
+  "换了值时应说是哪几项"
+# 仅更新面板（在线更新）时，这段话也留给在线更新器，带进系统页上的结果 / On a panel-only update (the online update) the
+# notice is left for the online updater too, to go into the result on the system page
+assert_contains "${output}" "NOTICE: panel.env 面板能改，已照安装包的示例重写，面板自己的设置照原来的保留" "仅更新面板时应把说明留给在线更新器"
+assert_contains "${output}" "KIXDNS_PANEL_BIND、KIXDNS_PANEL_SECURE_COOKIE" "留给在线更新器的说明里也有换了值的几项"
+output="$(settings_run 'KIXDNS_PANEL_BIND=127.0.0.1:5738')"
+assert_not_contains "${output}" "NOTICE:" "不是仅更新面板时不留给在线更新器"
+# 不在同一个文件系统时原来那份不删，复制一份只有 root 能读的 / Not on the same filesystem, the old one is not deleted but
+# copied, root's alone
+output="$(SETTINGS_SAME_FS=false settings_run 'KIXDNS_PANEL_BIND=127.0.0.1:5738')"
+assert_contains "${output}" "KEPT ${WORK}/settings/records/quarantine/panel.env." "不在同一个文件系统时原来的 panel.env 也要留一份"
+for good_setting in 'KIXDNS_PANEL_BIND=0.0.0.0:1' 'KIXDNS_PANEL_BIND=255.255.255.255:65535' 'KIXDNS_PANEL_BIND=[::]:5738' \
+  'KIXDNS_PANEL_BIND=[fe80::1:2]:80' 'KIXDNS_PANEL_BIND=[::ffff:10.0.0.1]:80' 'KIXDNS_PANEL_BIND=[1:2:3:4:5:6:7:8]:1' \
+  'KIXDNS_PANEL_SECURE_COOKIE=false' 'KIXDNS_TRUSTED_PROXIES=' 'KIXDNS_TRUSTED_PROXIES=10.0.0.0/8,fd00::/8,0.0.0.0/0' \
+  'RUST_LOG=info,tower_http=debug' 'KIXDNS_DIAGNOSTIC_SERVER=[2001:db8::53]:53'; do
+  panel_setting_valid "${good_setting%%=*}" "${good_setting#*=}" ||
+    { printf '断言失败：%s 应算合格式\n' "${good_setting}" >&2; exit 1; }
+done
+for bad_setting in 'KIXDNS_PANEL_BIND=0.0.0.0:0' 'KIXDNS_PANEL_BIND=0.0.0.0:65536' 'KIXDNS_PANEL_BIND=256.0.0.1:80' \
+  'KIXDNS_PANEL_BIND=01.2.3.4:80' 'KIXDNS_PANEL_BIND=localhost:80' 'KIXDNS_PANEL_BIND=::1:80' 'KIXDNS_PANEL_BIND=[1::2::3]:80' \
+  'KIXDNS_PANEL_BIND=[1:2:3:4:5:6:7:8:9]:80' 'KIXDNS_PANEL_BIND=[fe80::1%eth0]:80' 'KIXDNS_PANEL_BIND=1.2.3.4:80 ' \
+  'KIXDNS_PANEL_SECURE_COOKIE=True' 'KIXDNS_TRUSTED_PROXIES=10.0.0.0/33' 'KIXDNS_TRUSTED_PROXIES=fd00::/129' \
+  'KIXDNS_TRUSTED_PROXIES=10.0.0.1' 'KIXDNS_TRUSTED_PROXIES=10.0.0.0/8,' 'KIXDNS_TRUSTED_PROXIES=10.0.0.0/8, ::1/128' \
+  'RUST_LOG=' 'RUST_LOG=info warn' 'KIXDNS_DIAGNOSTIC_SERVER=127.0.0.1:53\nKIXDNS_CONFIG=/x' 'KIXDNS_CONFIG=/etc/x.json'; do
+  panel_setting_valid "${bad_setting%%=*}" "${bad_setting#*=}" &&
+    { printf '断言失败：%s 不能算合格式\n' "${bad_setting}" >&2; exit 1; }
+done
+many_proxies="$(printf '10.0.%d.0/24,' {1..65})"
+panel_setting_valid KIXDNS_TRUSTED_PROXIES "${many_proxies%,}" &&
+  { printf '断言失败：可信代理超过 64 个时不能算合格式\n' >&2; exit 1; }
 
 # 回归（SHOULD 3）：arm_rollback 先记下回滚的 shell、后挂 INT/TERM/HUP，信号落在中间时既不回滚，EXIT 也以为回滚会管，开头为记录
 # 停下的 helper 和面板就一直停着（debian 13 上 47 次里有 2 次）；bash 5.2 在解析多行命令替换时收到信号，INT/TERM 的陷阱会解析失败
@@ -4145,6 +4242,15 @@ assert_equals "$(jq -r '.message | length' "${online_update_root}/status/status.
 
 output="$(online_update_status "exit 0" "${latest_release}")"
 assert_equals "${output}" "complete 面板已更新到 v3.1.2" "安装器成功时状态应为完成"
+# SHOULD 3（第六轮）：安装器留下的说明接在结果后面，系统页上看得到；上一次留下的不会冒充这一次的 / SHOULD 3 (sixth review):
+# the installer's notice follows the result, visible on the system page; one left by an earlier run does not pose as this
+# run's
+output="$(online_update_status "printf 'panel.env 面板能改，已照安装包的示例重写\n' > '${online_update_root}/status/notice'; exit 0" "${latest_release}")"
+assert_equals "${output}" "complete 面板已更新到 v3.1.2。panel.env 面板能改，已照安装包的示例重写" "安装器留下的说明应带进结果"
+[[ ! -e ${online_update_root}/status/notice ]] || { printf '断言失败：带进结果以后说明应删掉\n' >&2; exit 1; }
+printf 'stale\n' > "${online_update_root}/status/notice"
+output="$(online_update_status "exit 0" "${latest_release}")"
+assert_equals "${output}" "complete 面板已更新到 v3.1.2" "上一次留下的说明不能带进这一次的结果"
 
 # SHOULD 2：在线更新自己的锁也在只有 root 能进的目录里（原来是 /run 里面板能打开的 0644 文件）/ SHOULD 2: the online
 # update's own lock lives in the root-only directory too (it was a 0644 file in /run the panel could open)

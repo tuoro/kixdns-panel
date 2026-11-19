@@ -41,12 +41,14 @@ set -Eeuo pipefail
 #     by lstat, under R2, to be no symlink; never install -d on an existing directory the panel can write; no redirection,
 #     sed -i, cp, mv, rm -rf, find -exec or tar on such paths without the same check.
 # R4：panel.env（和 root 读来定路径的别的东西）只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才
-#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认；重写时它里面的一项也不带过来。写进 panel.env
+#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认；重写时只照原来的保留面板这个进程自己的几项
+#     （监听地址、Secure Cookie、可信代理、日志级别、诊断服务器，每一项照格式严格验），别的一项也不带过来。写进 panel.env
 #     的每一项都照它的格式验过；panel.env、备份、unit 和 KixDNS 配置里来的值经 ENVIRON 交给 awk，不插进 sed、printf 的格式或 eval。
 # R4: panel.env (and anything else root reads to decide paths) is trusted only when it and every directory above it are
 #     root's and not writable by others; otherwise the KixDNS config path is taken from the KixDNS unit only root can
-#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it; a rewrite carries
-#     nothing of it over. Every value written into panel.env passes its key's format; values from panel.env, a record, a
+#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it; a rewrite keeps only
+#     the settings of the panel process itself (listen address, Secure cookie, trusted proxies, log level, diagnostic
+#     server, each validated strictly) and carries nothing else over. Every value written into panel.env passes its key's format; values from panel.env, a record, a
 #     unit or the KixDNS config reach awk through ENVIRON and are never put into a sed script, a printf format or eval.
 
 PANEL_CONFIG_DIRECTORY=/etc/kixdns-panel
@@ -533,6 +535,14 @@ quarantine_record() {
     # NIT 5: what moved in goes to root as a whole (no link followed), so nothing is left owned by a freed UID once the
     # panel account is gone
     chown -hR "${ROOT_UID}:${ROOT_GID}" -- "${destination}"
+    QUARANTINED_TO=${destination}
+  elif [[ ${3:-} == keep ]]; then
+    # 不在同一个文件系统、又要留着的（重写的 panel.env）：复制一份只有 root 能进的，不跟链接，再删掉原来的
+    # Not on the same filesystem and to be kept (a rewritten panel.env): a copy goes in, root's alone, no link followed,
+    # and the original goes
+    cp -a -- "${record}" "${destination}"
+    chown -hR "${ROOT_UID}:${ROOT_GID}" -- "${destination}"
+    rm -rf -- "${record}"
     QUARANTINED_TO=${destination}
   else
     rm -rf -- "${record}"

@@ -41,12 +41,14 @@ set -Eeuo pipefail
 #     by lstat, under R2, to be no symlink; never install -d on an existing directory the panel can write; no redirection,
 #     sed -i, cp, mv, rm -rf, find -exec or tar on such paths without the same check.
 # R4：panel.env（和 root 读来定路径的别的东西）只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才
-#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认；重写时它里面的一项也不带过来。写进 panel.env
+#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认；重写时只照原来的保留面板这个进程自己的几项
+#     （监听地址、Secure Cookie、可信代理、日志级别、诊断服务器，每一项照格式严格验），别的一项也不带过来。写进 panel.env
 #     的每一项都照它的格式验过；panel.env、备份、unit 和 KixDNS 配置里来的值经 ENVIRON 交给 awk，不插进 sed、printf 的格式或 eval。
 # R4: panel.env (and anything else root reads to decide paths) is trusted only when it and every directory above it are
 #     root's and not writable by others; otherwise the KixDNS config path is taken from the KixDNS unit only root can
-#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it; a rewrite carries
-#     nothing of it over. Every value written into panel.env passes its key's format; values from panel.env, a record, a
+#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it; a rewrite keeps only
+#     the settings of the panel process itself (listen address, Secure cookie, trusted proxies, log level, diagnostic
+#     server, each validated strictly) and carries nothing else over. Every value written into panel.env passes its key's format; values from panel.env, a record, a
 #     unit or the KixDNS config reach awk through ENVIRON and are never put into a sed script, a printf format or eval.
 
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -203,6 +205,11 @@ ROLLBACK_STARTED=false
 # quarantine when this run rewrote an untrusted panel.env; once a rollback puts the old panel.env back it is only a
 # duplicate, and goes
 PANEL_ENV_QUARANTINED=""
+# SHOULD 3：重写不能信的 panel.env 时照原来的保留的面板设置（KEY=值，一行一个，都验过）和验不过、换成示例的值的键
+# SHOULD 3: the panel settings kept when an untrusted panel.env is rewritten (KEY=value, one per line, all validated), and
+# the keys that failed validation and got the example's value
+PANEL_SETTINGS=""
+INVALID_PANEL_SETTINGS=""
 ONE_CLICK_URL="https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh"
 # 和 uninstall.sh 同一个：本地的卸载命令随面板删掉以后接着卸载用的 / The same as uninstall.sh's: what carries an uninstall on
 # once the local command is gone with the panel
@@ -774,6 +781,14 @@ quarantine_record() {
     # NIT 5: what moved in goes to root as a whole (no link followed), so nothing is left owned by a freed UID once the
     # panel account is gone
     chown -hR "${ROOT_UID}:${ROOT_GID}" -- "${destination}"
+    QUARANTINED_TO=${destination}
+  elif [[ ${3:-} == keep ]]; then
+    # 不在同一个文件系统、又要留着的（重写的 panel.env）：复制一份只有 root 能进的，不跟链接，再删掉原来的
+    # Not on the same filesystem and to be kept (a rewritten panel.env): a copy goes in, root's alone, no link followed,
+    # and the original goes
+    cp -a -- "${record}" "${destination}"
+    chown -hR "${ROOT_UID}:${ROOT_GID}" -- "${destination}"
+    rm -rf -- "${record}"
     QUARANTINED_TO=${destination}
   else
     rm -rf -- "${record}"
@@ -2921,6 +2936,147 @@ installed_kixdns_labels() {
   KIXDNS_SOURCE=""
 }
 
+# 点分十进制的 IPv4，每段 0–255、不带前导零 / Dotted IPv4, each part 0-255 without leading zeros
+ipv4_valid() {
+  local part
+  local -a parts
+  [[ $1 =~ ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$ ]] || return 1
+  IFS=. read -r -a parts <<< "$1"
+  for part in "${parts[@]}"; do
+    ((part <= 255)) || return 1
+  done
+}
+
+# IPv6：每组 1–4 位十六进制，最多一个 ::，一共 8 组（末尾的 IPv4 算两组）；不收区域（%eth0）
+# IPv6: groups of 1-4 hex digits, at most one ::, 8 groups in all (an IPv4 tail counts as two); no zone (%eth0)
+ipv6_valid() {
+  local value=$1
+  local head
+  local tail
+  local colons
+  local part
+  local count=0
+  local groups='^[0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{1,4})*$'
+  [[ ${value} =~ ^[0-9A-Fa-f:.]{2,45}$ && ${value} == *:* ]] || return 1
+  if [[ ${value} == *.* ]]; then
+    ipv4_valid "${value##*:}" || return 1
+    value="${value%:*}:0:0"
+  fi
+  if [[ ${value} == *::* ]]; then
+    head=${value%%::*}
+    tail=${value#*::}
+    [[ ${tail} != *::* ]] || return 1
+    for part in "${head}" "${tail}"; do
+      [[ -n ${part} ]] || continue
+      [[ ${part} =~ ${groups} ]] || return 1
+      colons=${part//[^:]/}
+      count=$((count + ${#colons} + 1))
+    done
+    ((count <= 7))
+  else
+    [[ ${value} =~ ${groups} ]] || return 1
+    colons=${value//[^:]/}
+    ((${#colons} == 7))
+  fi
+}
+
+# 面板的监听地址这类 SocketAddr：IPv4:端口 或 [IPv6]:端口，端口 1–65535 / A SocketAddr like the panel's listen address:
+# IPv4:port or [IPv6]:port, port 1-65535
+socket_address_valid() {
+  local value=$1
+  local host=${1%:*}
+  local port=${1##*:}
+  [[ ${value} == *:* && ${port} =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535)) || return 1
+  if [[ ${host} == \[*\] ]]; then
+    ipv6_valid "${host:1:${#host}-2}"
+  else
+    ipv4_valid "${host}"
+  fi
+}
+
+# 可信代理：逗号分隔的网段（地址/前缀长度），可以是空的，最多 64 个 / Trusted proxies: comma-separated networks
+# (address/prefix length), possibly empty, 64 at most
+trusted_proxies_valid() {
+  local value=$1
+  local network
+  local address
+  local prefix
+  local -a networks
+  [[ -n ${value} ]] || return 0
+  [[ ${value} =~ ^[0-9A-Fa-f:.,/]+$ && ${value} != ,* && ${value} != *, && ${value} != *,,* ]] || return 1
+  IFS=, read -r -a networks <<< "${value}"
+  ((${#networks[@]} <= 64)) || return 1
+  for network in "${networks[@]}"; do
+    [[ ${network} == */* ]] || return 1
+    address=${network%/*}
+    prefix=${network##*/}
+    [[ ${prefix} =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+    if ipv4_valid "${address}"; then
+      ((prefix <= 32)) || return 1
+    elif ipv6_valid "${address}"; then
+      ((prefix <= 128)) || return 1
+    else
+      return 1
+    fi
+  done
+}
+
+# SHOULD 3：重写不能信的 panel.env 时照原来的保留的几项：只管面板这个进程自己的设置，每一项照格式严格验；路径这些不在里面，
+# 照旧只照 root 的事实和 unit。参数：键，值。
+# SHOULD 3: the settings kept when an untrusted panel.env is rewritten: those of the panel process itself only, each
+# validated strictly; paths are not among them and still come from root's facts and the unit alone. Arguments: key, value.
+panel_setting_valid() {
+  local key=$1
+  local value=$2
+  case ${key} in
+    KIXDNS_PANEL_BIND | KIXDNS_DIAGNOSTIC_SERVER) socket_address_valid "${value}" ;;
+    KIXDNS_PANEL_SECURE_COOKIE) [[ ${value} == true || ${value} == false ]] ;;
+    KIXDNS_TRUSTED_PROXIES) trusted_proxies_valid "${value}" ;;
+    RUST_LOG) [[ ${value} =~ ^[A-Za-z0-9_:=,.-]{1,200}$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# SHOULD 3：从不能信的 panel.env 里取面板自己的设置：同一项写了几次时照 systemd 用最后一次，去掉一对引号，照格式验过的放进
+# PANEL_SETTINGS（render_panel_environment 照它写），验不过的键记在 INVALID_PANEL_SETTINGS 里，换成示例的值。没写的照示例。
+# SHOULD 3: take the panel's own settings from an untrusted panel.env: a key written more than once counts by its last
+# line, as systemd reads it, with one pair of quotes removed; values passing their format go into PANEL_SETTINGS (which
+# render_panel_environment writes), keys failing it into INVALID_PANEL_SETTINGS, getting the example's value. Keys not
+# written get the example's value.
+carry_panel_settings() {
+  local key
+  local value
+  PANEL_SETTINGS=""
+  INVALID_PANEL_SETTINGS=""
+  for key in KIXDNS_PANEL_BIND KIXDNS_PANEL_SECURE_COOKIE KIXDNS_TRUSTED_PROXIES RUST_LOG KIXDNS_DIAGNOSTIC_SERVER; do
+    value="$(AWK_KEY="${key}" awk -F= 'BEGIN { key = ENVIRON["AWK_KEY"] }
+      $1 == key { sub(/^[^=]*=/, ""); value = $0; found = 1 }
+      END { if (found) print value; exit !found }' "${PANEL_ENV}")" || continue
+    if [[ ${value} =~ ^\"(.*)\"$ || ${value} =~ ^\'(.*)\'$ ]]; then
+      value=${BASH_REMATCH[1]}
+    fi
+    if panel_setting_valid "${key}" "${value}"; then
+      PANEL_SETTINGS+="${key}=${value}"$'\n'
+    else
+      INVALID_PANEL_SETTINGS+="${INVALID_PANEL_SETTINGS:+、}${key}"
+    fi
+  done
+}
+
+# SHOULD 3：仅更新面板（在线更新走这条路）时要让管理员看到的话：写进只有 root 能写的在线更新状态目录，在线更新器把它接在系统页
+# 显示的结果后面。参数：一句话。
+# SHOULD 3: what the admin must see on a panel-only update (the path the online update takes): written into the online
+# update's status directory only root can write, where the online updater adds it to the result the system page shows.
+# Argument: one sentence.
+write_update_notice() {
+  local temporary
+  [[ ${INSTALL_KIND} == panel-only && -d ${PANEL_UPDATE_DIRECTORY} && ! -L ${PANEL_UPDATE_DIRECTORY} &&
+    $(stat -c '%u' -- "${PANEL_UPDATE_DIRECTORY}") == "${ROOT_UID}" ]] || return 0
+  temporary="$(mktemp "${PANEL_UPDATE_DIRECTORY}/.notice.XXXXXX")"
+  printf '%s\n' "$1" > "${temporary}"
+  mv -fT -- "${temporary}" "${PANEL_UPDATE_DIRECTORY}/notice"
+}
+
 render_panel_environment() {
   local source=$1
   local output=$2
@@ -2940,13 +3096,23 @@ render_panel_environment() {
     "KIXDNS_SERVICE_UNIT=${KIXDNS_SERVICE_UNIT}"; do
     panel_env_value_valid "${pair%%=*}" "${pair#*=}" || fail "要写进 panel.env 的 ${pair%%=*} 格式不对，没有写"
   done
+  while IFS= read -r pair; do
+    [[ -n ${pair} ]] || continue
+    panel_setting_valid "${pair%%=*}" "${pair#*=}" || fail "要写进 panel.env 的 ${pair%%=*} 格式不对，没有写"
+  done <<< "${PANEL_SETTINGS}"
   AWK_KIXDNS_COMMIT=${kixdns_commit} AWK_PANEL_COMMIT=${panel_commit} AWK_PANEL_RELEASE=${panel_release} \
     AWK_KIXDNS_SOURCE_ID=${kixdns_source_id} AWK_KIXDNS_SOURCE=${kixdns_source} AWK_CONFIG_PATH=${KIXDNS_CONFIG_PATH} \
     AWK_BINARY_PATH=${KIXDNS_BINARY_PATH} AWK_CONTROL_SOCKET=${KIXDNS_CONTROL_SOCKET} \
     AWK_HELPER_SOCKET=${KIXDNS_SERVICE_HELPER_SOCKET} AWK_SERVICE_UNIT=${KIXDNS_SERVICE_UNIT} \
     AWK_OLD_TRUSTED_COMMENT=${OLD_TRUSTED_PROXIES_COMMENT} AWK_OLD_TRUSTED_LINE=${OLD_TRUSTED_PROXIES_LINE} \
-    AWK_TRUSTED_COMMENT_1=${TRUSTED_PROXIES_COMMENT_1} AWK_TRUSTED_COMMENT_2=${TRUSTED_PROXIES_COMMENT_2} awk '
+    AWK_TRUSTED_COMMENT_1=${TRUSTED_PROXIES_COMMENT_1} AWK_TRUSTED_COMMENT_2=${TRUSTED_PROXIES_COMMENT_2} \
+    AWK_PANEL_SETTINGS=${PANEL_SETTINGS} awk '
     BEGIN {
+      count = split(ENVIRON["AWK_PANEL_SETTINGS"], settings_lines, "\n")
+      for (line = 1; line <= count; line++) {
+        equals = index(settings_lines[line], "=")
+        if (equals > 1) settings[substr(settings_lines[line], 1, equals - 1)] = substr(settings_lines[line], equals + 1)
+      }
       kixdns_commit = ENVIRON["AWK_KIXDNS_COMMIT"]
       panel_commit = ENVIRON["AWK_PANEL_COMMIT"]
       panel_release = ENVIRON["AWK_PANEL_RELEASE"]
@@ -2988,6 +3154,15 @@ render_panel_environment() {
     }
     /^# 完整安装包自带增强 Artifact 的 GitHub ID，由安装脚本填写。$/ {
       print "# 完整安装包自带内核包在 GitHub 上的编号，由安装脚本填写。"
+      next
+    }
+    # SHOULD 3：照原来的保留的面板设置（只在重写不能信的 panel.env 时有），写在示例里那一项的位置
+    # SHOULD 3: the panel settings kept (only when an untrusted panel.env is rewritten), written where the example has them
+    { equals = index($0, "="); setting = equals > 1 ? substr($0, 1, equals - 1) : "" }
+    setting != "" && setting in settings {
+      if (!(setting in settings_written)) print setting "=" settings[setting]
+      settings_written[setting] = 1
+      if (setting == "KIXDNS_PANEL_BIND") bind_found = 1
       next
     }
     # 监听地址是用户的设置，升级不改：改成 127.0.0.1 的人就是不想让面板对外。
@@ -3039,6 +3214,7 @@ render_panel_environment() {
     { print }
     END {
       if (held_trusted_comment) print old_trusted_comment
+      for (setting in settings) if (!(setting in settings_written)) print setting "=" settings[setting]
       if (!bind_found) print "KIXDNS_PANEL_BIND=0.0.0.0:5738"
       if (!config_found) print "KIXDNS_CONFIG=" config_path
       if (!binary_found) print "KIXDNS_BINARY=" binary_path
@@ -3084,25 +3260,34 @@ update_panel_environment() {
   # all out after a few wrong passwords, which is worse than the local spoofing it stops. Only the comment becomes the new
   # example's and the install result says so once; with the comment replaced, the next run says nothing.
   if [[ ${PANEL_ENV_TRUSTED} == false ]]; then
-    # MUST 1：面板能改的 panel.env 一项也不带过来：照安装包的示例重写，值只用 root 的事实和安装器验过的设置
-    # MUST 1: nothing is carried over from a panel.env the panel can change: it is rewritten from the package's example,
-    # with values only from root's facts and settings the installer checked
+    # MUST 1：面板能改的 panel.env 照安装包的示例重写，值只用 root 的事实和安装器验过的设置；SHOULD 3（第六轮）：只有面板这个
+    # 进程自己的几项照原来的保留，每一项照格式严格验过
+    # MUST 1: a panel.env the panel can change is rewritten from the package's example, with values only from root's facts
+    # and settings the installer checked; SHOULD 3 (sixth review): only the settings of the panel process itself are kept,
+    # each validated strictly
     source="${PACKAGE_ROOT}/deploy/panel.env.example"
+    carry_panel_settings
   elif old_trusted_proxies_default "${PANEL_ENV}"; then
     TRUSTED_PROXIES_NOTICE=true
   fi
   temporary="$(mktemp "${PANEL_CONFIG_DIRECTORY}/.panel.env.XXXXXX")"
   render_panel_environment "${source}" "${temporary}" "${kixdns_commit}" \
     "${PANEL_BUILD_COMMIT}" "${PANEL_RELEASE}" "${kixdns_source_id}" "${kixdns_source}"
+  PANEL_SETTINGS=""
   chown -h root:"${KIXDNS_GROUP}" -- "${temporary}"
   chmod 0640 -- "${temporary}"
   if [[ ${PANEL_ENV_TRUSTED} == false && ( -e ${PANEL_ENV} || -L ${PANEL_ENV} ) ]]; then
-    quarantine_record "${PANEL_ENV}" panel.env
+    # 原来那份不管在不在同一个文件系统都留一份只有 root 能读的（keep）/ The old one is kept, root's alone, on the same
+    # filesystem or not (keep)
+    quarantine_record "${PANEL_ENV}" panel.env keep
     PANEL_ENV_QUARANTINED=${QUARANTINED_TO}
-    destination="已删掉"
-    [[ -z ${QUARANTINED_TO} ]] || destination="挪到了 ${QUARANTINED_TO}"
-    printf '%s 面板能改，这次照安装包的示例重写，里面原来的设置一项也没用（%s）；要用其中的设置（比如监听地址），核对以后照着改 %s，再 sudo systemctl restart kixdns-panel.service。\n' \
-      "${PANEL_ENV}" "${destination}" "${PANEL_ENV}"
+    destination="原来那份挪到了 ${QUARANTINED_TO}"
+    printf '%s 面板能改，这次照安装包的示例重写：面板自己的设置（监听地址、Secure Cookie、可信代理、日志级别、诊断服务器）照原来的保留，别的一项也没用（%s）。\n' \
+      "${PANEL_ENV}" "${destination}"
+    [[ -z ${INVALID_PANEL_SETTINGS} ]] ||
+      printf '其中 %s 格式不对，换成了安装包示例的值；核对原来那份以后照着改 %s，再 sudo systemctl restart kixdns-panel.service。\n' \
+        "${INVALID_PANEL_SETTINGS}" "${PANEL_ENV}"
+    write_update_notice "panel.env 面板能改，已照安装包的示例重写，面板自己的设置照原来的保留，${destination}${INVALID_PANEL_SETTINGS:+；其中 ${INVALID_PANEL_SETTINGS} 格式不对，换成了示例的值}"
   fi
   mv -fT -- "${temporary}" "${PANEL_ENV}"
 }

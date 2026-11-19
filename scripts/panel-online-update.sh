@@ -4,6 +4,9 @@ set -Eeuo pipefail
 readonly REPOSITORY="tuoro/kixdns-panel"
 readonly STATUS_DIRECTORY="/var/lib/kixdns-panel-update"
 readonly STATUS_FILE="${STATUS_DIRECTORY}/status.json"
+# 安装器留给管理员的话（install.sh 的 write_update_notice）/ What the installer leaves for the admin (write_update_notice in
+# install.sh)
+readonly NOTICE_FILE="${STATUS_DIRECTORY}/notice"
 readonly PANEL_ENV="/etc/kixdns-panel/panel.env"
 readonly INSTALLER="/usr/local/libexec/kixdns-panel-one-click-install"
 readonly PANEL_SERVER="/usr/local/bin/kixdns-panel-server"
@@ -194,6 +197,18 @@ environment_value() {
     $1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
 }
 
+# SHOULD 3：安装器（仅更新面板时）留给管理员的话，接在完成的结果后面，系统页上就看得到；读完就删，上一次留下的在更新之前删掉
+# SHOULD 3: what the installer (on a panel-only update) left for the admin follows the result, so the system page shows it;
+# it is removed once read, and one left by an earlier run is removed before the update
+update_notice() {
+  local notice=""
+  if [[ -f ${NOTICE_FILE} && ! -L ${NOTICE_FILE} ]]; then
+    notice="$(tr -d '[:cntrl:]' < "${NOTICE_FILE}")"
+  fi
+  rm -f -- "${NOTICE_FILE}"
+  [[ -z ${notice} ]] || printf '。%s' "${notice}"
+}
+
 trusted_root_executable() {
   local mode
   local path=$1
@@ -278,8 +293,9 @@ main() {
     return
   fi
   write_status downloading "正在下载并校验 ${latest_version}"
+  rm -f -- "${NOTICE_FILE}"
   run_step "${INSTALLER}" --version "${latest_version}" -- --panel-only-update
-  write_status complete "面板已更新到 ${latest_version}"
+  write_status complete "面板已更新到 ${latest_version}$(update_notice)"
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
