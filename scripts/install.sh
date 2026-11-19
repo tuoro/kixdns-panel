@@ -744,6 +744,7 @@ adopt_old_records() {
   local new
   local problem
   local destination
+  local where
   for name in external-backup resolved-stub; do
     old=${PANEL_STATE_DIRECTORY}/${name}
     new=${ROOT_RECORDS}/${name}
@@ -752,8 +753,9 @@ adopt_old_records() {
     if [[ -n ${problem} ]]; then
       if trusted_record "${name}"; then
         destination="$(quarantine_record "${old}" "${name}")"
-        printf '%s 不能信（%s），没有用它（%s）；用的是只有 root 能进的 %s。\n' "${old}" "${problem}" \
-          "${destination:+挪到了 ${destination}}${destination:-已删掉}" "${new}"
+        where="已删掉"
+        [[ -z ${destination} ]] || where="挪到了 ${destination}"
+        printf '%s 不能信（%s），没有用它（%s）；用的是只有 root 能进的 %s。\n' "${old}" "${problem}" "${where}" "${new}"
         continue
       fi
       refuse_record "${old}" "${name}" "${problem}"

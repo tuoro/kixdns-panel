@@ -2258,6 +2258,8 @@ chmod 0770 "${root}/state/external-backup"
 output="$(config_directory_run)"
 assert_contains "${output}" "${root}/state/external-backup 不能信（别人能往里写），没有用它" "旧位置那份不能信时应说明"
 assert_contains "${output}" "用的是只有 root 能进的 ${root}/records/external-backup。" "应说明照用的是哪一份"
+notice_line="$(grep -F '没有用它' <<< "${output}" || true)"
+assert_equals "$(grep -o 'quarantine/external-backup\.' <<< "${notice_line}" | wc -l)" "1" "挪去的地方只说一次"
 assert_contains "${output}" "PLANNED upgrade ${root}/panel-etc/kixdns/pipeline.json" "照用能信的那份接着装"
 [[ ! -e ${root}/state/external-backup ]] || { printf '断言失败：不能信的旧备份应挪走\n' >&2; exit 1; }
 

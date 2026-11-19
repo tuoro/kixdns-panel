@@ -549,6 +549,7 @@ adopt_old_records() {
   local new
   local problem
   local destination
+  local where
   for name in external-backup resolved-stub; do
     old=${PANEL_STATE_DIRECTORY}/${name}
     new=${ROOT_RECORDS}/${name}
@@ -557,8 +558,9 @@ adopt_old_records() {
     if [[ -n ${problem} ]]; then
       if trusted_record "${name}"; then
         destination="$(quarantine_record "${old}" "${name}")"
-        printf '%s 不能信（%s），没有用它（%s）；用的是只有 root 能进的 %s。\n' "${old}" "${problem}" \
-          "${destination:+挪到了 ${destination}}${destination:-已删掉}" "${new}"
+        where="已删掉"
+        [[ -z ${destination} ]] || where="挪到了 ${destination}"
+        printf '%s 不能信（%s），没有用它（%s）；用的是只有 root 能进的 %s。\n' "${old}" "${problem}" "${where}" "${new}"
         continue
       fi
       refuse_record "${old}" "${name}" "${problem}"
@@ -1385,7 +1387,7 @@ remove_panel_state() {
     kept_kixdns=true
     hand_kept_kixdns_to_root
   else
-    rm -rf -- "${state}"
+    remove_state_directory "${state}"
   fi
   # 迁移前的备份是面板数据的一部分：恢复时已经用掉；保留 KixDNS 删除数据时和以前一样删掉。只剩空目录时一并删掉。
   # The pre-migration backup is part of the panel data: a restore has used it up already; keeping KixDNS and removing the
@@ -1426,6 +1428,19 @@ remove_panel_state() {
   else
     rm -rf -- "${PANEL_CONFIG_DIRECTORY}"
   fi
+}
+
+# 删掉面板的状态目录。它单独挂载时（比如一个文件系统专门放它）删不掉挂载点：里面清空了就留着挂载点、说一声。参数：目录。
+# Remove the panel's state directory. When it is mounted on its own (a filesystem kept just for it, say), the mount point
+# cannot go: once it is empty, the mount point stays and this is said. Argument: the directory.
+remove_state_directory() {
+  local state=$1
+  rm -rf -- "${state}" 2>/dev/null && return 0
+  if mountpoint -q -- "${state}" && [[ -z "$(find "${state}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    printf '%s 是单独挂载的文件系统：里面已经清空，挂载点留着。\n' "${state}"
+    return 0
+  fi
+  fail "删不掉 ${state}"
 }
 
 # 一个 unit（默认是保留的 KixDNS 的）里 systemd 加载的那几个文件：主文件和 drop-in，一行一个。

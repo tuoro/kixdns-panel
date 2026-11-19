@@ -1615,6 +1615,29 @@ assert_contains "${output}" "${host}/panel-etc/panel.env 面板能改，它记�
 assert_equals "$(account_calls)" "userdel kixdns-panel;" "不能信的 panel.env 里记的待删账号不能删"
 [[ -f ${host}/etc-kixdns/pipeline.json ]] || { printf '断言失败：不能信的 panel.env 不能让卸载器删 /etc/kixdns\n' >&2; exit 1; }
 
+# 状态目录单独挂载时删不掉挂载点：里面清空了就留着、说一声，不算卸载失败（S-F 的主机卸载时就是这样）。
+# A state directory mounted on its own cannot lose its mount point: once emptied it stays, this is said, and the uninstall
+# does not fail (as on the S-F host).
+output="$(
+  mounted="${scratch}/mounted-state"
+  mkdir -p "${mounted}/geo"
+  : > "${mounted}/panel.db"
+  rm() {
+    if [[ ${*: -1} == "${mounted}" ]]; then
+      command rm -rf -- "${mounted:?}"/*
+      return 1
+    fi
+    command rm "$@"
+  }
+  mountpoint() { [[ ${*: -1} == "${mounted}" ]]; }
+  fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+  remove_state_directory "${mounted}"
+  printf 'LEFT=%s\n' "$(find "${mounted}" -mindepth 1 | wc -l)"
+)"
+assert_contains "${output}" "是单独挂载的文件系统：里面已经清空，挂载点留着。" "单独挂载的状态目录清空后应说明"
+assert_contains "${output}" "LEFT=0" "单独挂载的状态目录里应清空"
+assert_not_contains "${output}" "FAILED" "单独挂载的状态目录不算卸载失败"
+
 # 规则写在脚本开头 / The rules are written at the top of the script
 for rule in R1 R2 R3 R4; do
   assert_contains "$(head -n 60 "${UNINSTALLER}")" "# ${rule}：" "uninstall.sh 开头应写明规则 ${rule}"
