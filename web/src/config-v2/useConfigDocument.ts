@@ -5,7 +5,7 @@ import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { normalUrl } from '../config-model/blocklist'
 import { exportConfig, readConfig } from '../config-model/document'
-import { blocklistKey, compileNamed, type Model, type Rule } from '../config-model/model'
+import { blocklistKey, compileNamed, draftPipelineClashes, mappingPipelineId, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { ROLLBACK_LABELS, configPageOpen, nameWith, noteRead, restartingKixdns, startingKixdns, versionName, type RollbackOrigin } from '../composables/useServiceStart'
@@ -148,7 +148,7 @@ export function rulesAnswering(draft: Model, type: string): { rules: Rule[]; unt
   const { config, index } = compileNamed(draft)
   const content = config as unknown as Record<string, unknown>
   const everyRule = [...draft.rules, ...draft.ruleGroups.flatMap((g) => g.rules)]
-  const mappingPipeline = draft.mappingId ?? 'domain_mapping'
+  const mappingPipeline = mappingPipelineId(draft)
   const found = new Map<number, Rule>()
   let untraced = ruleUsesAction(content.background_refresh_rule, type) ? 1 : 0
   for (const pipeline of config.pipelines) {
@@ -178,7 +178,17 @@ export function sayBlocked(): void {
 }
 watch(cnameBlocked, (blocked) => { if (!blocked && blockedToast !== null) { useToast().dismiss(blockedToast); blockedToast = null } })
 export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value && !cnameBlocked.value)
-export const canSave = computed(() => (dirty.value || canApplyNow.value) && !cnameBlocked.value)
+// 草稿写出去会有两个同名的列表（Pipeline）：内核的校验不收（以前的内核照收，只认后一个，前一个的规则悄悄没了），所以先不让保存，说是哪个名字。
+// 面板自己起的名字都避开了，只有 JSON 里手写出来的才会这样
+// The draft would write two lists (pipelines) of one name: the kernel's validation refuses them (earlier kernels took them, used the later and
+// silently lost the earlier one's rules), so saving waits, naming the name. The panel's own names all steer clear, so only a hand-written
+// JSON gets here
+export const pipelineClash = computed(() => draftPipelineClashes(model)[0] ?? null)
+export const clashNote = (id: string): string => `两个列表都叫「${id}」，在 JSON 里改掉一个再保存`
+export function sayClash(): void {
+  if (pipelineClash.value) useToast().info(clashNote(pipelineClash.value))
+}
+export const canSave = computed(() => (dirty.value || canApplyNow.value) && !cnameBlocked.value && !pipelineClash.value)
 
 // ---------- 保存的几步 / the save's stages ----------
 // building：保存的第 0 步，等拦截列表按这份草稿的订阅合成好 / building: a save's step 0, waiting for the blocklists to be built for this draft's subscriptions
@@ -578,6 +588,8 @@ export async function validate(): Promise<ValidationResult | null> {
 async function runCheck(): Promise<ValidationResult | null> {
   // 冲突时校验没有意义，还会把冲突的提示盖掉：先重新读取 / Validating during a conflict means nothing and would wipe the conflict line: re-read first
   if (deferSave.value || conflict.value) return null
+  // 两个同名的列表：不交给内核校验，先说出来 / Two lists of one name: not handed to the kernel's check, said first
+  if (pipelineClash.value) { sayClash(); return null }
   origin.value = 'draft'
   startStage('checking')
   checkBuildProblem = null
@@ -1035,6 +1047,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   if ((busy.value && !waiting) || !doc.value) return
   // 被内核不支持的 CNAME 回答挡住时说一句，不默默不动 / Blocked by unsupported CNAME answers: say so instead of doing nothing
   if (cnameBlocked.value) { sayBlocked(); return }
+  if (pipelineClash.value) { sayClash(); return }
   if (!canSave.value) return
   // 要写入的草稿在按下这一刻定下来，复制一份：导出的结果和草稿共用数组，写入的请求要等校验完才打包，校验途中的修改会混进去、没校验就写进文件
   // The draft to write is fixed at the press, as a copy: the export shares arrays with the draft and the write request is only built after validation,

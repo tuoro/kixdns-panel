@@ -111,9 +111,10 @@ describe('导入说明说清上游组从哪来', () => {
 
 describe('读出来的编号不让 Pipeline 撞名 / ids read back never make two pipelines of one name', () => {
   // 自带转发的规则编出来有自己的 rule-编号 Pipeline：配置里手写了一个同名的（这里读成上游组）时，新读出来的规则拿到这个编号就编出两个同名的，
-  // 内核整份配置都不收
+  // 内核的校验不收（启动时照收，入口和跳转只认后一个）
   // A rule with its own forward compiles to a pipeline rule-<id>: when the config holds a hand-written one of that name (read as an upstream group
-  // here), a rule read with that id compiles to two of one name, and the kernel refuses the whole config
+  // here), a rule read with that id compiles to two of one name, which the kernel's validation refuses (at startup it loads them and entries
+  // and jumps reach the later)
   const cfg = (rules: unknown[]) => ({ version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }] as unknown[], pipelines: [{ id: 'main', rules }] as unknown[] })
   // 读之前先读一份只有一条规则的，看下一个编号是几，接下来读的规则编号就在它后面几个之内；再往配置里手写这之后 50 个编号的 rule-编号（读成上游组）
   // Before reading, a one-rule config learns the next id, and the rules read next take ids within a few after it; the config then gains

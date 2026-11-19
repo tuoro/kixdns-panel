@@ -241,8 +241,8 @@ const RESPONSE_MATCHERS: MatcherDefinition[] = [
   { value: 'response_answer_ip', label: '回答的 IP', fields: ['cidr'] },
   { value: 'response_answer_ip_geoip_country', label: '回答 IP 的地区', fields: ['country_codes'] },
   { value: 'response_answer_ip_geoip_private', label: '回答的是内网地址', fields: ['expect'] },
-  { value: 'response_request_domain_geosite', label: '请求的域名属于 GeoSite', fields: ['value'] },
-  { value: 'response_request_domain_geosite_not', label: '请求的域名不属于 GeoSite', fields: ['value'] },
+  { value: 'response_request_domain_geo_site', label: '请求的域名属于 GeoSite', fields: ['value'] },
+  { value: 'response_request_domain_geo_site_not', label: '请求的域名不属于 GeoSite', fields: ['value'] },
   { value: 'response_txt_content', label: 'TXT 内容', fields: ['mode', 'value'] },
 ]
 

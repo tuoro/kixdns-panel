@@ -47,7 +47,8 @@ describe('compile', () => {
   it('每个上游组一个 Pipeline，备用组接在回答处理上 / one pipeline per upstream group, the fallback on its response side', () => {
     const cn = pipeline('upstream-cn').rules[0]!
     const cnEcs = { mode: 'from_client_ip', prefix_v4: 24, prefix_v6: 56 }
-    expect(cn.actions).toEqual([{ type: 'forward', upstream: 'https://doh.pub/dns-query, tls://dns.alidns.com, tcp+udp://223.5.5.5', ecs: cnEcs }])
+    // 只写了 IP 的那个写进内核时带上 :53（内核不收没端口的） / The address written as an IP alone takes :53 in the kernel (which refuses it portless)
+    expect(cn.actions).toEqual([{ type: 'forward', upstream: 'https://doh.pub/dns-query, tls://dns.alidns.com, tcp+udp://223.5.5.5:53', ecs: cnEcs }])
     // 缓存按 Pipeline 级的 ECS 隔开 / the cache is split by the pipeline-level ECS
     expect(pipeline('upstream-cn').ecs).toEqual(cnEcs)
     expect(pipeline('upstream-abroad').ecs).toBeUndefined()
@@ -113,7 +114,7 @@ describe('compile', () => {
     expect(config.settings.bind_udp).toBe('0.0.0.0:53')
     expect(config.settings.default_upstream).toBe('https://dns.google/dns-query, https://cloudflare-dns.com/dns-query')
     const toCn = compile({ ...model, rest: { type: 'upstream', group: 'cn' } })
-    expect(toCn.settings.default_upstream).toBe('https://doh.pub/dns-query, tls://dns.alidns.com, tcp+udp://223.5.5.5')
+    expect(toCn.settings.default_upstream).toBe('https://doh.pub/dns-query, tls://dns.alidns.com, tcp+udp://223.5.5.5:53')
   })
 
   it('拦截选空地址时 A 和 AAAA 都有回答 / blocking with a null address answers both A and AAAA', () => {

@@ -1,9 +1,10 @@
 import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, mergedFileIn, ownMatcher, ownRuleText, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { effectiveOps, kernelKey, normalizeAddress, sameKernel, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
 import {
-  blocklistEntries, blocklistKey, emptyBlocklists, groupPipeline, isIp, kernelAddress, mappingKernelDomain, mappingLive, mappingRule, POLLUTED_CIDRS, ruleKernel, settingsFromKernel, splitList,
-  type Blocklists, type BlockResponse, type Condition, type Ecs, type Mapping, type Model, type Outcome, type Protocol, type Remedy, type ResponseCondition,
-  type ResponseHandling, type Rule, type RuleGroup, type UpstreamAddress, type UpstreamGroup, nextId as nextFreeId } from './model'
+  blocklistEntries, blocklistKey, compileNamed, emptyBlocklists, FIELD, groupPipeline, isIp, kernelUpstream, mainPipelineId, mappingKernelDomain, mappingLive, mappingRule, POLLUTED_CIDRS,
+  RESPONSE_FIELD, ruleGroupPipelineId, ruleKernel, settingsFromKernel, splitList,
+  type Blocklists, type BlockResponse, type Condition, type Defaults, type Ecs, type FieldDef, type Mapping, type Model, type Outcome, type Protocol, type Remedy,
+  type ResponseCondition, type ResponseHandling, type Rule, type RuleGroup, type UpstreamAddress, type UpstreamGroup, nextId as nextFreeId } from './model'
 
 // 把任何一份内核配置读成模型，不丢东西：能放进规则、上游组、域名映射的就放进去，放不进的原样保留成高级规则 / 高级入口，
 // 写回去和原来一样。每一处改动都记一条说明给用户看。依据的内核行为见 kernel.ts 顶上的出处。
@@ -26,6 +27,7 @@ const RULE_KEYS = new Set(['name', 'matchers', 'matcher_operator', 'actions', 'r
 const PIPELINE_KEYS = new Set(['id', 'rules', 'ecs'])
 const TOP_KEYS = new Set(['version', 'settings', 'pipeline_select', 'pipelines', 'panel'])
 const BLOCK_RCODES: Record<string, BlockResponse> = { NXDOMAIN: 'NXDOMAIN', REFUSED: 'REFUSED', SERVFAIL: 'SERVFAIL', NOERROR: 'NOERROR' }
+const DEFAULT_BLOCKS = new Set<BlockResponse>(['NXDOMAIN', 'REFUSED', 'zero'])
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T
 const isTrueChain = (ms: KMatcher[] | undefined) => !ms?.length || (ms.length === 1 && ms[0]!.type === 'any')
 class Raw extends Error {}
@@ -44,7 +46,9 @@ function addressesOf(upstream: string, transport: unknown): UpstreamAddress[] {
     return { address, protocol: address.includes('://') || t === 'udp' ? 'auto' : (t as Protocol) }
   })
 }
-const addrKey = (addrs: UpstreamAddress[]) => addrs.map((a) => normalizeAddress(kernelAddress(a))).sort().join('|')
+// 按写进内核的样子比（没写端口的补上 53）：只写了 IP 的和带 :53 的是同一个上游 / Compared as written to the kernel (53 for a missing port): an IP
+// alone and the same with :53 are one upstream
+const addrKey = (addrs: UpstreamAddress[]) => addrs.map((a) => normalizeAddress(kernelUpstream(a))).sort().join('|')
 function ecsOf(k: unknown): Ecs {
   if (k === undefined || k === null) return null
   const e = k as Record<string, unknown>
@@ -89,7 +93,17 @@ const values = (m: KMatcher, k: string) => String(m[k] ?? '').split(',').map((x)
 const codesOf = (m: KMatcher) => (Array.isArray(m.country_codes) ? m.country_codes.map(String) : values(m, 'country_codes')).map((c) => c.toUpperCase())
 let nextId = 100_000
 const cid = () => nextId++
+// 要填值的条件读出来是空的（内核里写的是空字符串）：面板编配置时会把空值去掉，「全部满足」就成了所有回答都算、规则的条件就成了所有请求都算，
+// 所以放不进面板的写法，原样保留
+// A condition that takes values reads back empty (the kernel holds an empty string): the panel drops blank values when compiling, so
+// 「全部满足」 would count every answer and a rule's condition every request; it fits no panel field and is kept verbatim
+function filled<C extends { field: string; values: string[] }>(c: C, fields: Record<string, FieldDef>): C {
+  return fields[c.field]?.values && (!c.values.length || c.values.some((v) => !v.trim())) ? raw('条件的值是空的') : c
+}
 function requestCondition(l: Lit): Condition {
+  return filled(requestConditionOf(l), FIELD)
+}
+function requestConditionOf(l: Lit): Condition {
   const { m, neg } = l
   const v = String(m.value ?? '')
   switch (m.type) {
@@ -108,6 +122,9 @@ function requestCondition(l: Lit): Condition {
   }
 }
 function responseCondition(l: Lit): ResponseCondition {
+  return filled(responseConditionOf(l), RESPONSE_FIELD)
+}
+function responseConditionOf(l: Lit): ResponseCondition {
   const { m, neg } = l
   const v = String(m.value ?? '')
   const c = (field: ResponseCondition['field'], vals: string[], extra: Partial<ResponseCondition> = {}): ResponseCondition => ({ id: cid(), field, negate: neg, values: vals, ...extra })
@@ -119,7 +136,12 @@ function responseCondition(l: Lit): ResponseCondition {
     case 'request_domain_suffix': return c('request_domain', [v])
     case 'request_domain_exact': return c('request_domain', [v], { exact: true })
     case 'request_domain_regex': return c('request_domain', [v], { regex: true })
+    // 内核的写法是 _geo_site；以前面板（和高级规则的编辑器）写的 _geosite 内核不认，这样的配置从没生效过，读进来照样认，写回去换成内核的
+    // The kernel's spelling is _geo_site; the _geosite the panel (and the advanced rule editor) used to write is unknown to the kernel, so such a
+    // config never took effect: it still reads back, and writes back in the kernel's spelling
+    case 'response_request_domain_geo_site':
     case 'response_request_domain_geosite': return c('request_geosite', [v])
+    case 'response_request_domain_geo_site_not':
     case 'response_request_domain_geosite_not': return { ...c('request_geosite', [v]), negate: !neg }
     case 'response_txt_content': return c('txt', [v], { txtMode: (['exact', 'prefix', 'regex'].includes(String(m.mode)) ? m.mode : 'exact') as 'exact' | 'prefix' | 'regex' })
     case 'response_answer_ip': return c('answer_ip', values(m, 'cidr'))
@@ -132,10 +154,13 @@ function responseCondition(l: Lit): ResponseCondition {
 }
 // 同一组里同一种「不是」并成一条（几个值都不是）；只差一个肯定条件的几组并成一组（几个值任一） /
 // Within a group, negations of one kind merge (none of the values); groups differing in one positive condition merge (any of the values)
+// 比法相同才并：字段、是不是、正则、就是，TXT 还有等于 / 开头是 / 正则（等于和开头是并成一个，写回去就都成了等于）
+// Only one comparison merges: field, negation, regex, exact, and for TXT exact / prefix / regex too (merging exact into prefix wrote both back as exact)
+type CondLike = { field: string; negate: boolean; regex?: boolean; exact?: boolean; txtMode?: string; values: string[] }
 const condsKey = (c: Condition[][]) => c.map((g) => g.map(fullKey).sort().join('&')).sort().join('|')
-const condKey = (c: { field: string; negate: boolean; regex?: boolean; exact?: boolean }) => `${c.field}|${c.negate}|${Boolean(c.regex)}|${Boolean(c.exact)}`
-const fullKey = (c: { field: string; negate: boolean; regex?: boolean; exact?: boolean; values: string[] }) => `${condKey(c)}|${[...c.values].sort().join(',')}`
-function mergeNegatives<C extends { field: string; negate: boolean; regex?: boolean; exact?: boolean; values: string[] }>(conds: C[]): C[] {
+const condKey = (c: Omit<CondLike, 'values'>) => `${c.field}|${c.negate}|${Boolean(c.regex)}|${Boolean(c.exact)}|${c.txtMode ?? ''}`
+const fullKey = (c: CondLike) => `${condKey(c)}|${[...c.values].sort().join(',')}`
+function mergeNegatives<C extends CondLike>(conds: C[]): C[] {
   const out: C[] = []
   for (const c of conds) {
     const same = c.negate && c.values.length ? out.find((o) => o.negate && o.values.length && condKey(o) === condKey(c)) : undefined
@@ -144,7 +169,10 @@ function mergeNegatives<C extends { field: string; negate: boolean; regex?: bool
   }
   return out
 }
-function mergeGroups(groups: Condition[][]): Condition[][] {
+// 回答条件也用它：responseChain 把「全部满足」里那个多值条件写成「(a 或 b) 且 c」，展开就是只差这一个值的几组
+// Answer conditions use it too: responseChain writes the multi-valued condition of 「全部满足」 as (a or b) and c, which expands to groups
+// differing in that one value
+function mergeGroups<C extends CondLike>(groups: C[][]): C[][] {
   let gs = groups.map((g) => mergeNegatives(g))
   for (let changed = true; changed;) {
     changed = false
@@ -159,7 +187,8 @@ function mergeGroups(groups: Condition[][]): Condition[][] {
       if (onlyA.length !== 1 || onlyB.length !== 1) continue
       const x = onlyA[0]!
       const y = onlyB[0]!
-      if (x.negate || y.negate || !x.values.length || condKey(x) !== condKey(y) || x.field === 'client_private' || x.field === 'edns') continue
+      // 不填值的（客户端网络、EDNS、回答 IP 的网络）没有几个值可并 / Fields without values (client network, EDNS, answer network) have no values to merge
+      if (x.negate || y.negate || !x.values.length || condKey(x) !== condKey(y)) continue
       gs[i] = a.map((c) => (c === x ? { ...x, values: [...new Set([...x.values, ...y.values])] } : c))
       gs = gs.filter((_, n) => n !== j)
       changed = true
@@ -173,14 +202,27 @@ function mergeGroups(groups: Condition[][]): Condition[][] {
 export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const notes: ImportNote[] = []
   const note = (text: string, level: ImportNote['level'] = 'info') => notes.push({ level, text })
-  // 读回来的规则在内核里是 rule-编号时记下编号 / The id of each rule read back from a kernel name rule-<id>
-  const kernelIds = new Map<Rule, number>()
   const origin: Origin = { rules: new Map(), groups: new Map(), mappings: new Map() }
   // 新规则的编号从上一份用过的编号之后开始：页面重开以后计数从头来，会和接回来的旧编号撞上（点一条开的是另一条）
   // New rules number from above every id the previous model used: after a page reload the counter starts over and would collide with carried-over ids
   // (clicking one rule opened another)
   if (prev) nextId = Math.max(nextId, nextFreeId(prev))
-  const pipelines = (cfg.pipelines ?? []) as KPipelineLike[]
+  // 两个 Pipeline 同名：内核的校验和热重载不收，启动时只记警告照样加载，入口和跳转按名字找到的是后一个（engine/types.rs pipeline_index），前一个的
+  // 规则用不上。正在跑的配置可能就是这样：照内核读，后一个放在前一个的位置，前一个去掉，说一句。不然读出来的模型自己就编出两个同名的
+  // Two pipelines of one name: the kernel's validation and reload refuse them, while startup only warns and loads them, entries and jumps then
+  // finding the later one by name (engine/types.rs pipeline_index) and the earlier one's rules going unused. A running config may be so: read
+  // as the kernel reads it, the later one takes the earlier one's place, the earlier one goes, and a note says so. Otherwise the model read
+  // would compile to two of one name itself
+  const pipelines: KPipelineLike[] = []
+  const placed = new Map<string, number>()
+  const shadowed = new Set<string>()
+  for (const p of (cfg.pipelines ?? []) as KPipelineLike[]) {
+    const at = placed.get(p.id)
+    if (at === undefined) { placed.set(p.id, pipelines.length); pipelines.push(p); continue }
+    pipelines[at] = p
+    shadowed.add(p.id)
+  }
+  for (const id of shadowed) note(`有两个 Pipeline 都叫「${id}」，KixDNS 的入口和跳转只用后一个，前一个已去掉`, 'warn')
   const byId = new Map(pipelines.map((p) => [p.id, p]))
   const settings = clone(cfg.settings ?? {})
   const defaultUp = String(settings.default_upstream ?? '1.1.1.1:53')
@@ -252,10 +294,10 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const usedGroupIds = new Set<string>()
   const pipelineIds = new Set(pipelines.map((p) => p.id))
   // 组的编号要没用过；编号定下的 Pipeline 名字（upstream-编号）也不能是配置里别的 Pipeline 的，own 是这个组自己读自的那个。两个 Pipeline 同名，
-  // 内核整份配置都不收（比如 JSON 里把 upstream-x 改成了规则列表，里面的转发又按上一份认回组 x）
+  // 内核的校验不收（比如 JSON 里把 upstream-x 改成了规则列表，里面的转发又按上一份认回组 x）
   // A group id must be unused, and the pipeline name it gives (upstream-<id>) must not be another pipeline's in the config, own being the one
-  // this group was read from. Two pipelines of one name and the kernel refuses the whole config (upstream-x turned into a rule list in the JSON,
-  // say, with the forward inside matched back to the previous group x)
+  // this group was read from. Two pipelines of one name and the kernel's validation refuses the config (upstream-x turned into a rule list in
+  // the JSON, say, with the forward inside matched back to the previous group x)
   const freeGroupId = (id: string, own?: string) => !usedGroupIds.has(id) && (!pipelineIds.has(`upstream-${id}`) || `upstream-${id}` === own)
   const slug = (base: string, own?: string) => {
     let id = base.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'group'
@@ -277,14 +319,26 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   // 认回上一份的组先占住编号，新组起编号时让开：两个组同编号，编出来就是两个同名的 Pipeline / Groups matched to the previous model hold their ids
   // first and new groups step aside: two groups of one id compile to two pipelines of one name
   for (const p of pipelines) { const g = groupIds.has(p.id) ? prevGroupOf(p) : undefined; if (g) usedGroupIds.add(g.id) }
+  // 主列表编出来叫什么：接住所有请求的入口进的是规则列表时就是它，进的是上游组（只有一条转发，比如内核最简单的那种配置）时是 main。叫 main 的
+  // 上游组不留原来的 Pipeline id：留着就和主列表同名，最新的内核校验时不收；以前的内核照收、只认后一个，主列表的「其余请求」转给自己，一个请求
+  // 都解析不出来
+  // What the main list compiles to: the catch-all entry's pipeline when it is a rule list, main when it is an upstream group (a single
+  // forward, as in the kernel's simplest config). An upstream group called main does not keep that pipeline id: kept, it shares the main
+  // list's name, which the latest kernel's validation refuses; earlier kernels took it, used the later one, and the main list's 其余请求
+  // handed requests to itself so none resolved
+  const catchEntry = selectors.find((s) => isTrueChain(s.matchers) && byId.has(s.pipeline))?.pipeline ?? pipelines[0]?.id
+  const mainListId = catchEntry !== undefined && !groupIds.has(catchEntry) ? catchEntry : 'main'
   for (const p of pipelines) {
     if (!groupIds.has(p.id)) continue
     const f = fwd.get(p.id)!
-    const prevG = prevGroupOf(p)
-    const id = prevG?.id ?? slug(p.id.startsWith('upstream-') ? p.id.slice(9) : p.id, p.id)
+    const keeps = p.id !== mainListId
+    // 不留原来 id 的那个组照样认回上一份的编号和名字，只要编号定下的 upstream-编号 没被别的 Pipeline 占着 / The group not keeping its id still takes
+    // the previous model's id and name, as long as the upstream-<id> that id names is not another pipeline's
+    const prevG = [prevGroupOf(p)].find((x) => x && (keeps || !pipelineIds.has(`upstream-${x.id}`)))
+    const id = prevG?.id ?? slug(p.id.startsWith('upstream-') ? p.id.slice(9) : p.id, keeps ? p.id : undefined)
     usedGroupIds.add(id)
     const g: UpstreamGroup = { id, name: uniqueName(prevG?.name ?? (p.id.startsWith('upstream-') ? p.id.slice(9) : p.id)), addresses: f.addrs, ecs: f.ecs, fallback: { group: '', onError: false, onPolluted: false } }
-    if (p.id !== `upstream-${id}`) g.pipelineId = p.id
+    if (keeps && p.id !== `upstream-${id}`) g.pipelineId = p.id
     groups.push(g)
     groupOfPipeline.set(p.id, g)
     origin.groups.set(g, p)
@@ -365,7 +419,10 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const blp = byId.get(blId)
   const blRule = blp?.rules?.length === 1 ? blp.rules[0]! : undefined
   const blockAction = blRule?.actions?.length === 1 ? staticOutcome(blRule.actions[0]!) : null
-  if (blRule && blRule.name === BLOCKLIST_RULE && isTrueChain(blRule.matchers) && blockAction?.type === 'block' && Object.keys(blRule).every((k) => RULE_KEYS.has(k))
+  // 拦截列表回的就是「拦截时怎么回应」（compile 按默认写它），所以只认那三种回应 / The blocklists answer with 拦截时怎么回应 (compile writes the default
+  // there), so only its three answers are recognised
+  const blockDefault = blockAction?.type === 'block' && DEFAULT_BLOCKS.has(blockAction.response) ? blockAction.response as Defaults['block'] : undefined
+  if (blRule && blRule.name === BLOCKLIST_RULE && isTrueChain(blRule.matchers) && blockDefault && Object.keys(blRule).every((k) => RULE_KEYS.has(k))
     && !(blRule.response_actions_on_match ?? []).length && !(blRule.response_actions_on_miss ?? []).length
     && Object.keys(blp!).every((k) => k === 'id' || k === 'rules') && (refs.get(blId) ?? []).every((r) => r.from === 'entry')) {
     const count = pre.findIndex((e) => e.pipeline !== blId)
@@ -493,11 +550,24 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       match = 'any'
       conds = []
       for (const c of groupsL.map((g) => responseCondition(g[0]!))) {
-        const same = !c.negate && c.values.length ? conds.find((o) => !o.negate && o.values.length && condKey(o) === condKey(c) && o.txtMode === c.txtMode) : undefined
+        const same = !c.negate && c.values.length ? conds.find((o) => !o.negate && o.values.length && condKey(o) === condKey(c)) : undefined
         if (same) same.values = [...new Set([...same.values, ...c.values])]
         else conds.push(c)
       }
-    } else return raw('回答条件既有「且」又有「或」')
+    } else {
+      // 「全部满足」里一个条件填几个值：responseChain 写成「(a 或 b) 且 c」，展开是只差这一个值的几组，并回一个多值条件（和请求条件的 mergeGroups 一样）
+      // 「全部满足」 with one multi-valued condition: responseChain writes (a or b) and c, which expands to groups differing in that one value, merged
+      // back into one multi-valued condition (as mergeGroups does for request conditions)
+      // 并出来的总是编辑器认的（responseShapeProblem）：一条链从左往右结合，「或」只能把一个匹配器添成新的一组，后面的「且」乘到每一组上，
+      // 只差一个值的几组只能来自连着的几个「或」，所以并出来最多一个多值条件；「满足任一」里「不是」从不并
+      // What merges is always what the editor accepts (responseShapeProblem): a chain folds left to right, an or adds one matcher as a new
+      // group and each later and multiplies onto every group, so groups differing in one value can only come from consecutive ors and the
+      // merge yields at most one multi-valued condition; under 「满足任一」 a 不是 is never merged
+      const merged = mergeGroups(groupsL.map((g) => g.map(responseCondition)))
+      if (merged.length !== 1) return raw('回答条件既有「且」又有「或」')
+      match = 'all'
+      conds = merged[0]!
+    }
     const then = remedyOf(onMatch)
     const otherwise = remedyOf(onMiss)
     return { mode: 'custom', match, conditions: conds, then: then.remedy, otherwise: otherwise.remedy, thenLog: then.log, otherwiseLog: otherwise.log }
@@ -556,9 +626,13 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       rawCount++
       note(`「${base(kr.name)}」${where}放不进面板的写法（${e.message}），原样保留为高级规则`, 'warn')
       const kept: Rule = { ...rule, conditions: [[]], outcome: { type: 'continue' }, response: { ...rule.response, mode: 'inherit' }, ecs: 'inherit', raw: [clone(kr) as unknown as Record<string, unknown>] }
-      // 高级规则也记下来：认改名靠位置，少了它后面的都错一位 / Advanced rules are recorded too: renames are found by position, and leaving them out
-      // would shift every rule after them by one
-      origin.rules.set(kept, { rules: [kr], pipeline: null })
+      // 高级规则也记下来：认改名靠位置，少了它后面的都错一位。它跳去的自己那个转发（只有它跳去、原样保留着）也记下：接回上一份时编出来要比的
+      // 就是这两样，编号定下的 rule-编号 也是它的，不算别人的
+      // Advanced rules are recorded too: renames are found by position, and leaving them out would shift every rule after them by one. The own
+      // forward it jumps to (only it does, kept verbatim) is recorded as well: carrying the previous model over compares both, and the
+      // rule-<id> its id names is its own, not another's
+      const ownJump = (kr.actions ?? []).find((a) => a.type === 'jump_to_pipeline' && inline.has(String(a.pipeline)) && !consumed.has(String(a.pipeline)))
+      origin.rules.set(kept, { rules: [kr], pipeline: ownJump ? byId.get(String(ownJump.pipeline)) ?? null : null })
       return kept
     }
   }
@@ -577,13 +651,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       if (last && !last.raw && !r.raw && /#\d+$/.test(kr.name) && lastKernel === base(kr.name) && sameBehaviour(last, r)) {
         last.conditions = mergeGroups([...last.conditions, ...r.conditions])
         origin.rules.get(last)?.rules.push(kr)
-      } else {
-        rules.push(r)
-        // 内核里叫 rule-编号的（没起名字，或者名字认不回它而改用编号）记下编号，接回上一份时按编号认 / A kernel name rule-<id> (unnamed, or named
-        // but given its id because the name could not lead back to it) records the id, and the previous model is matched by it
-        const id = /^rule-(\d+)$/.exec(base(kr.name))?.[1]
-        if (id !== undefined) kernelIds.set(r, Number(id))
-      }
+      } else rules.push(r)
       lastKernel = base(kr.name)
     }
     const last = rules.at(-1)
@@ -676,7 +744,10 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     ruleGroups,
     mappings,
     rest: main.rest,
-    defaults: prev?.defaults ?? { block: 'NXDOMAIN' },
+    // 认出了拦截列表就照它回的读：没有上一份时（导入文件）不再变回 NXDOMAIN，JSON 里改了它的回应也照改的读
+    // With the blocklists recognised, their answer is read: without a previous model (a file import) it no longer falls back to NXDOMAIN, and
+    // an answer changed in the JSON reads as changed
+    defaults: blocklistPipeline && blockDefault ? { block: blockDefault } : prev?.defaults ?? { block: 'NXDOMAIN' },
     blocklists,
     ...(mainId ? { mainId } : {}),
     ...(mappingId ? { mappingId } : {}),
@@ -686,7 +757,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     ...(rawPipelines.length ? { rawPipelines } : {}),
     ...(Object.keys(extra).length ? { extra } : {}),
   }
-  if (prev) model = carryOver(model, prev, kernelIds, origin, pipelineIds)
+  if (prev) model = carryOver(model, prev, origin, pipelineIds)
   // compile 自己加进 settings 的（按其余请求写的默认上游、拦截列表合成的文件）不收进模型 / What compile adds to settings itself (the default
   // upstream written from 其余请求, the blocklists' merged file) is not taken into the model
   model.settings = settingsFromKernel(model, settings, prev?.settings ?? {})
@@ -707,21 +778,33 @@ function refersHere(m: Model, r: Rule): boolean {
 // that, placed in this model, compiles to the kernel part it was read from stays the previous model's object entirely: the import can read a
 // kernel form one way only, while several panel forms compile alike (拦截 · 沿用默认 and the concrete code, 不检查 and 沿用 on a group without
 // fallback…), and swapping one for another changes the meaning (whether it follows a later change of the default, the group's fallback or subnet)
-function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, origin: Origin, pipelineIds: ReadonlySet<string>): Model {
+function carryOver(model: Model, prev: Model, origin: Origin, pipelineIds: ReadonlySet<string>): Model {
   // 上游组先换：规则自己的转发里写着组的地址和备用 / Groups first: a rule's own forward holds its group's addresses and fallback
   model.groups.forEach((g, i) => {
     const p = prev.groups.find((x) => x.id === g.id)
     const from = origin.groups.get(g)
     if (!p || !from) return
     model.groups[i] = clone(p)
-    if (!sameKernel(groupPipeline(model, model.groups[i]!), from)) model.groups[i] = g
+    // Pipeline id 也要一样：叫 main 的上游组这回不留原来的 id（见上面 mainListId），上一份里留着的不接回来 / The pipeline id must agree too: an
+    // upstream group called main no longer keeps that id (see mainListId above), so the previous model's kept one does not come back
+    if (!sameKernel(groupPipeline(model, model.groups[i]!), from) || p.pipelineId !== g.pipelineId) model.groups[i] = g
   })
-  // 「拦截 · 沿用默认」写进内核就是具体的响应码，读回来按上一份认回「沿用默认」 / 拦截 · 沿用默认 reaches the kernel as a concrete code; the previous model restores it
-  const resolved = (o: Outcome) => (o.type === 'block' && o.response === 'default' ? prev.defaults.block : o.type === 'block' ? o.response : null)
-  const sameBlock = (p: Outcome, r: Outcome) => p.type === 'block' && p.response === 'default' && r.type === 'block' && resolved(p) === resolved(r)
+  // 「拦截 · 沿用默认」写进内核就是具体的响应码，读回来按上一份认回「沿用默认」。比的是这份模型的默认（JSON 里改了拦截列表的回应时默认跟着变）：
+  // 换成沿用默认以后编出来要和内核里一样
+  // 拦截 · 沿用默认 reaches the kernel as a concrete code; the previous model restores it. This model's default is the one compared (it moves
+  // when the JSON changed the blocklists' answer): once restored, it must compile to what the kernel holds
+  const sameBlock = (p: Outcome, r: Outcome) => p.type === 'block' && p.response === 'default' && r.type === 'block' && model.defaults.block === r.response
   if (sameBlock(prev.rest, model.rest)) model.rest = prev.rest
   for (const rg of model.ruleGroups) { const p = prev.ruleGroups.find((x) => x.id === rg.id); if (p && sameBlock(p.rest, rg.rest)) rg.rest = p.rest }
-  const lists: [Rule[], Rule[]][] = [[model.rules, prev.rules], ...model.ruleGroups.map((g): [Rule[], Rule[]] => [g.rules, prev.ruleGroups.find((p) => p.id === g.id)?.rules ?? []])]
+  // 每个列表连同它在上一份里的 Pipeline id：上一份编出来的规则名按它查 / Each list with its pipeline id in the previous model: the previous
+  // compile's rule names are looked up by it
+  const lists: [Rule[], Rule[], string][] = [[model.rules, prev.rules, mainPipelineId(prev)], ...model.ruleGroups.map((g): [Rule[], Rule[], string] => [g.rules, prev.ruleGroups.find((p) => p.id === g.id)?.rules ?? [], ruleGroupPipelineId(prev, g.id)])]
+  // 上一份编出来时每个内核规则名是哪一条：JSON 里没动的名字认得回原来那条，rule-编号 这类面板起的名字也一样，不靠名字的样子猜
+  // Which rule each kernel rule name was when the previous model compiled: a name the JSON left alone leads back to that rule, panel-made
+  // names such as rule-<id> included, without guessing from a name's shape
+  // 上一份可能是以前存下来、自己就编出重名 Pipeline 的模型：这里只要它的名字，不因为它报错 / The previous model may be an old stored one
+  // that compiles to repeated pipeline ids itself: only its names are wanted here, so it does not throw for that
+  const prevIndex = compileNamed(prev, false).index
   // 没起名字的规则名字都是空的：只按名字找会全接到第一条上（编号重复、备注抄错）。没名字的再要条件一样，上一份的每条只接一次
   // Unnamed rules all have an empty name: matching on the name alone gave every one the first one's id and note. Unnamed ones must also have the same
   // conditions, and each previous rule is taken once
@@ -746,63 +829,108 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, orig
     if (!compiled.has(cand)) { const k = ruleKernel(model, cand, ''); compiled.set(cand, kernelOf(k.rules, k.pipeline)) }
     return compiled.get(cand)!
   }
+  // 高级规则原样写回，它跳去的那个转发由原样保留的 Pipeline 写出去，所以只比规则；读成面板规则的这条已经把自己的转发并回来了，上一份的高级规则
+  // 写回去就跳到一个没有的 Pipeline，不换
+  // An advanced rule writes back verbatim and the forward it jumps to is written by the kept pipeline, so only the rules are compared; when the
+  // rule read back is a panel rule that folded its own forward in, the previous advanced rule would jump to a pipeline no longer there, so it
+  // is not swapped in
   const compilesAs = (r: Rule, cand: Rule): boolean => {
     const from = origin.rules.get(r)
-    return Boolean(from) && refersHere(model, cand) && takesId(r, cand.id) && compiledKey(cand) === kernelOf(from!.rules, from!.pipeline)
+    if (!from || !refersHere(model, cand) || !takesId(r, cand.id) || (cand.raw && !r.raw && from.pipeline)) return false
+    return compiledKey(cand) === kernelOf(from.rules, cand.raw ? null : from.pipeline)
   }
-  const keep = (list: Rule[], r: Rule, cand: Rule): Rule => {
-    if (!compilesAs(r, cand)) return r
+  // 读成高级规则的这条换回上一份的面板写法时，它跳去的那个转发由面板规则自己编出来，不再原样保留一份（不然两个同名）
+  // When a rule read as advanced goes back to the previous panel form, the forward it jumps to is compiled by the panel rule itself and is no
+  // longer kept verbatim too (or there would be two of one name)
+  const folded = new Set<string>()
+  const replace = (list: Rule[], r: Rule, cand: Rule): Rule => {
     list[list.indexOf(r)] = cand
+    const own = origin.rules.get(r)?.pipeline
+    if (r.raw && !cand.raw && own) folded.add(own.id)
     return cand
   }
-  for (const [now, before] of lists) {
+  const keep = (list: Rule[], r: Rule, cand: Rule): Rule => (compilesAs(r, cand) ? replace(list, r, cand) : r)
+  for (const [now, before, pipeline] of lists) {
     // 上一份的每条认回了现在的哪一条：停用的规则按它前面那条认回来的规则放回去（没起名字的规则名字都一样，按名字找会放错位置）
     // Which current rule each previous rule was matched to: a disabled rule goes back after the matched rule before it (unnamed rules share one name, so
     // finding the anchor by name put it in the wrong place)
     const paired = new Map<Rule, Rule>()
-    for (const r of now) {
-      // 内核里是 rule-编号的按编号认（名字在内核里没有，从上一份接回来）；其余的按名字，名字在一个列表里只指向一条
-      // A kernel name rule-<id> is matched by the id (its name is not in the kernel and comes from the previous model); the rest by name,
-      // which leads to one rule in a list
-      const id = kernelIds.get(r)
-      const p = id !== undefined
-        ? before.find((x) => x.enabled && !paired.has(x) && x.id === id)
-        : before.find((x) => x.enabled && !paired.has(x) && x.name === r.name && (r.name !== '' || sameShape(x, r)))
-      if (!p) continue
+    const matched = new Set<Rule>()
+    const read = now.filter((r) => origin.rules.has(r))
+    const live = before.filter((x) => x.enabled)
+    // 读回来的这条在内核里叫什么（拆开的几段取基名）；只有它叫这个名字时才拿名字认 / What the rule read back is called in the kernel (the base for
+    // split parts); the name identifies it only when no other rule read back has it
+    const kernelName = (r: Rule) => origin.rules.get(r)!.rules[0]!.name.replace(/#\d+$/, '')
+    const uses = new Map<string, number>()
+    for (const r of read) uses.set(kernelName(r), (uses.get(kernelName(r)) ?? 0) + 1)
+    // 上一份编出来就叫这个名字的那条的编号；上一份没编出来的（停用着的）按 rule-编号 认 / The id of the rule the previous compile gave this name; one
+    // the previous compile did not write (disabled) by rule-<id>
+    const saidId = (r: Rule): number | undefined => {
+      const ref = prevIndex.lookup(pipeline, kernelName(r))
+      if (ref?.kind === 'rule') return ref.id
+      const id = /^rule-(\d+)$/.exec(kernelName(r))?.[1]
+      return id === undefined ? undefined : Number(id)
+    }
+    // 名字没在 JSON 里改过：上一份编出来就是这个名字（没起名字的在内核里叫 rule-编号，名字从上一份接回来）/ The name was not changed in the JSON:
+    // the previous compile gave it this very name (an unnamed rule is rule-<id> in the kernel; its name comes from the previous model)
+    const nameKept = (r: Rule, p: Rule) => prevIndex.nameOf(p.id)?.name === kernelName(r)
+    // 认回来、内容按内核里现在的读：编号、备注、改动时间从上一份接过来 / Matched with the content read from the kernel as it is now: the id, note and
+    // edit time come over from the previous model
+    const pairEdit = (r: Rule, p: Rule, name: string) => {
       paired.set(p, r)
-      Object.assign(r, { id: takesId(r, p.id) ? p.id : r.id, name: id !== undefined ? p.name : r.name, note: p.note, edited: p.edited, outcome: sameBlock(p.outcome, r.outcome) ? p.outcome : r.outcome })
+      matched.add(r)
+      Object.assign(r, { id: takesId(r, p.id) ? p.id : r.id, name, note: p.note, edited: p.edited, outcome: sameBlock(p.outcome, r.outcome) ? p.outcome : r.outcome })
       // 条件一样只是顺序不同（内核要求多值的条件排最前）：用上一份的顺序 / Same conditions in another order (the kernel wants a multi-valued one first): keep the previous order
       if (!r.raw && !p.raw && condsKey(r.conditions) === condsKey(p.conditions)) r.conditions = p.conditions
       if (!r.raw && !p.raw && r.response.mode === 'custom' && p.response.mode === 'custom' && JSON.stringify({ ...r.response, conditions: r.response.conditions.map(fullKey).sort() }) === JSON.stringify({ ...p.response, conditions: p.response.conditions.map(fullKey).sort() })) r.response = p.response
     }
-    // 改名、挪位置、把停用的加回来：还没认回来的规则，和上一份里还没认回来的一条除了名字编出来一样（停用的按它启用时编出来的样子），就是那一条——
-    // JSON 里改了名字（可能同时挪了位置），或者照它启用时的样子把停用的那条加了回来，和停用的映射一样算启用了它。编号、备注、改动时间跟着它，名字用新的
-    // （内核里叫 rule-编号的认的就是这个编号，名字照旧）。列表里哪儿都认；几条都合适时先要启用着的（改名比删一条再加回停用的常见），再要名字或编号也
-    // 对得上的，再要同一位置的，最后按先后。名字和内容都改了的对不上任何一条，是新规则
-    // A rename, a move, a disabled rule added back: a rule still unmatched that compiles like a still unmatched previous one but for the name
-    // (a disabled one as it compiles when enabled) is that one — the JSON renamed it (perhaps moving it too), or added the disabled one back as
-    // it compiles enabled, which enables it as with a disabled mapping. The id, note and edit time come along and the name is the new one (a
-    // kernel name rule-<id> stands for that id, the name staying). It is found anywhere in the list; of several that fit, enabled ones come
-    // first (a rename is likelier than deleting one and re-adding a disabled one), then one whose name or id agrees too, then the one at the
-    // same place, then the first. A rule with both name and content changed fits none and is new
-    const read = now.filter((r) => origin.rules.has(r))
-    const live = before.filter((x) => x.enabled)
-    const matched = new Set(paired.values())
-    read.forEach((r, i) => {
-      if (matched.has(r)) return
-      const id = kernelIds.get(r)
-      // 高级规则原样写回，名字在原样的内核规则里：用内核里现在的那份，不然改的名字写回去又变回原来的 / An advanced rule is written back verbatim
-      // with its names inside the kernel rules: the kernel's current ones are used, or the new name would be written back as the old one
-      const named = (p: Rule): Rule => ({ ...clone(p), enabled: true, name: id !== undefined && p.id === id ? p.name : r.name, ...(r.raw ? { raw: clone(r.raw) } : {}) })
-      const fits = before.filter((p) => !paired.has(p) && compilesAs(r, p))
-      const pool = fits.some((p) => p.enabled) ? fits.filter((p) => p.enabled) : fits
-      const p = pool.find((x) => (r.name !== '' && x.name === r.name) || (id !== undefined && x.id === id))
-        ?? (pool.length > 1 ? pool.find((x) => x === live[i]) : undefined) ?? pool[0]
-      if (!p) return
-      const cand = named(p)
-      now[now.indexOf(r)] = cand
+    // 编出来一样：整条换成上一份的，名字在 JSON 里改了就用新的。高级规则原样写回，名字在原样的内核规则里：用内核里现在的那份，不然改的名字写回去
+    // 又变回原来的
+    // Compiling alike: the previous one takes its place whole, with the new name when the JSON changed it. An advanced rule is written back
+    // verbatim with its names inside the kernel rules: the kernel's current ones are used, or the new name would be written back as the old one
+    const pairSame = (r: Rule, p: Rule) => {
+      const cand: Rule = { ...clone(p), enabled: true, name: nameKept(r, p) ? p.name : r.name, ...(r.raw ? { raw: clone(r.raw) } : {}) }
+      replace(now, r, cand)
       paired.set(p, cand)
-    })
+      matched.add(r).add(cand)
+    }
+    // 认的先后：先按面板起的名字（rule-编号这类，JSON 里没动），再按名字和编出来的样子都一样，再按只有编出来的样子一样（改名、挪位置、把停用的加
+    // 回来），最后才按只有名字一样（内容在 JSON 里改了）。内容在前、名字在后：把一条改成另一条的名字时，两条各认各的；只有名字一样的那一步走到时，
+    // 内容和上一份某条一样的都已经被它认走了，名字一样的抢不着
+    // The order of matching: first by a panel-made name (rule-<id> and the like, left alone in the JSON), then by name and compiled form together,
+    // then by compiled form alone (a rename, a move, a disabled rule added back), and only last by name alone (content edited in the JSON). Content
+    // before names: renaming one rule to another's name leaves each matched to its own; by the time name alone is tried, every rule whose
+    // content equals a previous one has already claimed it, so a mere namesake cannot take it
+    // 1. 面板起的名字：上一份编出这个名字的那条，内容改了也是 / 1. A panel-made name: the rule the previous compile gave that name, content edits included
+    for (const r of read) {
+      const k = kernelName(r)
+      const ref = uses.get(k) === 1 ? prevIndex.lookup(pipeline, k) : null
+      const p = ref?.kind === 'rule' ? before.find((x) => x.id === ref.id && x.enabled && !paired.has(x)) : undefined
+      if (p && k !== p.name.trim()) pairEdit(r, p, p.name)
+    }
+    // 2、3. 名字和编出来的样子都一样，然后只有编出来的样子一样。几条都合适时先要启用着的（改名比删一条再加回停用的常见），再要编号对得上的，再要同一
+    // 位置的，最后按先后。名字和内容都改了的对不上任何一条，是新规则
+    // 2, 3. Name and compiled form together, then compiled form alone. Of several that fit, enabled ones come first (a rename is likelier than
+    // deleting one and re-adding a disabled one), then the one whose id agrees, then the one at the same place, then the first. A rule with both
+    // name and content changed fits none and is new
+    for (const byName of [true, false]) {
+      read.forEach((r, i) => {
+        if (matched.has(r)) return
+        const fits = before.filter((p) => !paired.has(p) && (!byName || p.name === r.name) && compilesAs(r, p))
+        const pool = fits.some((p) => p.enabled) ? fits.filter((p) => p.enabled) : fits
+        const id = saidId(r)
+        const p = pool.find((x) => x.id === id) ?? (pool.length > 1 ? pool.find((x) => x === live[i]) : undefined) ?? pool[0]
+        if (p) pairSame(r, p)
+      })
+    }
+    // 4. 只有名字一样：内容在 JSON 里改了（入口读成的规则也按名字认）。内核里叫 rule-编号的没有名字可认，第 1 步没认回来就是新的
+    // 4. Name alone: the content was edited in the JSON (rules made from entries are matched by name too). One called rule-<id> in the kernel
+    // has no name to go by: not matched in step 1, it is new
+    for (const r of [...now]) {
+      if (matched.has(r) || (origin.rules.has(r) && /^rule-\d+$/.test(kernelName(r)))) continue
+      const p = before.find((x) => x.enabled && !paired.has(x) && x.name === r.name && (r.name !== '' || sameShape(x, r)))
+      if (p) pairEdit(r, p, r.name)
+    }
     // 认回来的规则编出来和内核里一样：整条留上一份 / A matched rule that compiles to what the kernel holds stays the previous one entirely
     for (const [p, r] of paired) if (origin.rules.has(r)) paired.set(p, keep(now, r, clone(p)))
     // 前面那条也是停用的（已经放回去了）就接在它后面：只看认回来的规则时，连着的几条停用规则会倒过来，每手改一次换一次
@@ -815,6 +943,11 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, orig
       const at = anchor ? now.indexOf(paired.get(anchor) ?? anchor) + 1 : 0
       now.splice(at, 0, p)
     })
+  }
+  if (folded.size && model.rawPipelines) {
+    const kept = model.rawPipelines.filter((p) => !folded.has(String(p.id)))
+    if (kept.length) model.rawPipelines = kept
+    else delete model.rawPipelines
   }
   // 映射按域名认（一个域名只有一条），上一份的每条只认一次；编出来一样的整条留上一份（TTL、目标的写法）。停用的编出来什么都没有：JSON 里加回来
   // 就是启用了它，按内核读；没加回来的照规则的办法放回原位
