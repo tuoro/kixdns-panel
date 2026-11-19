@@ -1328,8 +1328,32 @@ preserve_external_install() {
     printf 'KIXDNS_BINARY=%s\n' "${EXISTING_KIXDNS_BINARY_PATH}"
     printf 'KIXDNS_WAS_ACTIVE=%s\n' "${KIXDNS_WAS_ACTIVE}"
     printf 'KIXDNS_WAS_ENABLED=%s\n' "${KIXDNS_WAS_ENABLED}"
+    # 卸载恢复、删除面板数据时，只删迁移建的 kixdns 账号和组 / Uninstalling with a restore and the panel data removed deletes
+    # only the kixdns account and group the migration created
+    printf 'KIXDNS_USER_CREATED=%s\n' "$(kixdns_account_created user)"
+    printf 'KIXDNS_GROUP_CREATED=%s\n' "$(kixdns_account_created group)"
   } > "${EXTERNAL_BACKUP}/install.env"
   chmod 0600 "${EXTERNAL_BACKUP}/install.env"
+}
+
+# kixdns 账号（user）或组（group）是不是面板建的：这次运行开始时还没有，或者以前的面板建的、卸载时留下并记在保留的
+# panel.env 里（KIXDNS_REMOVED，或迁移备份用掉时带过去的 KIXDNS_USER_CREATED、KIXDNS_GROUP_CREATED）。输出 true 或 false。
+# Whether the kixdns account (user) or group (group) is the panel's: missing when this run began, or created by an earlier
+# panel and left by an uninstall that recorded it in the kept panel.env (KIXDNS_REMOVED, or the KIXDNS_USER_CREATED and
+# KIXDNS_GROUP_CREATED carried over when a migration backup was used up). Prints true or false.
+kixdns_account_created() {
+  local existed=${KIXDNS_USER_EXISTED}
+  local key=KIXDNS_USER_CREATED
+  if [[ $1 == group ]]; then
+    existed=${KIXDNS_GROUP_EXISTED}
+    key=KIXDNS_GROUP_CREATED
+  fi
+  if [[ ${existed} == false || $(environment_value KIXDNS_REMOVED || true) == true ||
+    $(environment_value "${key}" || true) == true ]]; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
 }
 
 prepare_rollback() {
@@ -1502,6 +1526,10 @@ render_panel_environment() {
     # The removed management switch: drop the key and its comment from old files so hand edits are not misled.
     /^# true：面板管理增强版二进制；false：/ { next }
     /^KIXDNS_MANAGEMENT_ENABLED=/ { next }
+    # 卸载器记下的「KixDNS 已不归面板管时留下待删的」：重新装上以后又归面板管，迁移备份已经接着记下（kixdns_account_created）。
+    # What the uninstaller recorded as left behind once the KixDNS no longer belonged to the panel: after a reinstall it
+    # belongs to the panel again, and a migration backup has carried the record on (kixdns_account_created).
+    /^KIXDNS_(REMOVED|USER_CREATED|GROUP_CREATED)=/ { next }
     /^KIXDNS_INSTALLED_SOURCE=/ {
       if (kixdns_source != "") print "KIXDNS_INSTALLED_SOURCE=" kixdns_source
       kixdns_source_found = 1

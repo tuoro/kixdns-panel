@@ -1841,6 +1841,31 @@ if grep -q 'KIXDNS_UPDATE_RELEASE_WORKFLOW' "${environment_output}"; then
   printf '断言失败：升级应删掉不再读取的 Release 工作流设置\n' >&2
   exit 1
 fi
+# 卸载器在 KixDNS 不归面板管以后记下的待删的东西：重新装上以后又归面板管，这些键要删掉（迁移备份会接着记账号，见下）。
+# What the uninstaller records as left to remove once the KixDNS is no longer the panel's: after a reinstall it is the
+# panel's again and these keys go (a migration backup carries the accounts on, see below).
+printf '%s\n' 'KIXDNS_MANAGEMENT_ENABLED=false' 'KIXDNS_REMOVED=true' 'KIXDNS_USER_CREATED=true' 'KIXDNS_GROUP_CREATED=false' \
+  > "${WORK}/left-behind.env"
+render_panel_environment "${WORK}/left-behind.env" "${WORK}/left-behind.out" kixdns-commit panel-commit '' 42 fork
+assert_equals "$(grep -c '^KIXDNS_\(MANAGEMENT_ENABLED\|REMOVED\|USER_CREATED\|GROUP_CREATED\)=' "${WORK}/left-behind.out" || true)" "0" \
+  "重新安装应删掉卸载器记下的归属和待删记录"
+# 迁移备份记下 kixdns 账号和组是不是面板建的：这次运行开始时还没有，或者保留的 panel.env 记着是以前的面板留下待删的。
+# The migration backup records whether the kixdns account and group are the panel's: missing when this run began, or left
+# by an earlier panel to be removed, as the kept panel.env says.
+account_created_of() {
+  (
+    KIXDNS_USER_EXISTED=$1
+    KIXDNS_GROUP_EXISTED=$1
+    PANEL_ENV="${WORK}/account-created.env"
+    printf '%s\n' "${@:2}" > "${PANEL_ENV}"
+    printf '%s %s\n' "$(kixdns_account_created user)" "$(kixdns_account_created group)"
+  )
+}
+assert_equals "$(account_created_of false)" "true true" "这次建的 kixdns 账号和组算面板的"
+assert_equals "$(account_created_of true)" "false false" "原来就有的 kixdns 账号和组不算面板的"
+assert_equals "$(account_created_of true KIXDNS_REMOVED=true)" "true true" "面板自己的 KixDNS 移除后留下的账号和组算面板的"
+assert_equals "$(account_created_of true KIXDNS_USER_CREATED=true KIXDNS_GROUP_CREATED=false)" "true false" \
+  "上次迁移建的账号记在 panel.env 里时照旧算面板的"
 render_panel_environment "${environment_source}" "${environment_output}" \
   kixdns-commit panel-commit v1.0.0 42 fork
 release_value="$(awk -F= '$1 == "KIXDNS_PANEL_INSTALLED_RELEASE" { print $2 }' "${environment_output}")"

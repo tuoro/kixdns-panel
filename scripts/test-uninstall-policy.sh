@@ -90,6 +90,36 @@ help="$(bash "${UNINSTALLER}" --help)"
 
 source "${UNINSTALLER}"
 
+# 测试里的 systemd 只回答卸载器会问的 `show --property=名字 --value unit`，按临时目录里的 unit 文件作答，不碰开发机上真实的服务：
+# 先找 SYSTEMD_UNIT_DIRECTORY（相当于 /etc/systemd/system），再找 OTHER_UNIT_DIRECTORY（相当于 /usr/local/lib/systemd/system）。
+# The systemd of these tests answers only the `show --property=NAME --value UNIT` the uninstaller asks, from the unit files
+# in the scratch tree, never touching the real services of the dev host: SYSTEMD_UNIT_DIRECTORY first (standing in for
+# /etc/systemd/system), then OTHER_UNIT_DIRECTORY (standing in for /usr/local/lib/systemd/system).
+fake_systemctl_show() {
+  local property=${2#--property=}
+  local unit=${4:-}
+  local directory
+  local file=""
+  for directory in "${SYSTEMD_UNIT_DIRECTORY}" "${OTHER_UNIT_DIRECTORY:-/nonexistent}"; do
+    if [[ -f ${directory}/${unit} ]]; then
+      file=${directory}/${unit}
+      break
+    fi
+  done
+  case ${property} in
+    ActiveState) printf 'active\n' ;;
+    MainPID) printf '4242\n' ;;
+    FragmentPath) printf '%s\n' "${file}" ;;
+    ExecStart)
+      [[ -z ${file} ]] ||
+        awk '/^ExecStart=/ { line = $0; sub(/^ExecStart=/, "", line); split(line, words, " ")
+          printf "{ path=%s ; argv[]=%s ; ignore_errors=no ; }\n", words[1], line }' "${file}"
+      ;;
+    User) [[ -z ${file} ]] || awk '/^User=/ { value = $0; sub(/^User=/, "", value) } END { print value }' "${file}" ;;
+  esac
+}
+systemctl() { [[ $1 != show ]] || fake_systemctl_show "$@"; }
+
 PANEL_ENV="${PACKAGE_ROOT}/.missing-panel.env"
 EXTERNAL_BACKUP="${PACKAGE_ROOT}/.missing-external-backup"
 # 没有 panel.env 时卸载器会扫描 unit 目录；指向不存在的目录，免得读到开发机上真实安装的 KixDNS。
@@ -161,18 +191,25 @@ choose_config_action
 # panel.env says the KixDNS is the panel's, but its unit now runs another program (after a keep-config uninstall the user
 # put their own KixDNS in): it no longer counts as the panel's and is kept whole. A migrated host part way through a restore
 # (external backup still there, the unit is the original put back) still counts as the panel's, so the restore can finish.
+# 第 3 个参数是 unit 文件放在哪：etc（/etc/systemd/system）或 other（systemd 也会加载的别处，例如 /usr/local/lib/systemd/system）。
+# The third argument is where the unit file lives: etc (/etc/systemd/system) or other (elsewhere systemd loads from too, such
+# as /usr/local/lib/systemd/system).
 managed_by_unit() {
   local exec_start=$1
   local with_backup=$2
+  local where=${3:-etc}
   (
     work="$(mktemp -d)"
     trap 'rm -rf -- "${work}"' EXIT
     PANEL_ENV="${work}/panel.env"
     SYSTEMD_UNIT_DIRECTORY="${work}/units"
+    OTHER_UNIT_DIRECTORY="${work}/other-units"
     EXTERNAL_BACKUP="${work}/external-backup"
-    mkdir -p "${SYSTEMD_UNIT_DIRECTORY}"
+    mkdir -p "${SYSTEMD_UNIT_DIRECTORY}" "${OTHER_UNIT_DIRECTORY}"
+    unit_directory=${SYSTEMD_UNIT_DIRECTORY}
+    [[ ${where} == etc ]] || unit_directory=${OTHER_UNIT_DIRECTORY}
     printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_CONFIG=/etc/kixdns/pipeline.json\n' > "${PANEL_ENV}"
-    printf '[Service]\nExecStart=%s run --config /etc/kixdns/pipeline.json\n' "${exec_start}" > "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service"
+    printf '[Service]\nExecStart=%s run --config /etc/kixdns/pipeline.json\n' "${exec_start}" > "${unit_directory}/kixdns.service"
     if [[ ${with_backup} == true ]]; then
       mkdir -p "${EXTERNAL_BACKUP}"
       printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_BINARY=/usr/local/bin/kixdns\nKIXDNS_WAS_ACTIVE=true\nKIXDNS_WAS_ENABLED=true\n' > "${EXTERNAL_BACKUP}/install.env"
@@ -187,6 +224,12 @@ managed_by_unit() {
 assert_equals "$(managed_by_unit /usr/local/bin/kixdns false)" false "unit 换成跑别的程序以后，KixDNS 不能再当面板的删掉"
 assert_equals "$(managed_by_unit "${PANEL_STATE_DIRECTORY}/bin/kixdns" false)" true "unit 跑的还是面板的程序时照旧归面板管"
 assert_equals "$(managed_by_unit /usr/local/bin/kixdns true)" true "恢复到一半、还有外部备份时照旧归面板管，好把恢复做完"
+# 回归：只看 /etc/systemd/system 里的文件，用户放在 /usr/local/lib/systemd/system 的同名 unit 就被当成面板的停掉、删掉。
+# 归属要按 systemd 实际加载的那个 unit 认。
+# Regression: only the file in /etc/systemd/system was looked at, so a unit of the same name the user put in
+# /usr/local/lib/systemd/system was stopped and removed as the panel's. Ownership follows the unit systemd really loads.
+assert_equals "$(managed_by_unit /usr/local/sbin/kixdns false other)" false "放在别处的同名 unit 跑别的程序时，也不能当面板的删掉"
+assert_equals "$(managed_by_unit "${PANEL_STATE_DIRECTORY}/bin/kixdns" false other)" true "systemd 加载的 unit 跑面板的程序时照旧归面板管"
 
 HAS_EXTERNAL_BACKUP=false
 CONFIG_ACTION=keep
@@ -244,7 +287,7 @@ wait_for_unit_inactive kixdns-panel.service
 [[ ${UNIT_CALLS} == *"stop kixdns-panel.service"* ]]
 [[ ${UNIT_CALLS} == *"kill --kill-who=all kixdns-panel.service"* ]]
 [[ ${UNIT_CALLS} == *"reset-failed kixdns-panel.service"* ]]
-unset -f systemctl
+systemctl() { [[ $1 != show ]] || fake_systemctl_show "$@"; }
 
 # 安装器关闭过 systemd-resolved 的本机监听：移除 KixDNS 时恢复原样，保留 KixDNS 时只给出恢复命令。
 # The installer turned systemd-resolved's stub off: removing KixDNS restores it, keeping KixDNS only prints the commands.
@@ -556,6 +599,18 @@ migrate_scratch_host() {
     chown() { :; }
     kixdns_can_read() { return 0; }
     update_panel_environment() { render_panel_environment /dev/null \"\${PANEL_ENV}\" commit panel '' 1 fork; }
+    # ACCOUNTS_MISSING=true：迁移前还没有 kixdns 账号和组，这次迁移建的；否则它们原来就有。不看开发机上真实的账号。
+    # ACCOUNTS_MISSING=true: the kixdns account and group did not exist before the migration, which created them; otherwise
+    # they were there already. The real accounts of the dev host are not looked at.
+    if [[ '${ACCOUNTS_MISSING:-false}' == true ]]; then
+      id() { return 1; }
+      getent() { return 2; }
+    else
+      id() { printf '990\n'; }
+      getent() { printf 'kixdns:x:990:\n'; }
+    fi
+    record_existing_accounts
+    unset -f id getent
     INSTALL_MODE=managed
     detect_existing_kixdns
     determine_install_kind
@@ -597,10 +652,11 @@ uninstall_scratch_host() {
     # the same main process; with SYSTEMCTL_UNSTABLE=true it never comes up (always activating in a Restart= crash loop).
     systemctl() {
       if [[ $1 == show ]]; then
-        case $2 in
-          --property=ActiveState) [[ ${SYSTEMCTL_UNSTABLE:-} == true ]] && printf 'activating\n' || printf 'active\n' ;;
-          --property=MainPID) printf '4242\n' ;;
-        esac
+        if [[ $2 == --property=ActiveState && ${SYSTEMCTL_UNSTABLE:-} == true ]]; then
+          printf 'activating\n'
+        else
+          fake_systemctl_show "$@"
+        fi
         return 0
       fi
       [[ -z ${SYSTEMCTL_LOG:-} ]] || printf '%s\n' "$*" >> "${SYSTEMCTL_LOG}"
@@ -608,8 +664,17 @@ uninstall_scratch_host() {
       [[ $1 != is-active ]]
     }
     sleep() { :; }
-    getent() { return 2; }
-    groupdel() { :; }
+    # 账号：ACCOUNTS_PRESENT=true 时 kixdns、kixdns-panel 账号和 kixdns 组都在；ACCOUNT_LOG 非空时记下删账号、删组的调用；
+    # ACCOUNT_BUSY=true 时 kixdns 账号还有别的进程在用。开发机上真实的账号和进程一个也不碰。
+    # Accounts: with ACCOUNTS_PRESENT=true the kixdns and kixdns-panel accounts and the kixdns group exist; with ACCOUNT_LOG
+    # set the calls removing an account or the group are recorded; with ACCOUNT_BUSY=true other processes still use the
+    # kixdns account. No real account or process of the dev host is touched.
+    getent() { [[ ${ACCOUNTS_PRESENT:-} == true ]] && printf '%s:x:990:990::/nonexistent:/usr/sbin/nologin\n' "$2"; }
+    id() { [[ ${ACCOUNTS_PRESENT:-} == true ]] && printf '990\n'; }
+    userdel() { [[ -z ${ACCOUNT_LOG:-} ]] || printf 'userdel %s\n' "$*" >> "${ACCOUNT_LOG}"; }
+    groupdel() { [[ -z ${ACCOUNT_LOG:-} ]] || printf 'groupdel %s\n' "$*" >> "${ACCOUNT_LOG}"; }
+    terminate_account_processes() { :; }
+    account_has_processes() { [[ ${ACCOUNT_BUSY:-} == true ]]; }
     chown() { :; }
     install() {
       local arguments=()
@@ -865,6 +930,117 @@ output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes
 assert_not_contains "${output}" "RUN-FAILED" "配置不在默认位置的主机卸载不应失败"
 [[ -e ${host}/etc-kixdns && -e ${host}/elsewhere/pipeline.json ]] ||
   { printf '断言失败：panel.env 没指向的目录不能删\n' >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 面板管的 KixDNS 走了以后再卸载 / Uninstalling again once the panel's KixDNS is gone
+# ---------------------------------------------------------------------------
+
+account_log="${scratch}/accounts.log"
+account_calls() { tr '\n' ';' < "${account_log}"; }
+
+# 迁移建的 kixdns 账号和组：迁移时记进备份，卸载恢复、删除面板数据时一起删；原来就有的不动。保留面板数据恢复时记进 panel.env，
+# 以后删除面板数据时再删；账号还有别的进程在用时留着它和组。回归：恢复以后，迁移建的账号和组一直留着。
+# The kixdns account and group a migration created: recorded in the backup, removed with the panel data when uninstalling
+# restores the original; ones that were there already stay. A restore that keeps the panel data carries the record into
+# panel.env, and a later removal of the panel data removes them then; while other processes still use the account, it stays
+# with the group. Regression: after a restore the account and group the migration created stayed for good.
+ACCOUNTS_MISSING=true migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+backup="$(cat "${host}/state/external-backup/install.env")"
+assert_contains "${backup}" "KIXDNS_USER_CREATED=true" "迁移建了 kixdns 账号时备份应记下"
+assert_contains "${backup}" "KIXDNS_GROUP_CREATED=true" "迁移建了 kixdns 组时备份应记下"
+: > "${account_log}"
+output="$(ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "恢复并删除数据不应失败"
+assert_equals "$(account_calls)" "userdel kixdns-panel;userdel kixdns;groupdel kixdns;" "恢复并删除数据时应删掉迁移建的账号和组"
+migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+assert_contains "$(cat "${host}/state/external-backup/install.env")" "KIXDNS_USER_CREATED=false" "账号原来就有时备份应记下不是迁移建的"
+: > "${account_log}"
+output="$(ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_equals "$(account_calls)" "userdel kixdns-panel;" "原来就有的 kixdns 账号和组不能删"
+ACCOUNTS_MISSING=true migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+output="$(ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_contains "$(cat "${host}/panel-etc/panel.env")" "KIXDNS_USER_CREATED=true" "保留数据恢复时应把迁移建的账号记进 panel.env"
+: > "${account_log}"
+output="$(ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_contains "${output}" "这台机器的 KixDNS 不归面板管理" "恢复以后再卸载时 KixDNS 已不归面板管"
+assert_equals "$(account_calls)" "userdel kixdns-panel;userdel kixdns;groupdel kixdns;" "以后删除数据时应删掉迁移建的账号和组"
+ACCOUNTS_MISSING=true migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+: > "${account_log}"
+output="$(ACCOUNTS_PRESENT=true ACCOUNT_BUSY=true ACCOUNT_LOG=${account_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_equals "$(account_calls)" "userdel kixdns-panel;" "kixdns 账号还有别的进程在用时不能删它和组"
+assert_contains "${output}" "kixdns 账号还有别的进程或服务在用，保留它和 kixdns 组。" "保留 kixdns 账号时应说明"
+
+# 全新安装的主机，--remove-kixdns --keep-config 移除了面板自己的 KixDNS：保留的 panel.env 记下 KixDNS 已不归面板管，以后的卸载
+# 不再停、不再删这个名字的 unit。用户接着在 /usr/local/lib/systemd/system 装了自己的同名 KixDNS，配置放在 /etc/kixdns 里；再
+# 删除面板数据时：不碰它的服务，/etc/kixdns 里只删面板写的配置，目录留着、交还 root。回归：panel.env 还说归面板管，卸载器只看
+# /etc/systemd/system 里的文件，停掉、禁用了用户的 KixDNS，删掉整个 /etc/kixdns 和 kixdns 账号。
+# A freshly installed host where --remove-kixdns --keep-config removed the panel's own KixDNS: the kept panel.env records
+# that the KixDNS is no longer the panel's, and later uninstalls neither stop nor remove a unit of that name. The user then
+# installs their own KixDNS of the same name in /usr/local/lib/systemd/system with its config in /etc/kixdns; removing the
+# panel data then leaves its service alone and removes only the config the panel wrote in /etc/kixdns, keeping the directory
+# and handing it to root. Regression: panel.env still said the panel's, the uninstaller looked only at the file in
+# /etc/systemd/system, stopped and disabled the user's KixDNS, and removed all of /etc/kixdns and the kixdns account.
+other_units="${scratch}/other-units"
+own_kixdns() {
+  mkdir -p "${other_units}"
+  printf '{"own":true}\n' > "${host}/etc-kixdns/own.json"
+  printf '[Service]\n%bExecStart=/usr/local/sbin/kixdns run --config %s\n' "${1:-}" "${host}/etc-kixdns/own.json" \
+    > "${other_units}/kixdns.service"
+}
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+chmod 0750 "${host}/etc-kixdns"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "移除面板自己的 KixDNS、保留数据不应失败"
+panel_env="$(cat "${host}/panel-etc/panel.env")"
+assert_contains "${panel_env}" "KIXDNS_MANAGEMENT_ENABLED=false" "移除面板的 KixDNS、保留 panel.env 时应记下 KixDNS 已不归面板管"
+assert_contains "${panel_env}" "KIXDNS_REMOVED=true" "移除面板的 KixDNS、保留 panel.env 时应记下它的配置和账号留着待删"
+[[ -f ${host}/etc-kixdns/pipeline.json && ! -e ${host}/units/kixdns.service ]] ||
+  { printf '断言失败：保留数据时配置应留着、面板的 unit 应删掉\n' >&2; exit 1; }
+own_kixdns
+: > "${systemctl_log}"
+: > "${account_log}"
+output="$(OTHER_UNIT_DIRECTORY=${other_units} SYSTEMCTL_LOG=${systemctl_log} ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} \
+  uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "以后删除数据不应失败"
+assert_not_contains "$(cat "${systemctl_log}")" "kixdns.service" "以后再卸载不能停、不能禁用用户自己的 KixDNS"
+[[ -f ${other_units}/kixdns.service && -f ${host}/etc-kixdns/own.json ]] ||
+  { printf '断言失败：用户自己的 unit 和配置必须留着\n' >&2; exit 1; }
+[[ ! -e ${host}/etc-kixdns/pipeline.json ]] || { printf '断言失败：删除数据时应删掉面板写的配置\n' >&2; exit 1; }
+assert_equals "$(stat -c '%a' "${host}/etc-kixdns")" "755" "留下的 /etc/kixdns 应交还 root、谁都能进"
+assert_contains "${output}" "${host}/etc-kixdns 里还有不是面板写的文件，目录留着，只删了面板写的配置。" "留下目录时应说明"
+assert_equals "$(account_calls)" "userdel kixdns-panel;userdel kixdns;groupdel kixdns;" "以后删除数据时应删掉面板建的 kixdns 账号和组"
+# 用户自己的 KixDNS 也用 kixdns 账号：账号和组留着。/ The user's own KixDNS uses the kixdns account too: it stays with the group.
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes > /dev/null
+own_kixdns 'User=kixdns\n'
+: > "${account_log}"
+output="$(OTHER_UNIT_DIRECTORY=${other_units} ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} \
+  uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_equals "$(account_calls)" "userdel kixdns-panel;" "用户自己的 KixDNS 用着 kixdns 账号时不能删它和组"
+# /etc/kixdns 里只剩面板写的文件（配置和写到一半的临时文件）：整个删掉。/ Only files the panel wrote are left in /etc/kixdns
+# (the config and a half-written temporary file): the whole directory goes.
+rm -rf -- "${other_units}"
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes > /dev/null
+: > "${host}/etc-kixdns/.kixdns-panel-Ab12Cd"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "只剩面板文件时删除数据不应失败"
+[[ ! -e ${host}/etc-kixdns ]] || { printf '断言失败：/etc/kixdns 里只剩面板写的文件时应整个删掉\n' >&2; exit 1; }
+# 第一次卸载是旧版卸载器做的、没记下归属：panel.env 还说归面板管。按 systemd 实际加载的 unit 认，用户放在别处的同名 unit 跑的
+# 是别的程序，就不是面板的，不碰。
+# The first uninstall was done by an older uninstaller that recorded nothing: panel.env still says the panel's. Going by the
+# unit systemd really loads, the user's unit of the same name elsewhere runs another program, so it is not the panel's and is
+# left alone.
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+rm -f -- "${host}/units/kixdns.service" "${host}/state/bin/kixdns"
+own_kixdns
+: > "${systemctl_log}"
+output="$(OTHER_UNIT_DIRECTORY=${other_units} SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "旧版卸载器之后再卸载不应失败"
+assert_contains "${output}" "这台机器的 KixDNS 不归面板管理" "systemd 加载的同名 unit 跑别的程序时应说明不归面板管"
+assert_not_contains "$(cat "${systemctl_log}")" "kixdns.service" "旧版卸载器之后再卸载也不能停用户自己的 KixDNS"
+[[ -f ${other_units}/kixdns.service && -f ${host}/etc-kixdns/own.json ]] ||
+  { printf '断言失败：旧版卸载器之后再卸载也不能删用户的 unit 和配置\n' >&2; exit 1; }
 rm -rf -- "${scratch}"
 
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"

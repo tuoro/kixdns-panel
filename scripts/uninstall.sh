@@ -36,6 +36,18 @@ ORIGINAL_ENABLED=false
 ORIGINAL_ACTIVE=false
 RESTORED_EXTERNAL=false
 KIXDNS_KEPT_EARLIER=false
+# 迁移建的 kixdns 账号和组（备份里记的）：恢复、删除面板数据时一起删 / The kixdns account and group the migration created
+# (recorded in the backup): removed with the panel data on a restore
+ORIGINAL_USER_CREATED=false
+ORIGINAL_GROUP_CREATED=false
+# KixDNS 已不归面板管时，保留的 panel.env 记下的待删的东西：面板自己的 KixDNS 已移除、它的配置和 kixdns 账号留着
+# （KIXDNS_REMOVED），或者迁移建的 kixdns 账号、组（KIXDNS_USER_CREATED、KIXDNS_GROUP_CREATED）。删除面板数据时一起删。
+# What the kept panel.env records as left to remove once the KixDNS is no longer the panel's: the panel's own KixDNS was
+# removed, leaving its config and the kixdns account (KIXDNS_REMOVED), or the kixdns account and group a migration created
+# (KIXDNS_USER_CREATED, KIXDNS_GROUP_CREATED). They go when the panel data is removed.
+LEFT_REMOVED=false
+LEFT_USER_CREATED=false
+LEFT_GROUP_CREATED=false
 # 指向面板目录里、但程序已经不在的 unit：前者由面板创建、随面板移除，后者不是面板创建的、原样保留。
 # Units pointing at the panel's kixdns after the binary is gone: panel-created ones go with the panel, others stay.
 DEAD_PANEL_UNITS=()
@@ -145,6 +157,23 @@ unit_runs_managed_binary() {
   ' "${file}"
 }
 
+# 这个 unit 跑的不是面板的程序：/etc/systemd/system 里的文件写着别的程序，或者 systemd 实际加载的那一份（可能在
+# /usr/local/lib/systemd/system 之类的别处，也可能被 drop-in 改过 ExecStart）跑的是别的程序。没有这个 unit 时不算。
+# This unit does not run the panel's program: the file in /etc/systemd/system names another one, or the copy systemd really
+# loads (perhaps elsewhere, such as /usr/local/lib/systemd/system, or with ExecStart changed by a drop-in) runs another one.
+# A unit that does not exist does not count.
+unit_runs_other_program() {
+  local unit=$1
+  local file=${SYSTEMD_UNIT_DIRECTORY}/${unit}
+  local exec_start
+  if [[ -f ${file} ]] && ! unit_runs_managed_binary "${file}"; then
+    return 0
+  fi
+  exec_start="$(systemctl show --property=ExecStart --value "${unit}" 2>/dev/null || true)"
+  [[ ${exec_start} =~ path=([^[:space:];]+) ]] || return 1
+  [[ ${BASH_REMATCH[1]} != "${PANEL_STATE_DIRECTORY}/bin/kixdns" ]]
+}
+
 # 保留只对真实存在的程序有意义：普通文件、不是符号链接、可执行。
 # Keeping only means something for a binary that is really there: a regular, non-symlink, executable file.
 managed_binary_present() {
@@ -192,6 +221,9 @@ detect_kept_kixdns() {
     case ${unit} in
       kixdns-panel.service | kixdns-panel-helper.service | kixdns-panel-update.service) continue ;;
     esac
+    # 文件写着面板的程序，systemd 却按 drop-in 跑别的：那是别人的服务，不当成面板留下的 / The file names the panel's program
+    # but systemd runs another one through a drop-in: someone else's service, not one the panel left
+    ! unit_runs_other_program "${unit}" || continue
     if ! managed_binary_present; then
       if unit_created_by_panel "${file}"; then
         DEAD_PANEL_UNITS+=("${unit}")
@@ -225,6 +257,9 @@ load_settings() {
     value="$(environment_value KIXDNS_SERVICE_UNIT || true)"
     [[ -z ${value} ]] || KIXDNS_SERVICE_UNIT=${value}
     MANAGED_CONFIG="$(environment_value KIXDNS_CONFIG || true)"
+    [[ $(environment_value KIXDNS_REMOVED || true) != true ]] || LEFT_REMOVED=true
+    [[ $(environment_value KIXDNS_USER_CREATED || true) != true ]] || LEFT_USER_CREATED=true
+    [[ $(environment_value KIXDNS_GROUP_CREATED || true) != true ]] || LEFT_GROUP_CREATED=true
   else
     detect_kept_kixdns
   fi
@@ -236,15 +271,15 @@ load_settings() {
     HAS_EXTERNAL_BACKUP=true
   fi
   # panel.env 说归面板管，可它的 unit 已经换成跑别的程序（保留配置卸载后，用户换上了自己的 KixDNS）：它不再是面板的，
-  # 和不归面板管一样整个保留，不停、不删 unit、不删 /etc/kixdns 和 kixdns 账号。还有外部备份时不这样认：那是迁移来的主机
-  # 恢复到一半，unit 是放回去的原 unit，要照旧把恢复做完。
+  # 和不归面板管一样整个保留，不停、不删 unit、不删 /etc/kixdns 和 kixdns 账号。看的是 systemd 实际加载的那个 unit，
+  # 不只是 /etc/systemd/system 里的文件：用户的 unit 可能放在别处。还有外部备份时不这样认：那是迁移来的主机恢复到一半，
+  # unit 是放回去的原 unit，要照旧把恢复做完。
   # panel.env says the panel's, but its unit now runs another program (after a keep-config uninstall the user put their own
   # KixDNS in): it is no longer the panel's and is kept whole, as an unmanaged one is: not stopped, its unit, /etc/kixdns
-  # and the kixdns account not removed. Not so with an external backup still there: that is a migrated host part way
-  # through a restore, the unit is the original put back, and the restore must finish as before.
-  local unit_file="${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}"
-  if [[ ${KIXDNS_MANAGED} == true && ${HAS_EXTERNAL_BACKUP} == false && -f ${unit_file} ]] &&
-    ! unit_runs_managed_binary "${unit_file}"; then
+  # and the kixdns account not removed. What counts is the unit systemd really loads, not only the file in
+  # /etc/systemd/system: the user's unit may live elsewhere. Not so with an external backup still there: that is a migrated
+  # host part way through a restore, the unit is the original put back, and the restore must finish as before.
+  if [[ ${KIXDNS_MANAGED} == true && ${HAS_EXTERNAL_BACKUP} == false ]] && unit_runs_other_program "${KIXDNS_SERVICE_UNIT}"; then
     KIXDNS_MANAGED=false
   fi
 }
@@ -374,6 +409,8 @@ load_external_backup() {
   ORIGINAL_ENABLED="$(backup_value KIXDNS_WAS_ENABLED || true)"
   ORIGINAL_ACTIVE="$(backup_value KIXDNS_WAS_ACTIVE || true)"
   ORIGINAL_CONFIG="$(backup_value KIXDNS_CONFIG || true)"
+  [[ $(backup_value KIXDNS_USER_CREATED || true) != true ]] || ORIGINAL_USER_CREATED=true
+  [[ $(backup_value KIXDNS_GROUP_CREATED || true) != true ]] || ORIGINAL_GROUP_CREATED=true
   # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
   # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
   [[ ${ORIGINAL_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${ORIGINAL_UNIT} != *..* ]] ||
@@ -439,6 +476,103 @@ remove_account() {
     fail "删不掉账号 ${account}：先停掉这个账号的其他进程"
 }
 
+# 这个账号还有进程在跑。不靠 pgrep：精简的系统上没有 procps。/proc 里每个进程目录的属主就是它的有效 UID。
+# The account still has processes running. pgrep is not relied on, as minimal systems lack procps: the owner of each
+# process directory in /proc is its effective UID.
+account_has_processes() {
+  local uid
+  local entry
+  uid="$(id -u "$1" 2>/dev/null)" || return 1
+  for entry in /proc/[0-9]*; do
+    [[ $(stat -c '%u' -- "${entry}" 2>/dev/null) != "${uid}" ]] || return 0
+  done
+  return 1
+}
+
+# 删掉面板的 kixdns 账号（参数 user 或 user=true）和 kixdns 组（参数 group 或 group=true）。面板的 KixDNS 这时已经停了、unit 已经删了：账号还有进程在跑，
+# 或者 systemd 加载的同名 unit 写着用它，就是别人的服务在用（比如保留配置卸载后用户自己装的 KixDNS），账号和组都留着，不去
+# 杀它的进程。kixdns-panel 账号的主组也是 kixdns，所以要先删 kixdns-panel。
+# Removes the panel's kixdns account (argument user) and kixdns group (argument group). The panel's KixDNS has stopped and
+# its unit is gone by now: an account that still has processes, or that the loaded unit of that name says it runs as, is in
+# use by someone else's service (the user's own KixDNS installed after a keep-config uninstall, say), so the account and the
+# group both stay and its processes are not killed. kixdns-panel has kixdns as its primary group too, so it goes first.
+remove_kixdns_account() {
+  local item
+  local remove_user=false
+  local remove_group=false
+  for item in "$@"; do
+    case ${item} in
+      user | user=true) remove_user=true ;;
+      group | group=true) remove_group=true ;;
+    esac
+  done
+  if getent passwd kixdns >/dev/null 2>&1; then
+    if account_has_processes kixdns ||
+      [[ $(systemctl show --property=User --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true) == kixdns ]]; then
+      if [[ ${remove_user} == true || ${remove_group} == true ]]; then
+        printf 'kixdns 账号还有别的进程或服务在用，保留它和 kixdns 组。\n'
+      fi
+      return 0
+    fi
+    if [[ ${remove_user} == true ]]; then
+      userdel kixdns 2>/dev/null || fail "删不掉账号 kixdns：先停掉这个账号的其他进程"
+    fi
+  fi
+  if [[ ${remove_group} == true ]]; then
+    groupdel kixdns 2>/dev/null || true
+  fi
+}
+
+# 面板在 /etc/kixdns 里写的文件：panel.env 记下的配置，和面板写到一半留下的临时文件（.kixdns-panel- 加 6 个字母或数字，
+# 见 panel-server 的 temporaries.rs）。参数：文件名，配置的文件名。
+# The files the panel writes in /etc/kixdns: the config panel.env records, and the temporary files a write cut short leaves
+# (.kixdns-panel- and 6 letters or digits, see panel-server's temporaries.rs). Arguments: the file name, the config's name.
+panel_written_config_file() {
+  [[ $1 == "$2" || $1 =~ ^\.kixdns-panel-[A-Za-z0-9]{6}$ ]]
+}
+
+# 删除面板数据时，删掉面板为 KixDNS 配置用的 /etc/kixdns：里面只有面板写的文件时整个删掉；还有别的（比如用户自己的 KixDNS
+# 的配置）时只删面板写的，目录留着，交还 root。配置不在 /etc/kixdns 时什么也不删。
+# Removing the panel data removes the /etc/kixdns the panel used for the KixDNS config: whole when it holds only files the
+# panel wrote; with anything else in it (the config of the user's own KixDNS, say) only the panel's files go and the
+# directory stays, handed back to root. With the config elsewhere, nothing is removed.
+remove_panel_kixdns_config() {
+  local config=${MANAGED_CONFIG:-${KIXDNS_CONFIG_DIRECTORY}/pipeline.json}
+  local directory=${KIXDNS_CONFIG_DIRECTORY}
+  local name
+  local others=false
+  [[ $(dirname -- "${config}") == "${directory}" && -d ${directory} && ! -L ${directory} ]] || return 0
+  while IFS= read -r -d '' name; do
+    if ! panel_written_config_file "${name}" "${config##*/}" || [[ -d ${directory}/${name} && ! -L ${directory}/${name} ]]; then
+      others=true
+    fi
+  done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
+  if [[ ${others} == false ]]; then
+    rm -rf -- "${directory}"
+    return 0
+  fi
+  while IFS= read -r -d '' name; do
+    if panel_written_config_file "${name}" "${config##*/}" && [[ ! -d ${directory}/${name} || -L ${directory}/${name} ]]; then
+      rm -f -- "${directory:?}/${name}"
+    fi
+  done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
+  hand_back_directory "${directory}"
+  printf '%s 里还有不是面板写的文件，目录留着，只删了面板写的配置。\n' "${directory}"
+}
+
+# 把一个面板用过、现在要交还的目录改归 root:root、权限 0755。面板自己的目录（面板配置目录、状态目录和它们下面的）不交还。
+# Hands a directory the panel used back to root:root with mode 0755. The panel's own directories (its config and state
+# directories and what lies below them) are not handed back.
+hand_back_directory() {
+  local directory=$1
+  case ${directory} in
+    "${PANEL_CONFIG_DIRECTORY}" | "${PANEL_CONFIG_DIRECTORY}"/* | "${PANEL_STATE_DIRECTORY}" | "${PANEL_STATE_DIRECTORY}"/*) return 0 ;;
+  esac
+  [[ -d ${directory} && ! -L ${directory} ]] || return 0
+  chown root:root -- "${directory}"
+  chmod 0755 -- "${directory}"
+}
+
 remove_panel_components() {
   stop_unit kixdns-panel-update.service
   wait_for_unit_inactive kixdns-panel-update.service
@@ -487,6 +621,13 @@ remove_managed_kixdns() {
         "${SYSTEMD_UNIT_DIRECTORY}/${ORIGINAL_UNIT}"
     fi
     RESTORED_EXTERNAL=true
+  else
+    # 面板自己的 KixDNS 已经移除：保留的 panel.env 不能再说它归面板管，否则以后用户装上同名的 KixDNS，再运行卸载器会把它当成
+    # 面板的停掉、删掉。它的配置和 kixdns 账号留着，记下来等删除面板数据时再删。
+    # The panel's own KixDNS is gone: the kept panel.env must stop saying it is the panel's, or once the user installs a
+    # KixDNS of the same name, running the uninstaller again stops and removes it as the panel's. Its config and the kixdns
+    # account stay, recorded to go when the panel data is removed.
+    mark_kixdns_unmanaged KIXDNS_REMOVED=true
   fi
 }
 
@@ -510,18 +651,23 @@ remove_panel_state() {
     rm -rf -- "${state}"
   fi
   remove_account kixdns-panel
-  if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove && \
-    ${HAS_EXTERNAL_BACKUP} == false ]]; then
-    # 全新安装的主机：安装器为配置建的目录随 KixDNS 删掉。按 panel.env 记下的配置路径认，配置不在那里就不删别的目录；
-    # 没记路径的旧 panel.env 按安装器的默认位置。
-    # A freshly installed host: the directory the installer created for the config goes with KixDNS. It is recognised from
-    # the config path panel.env records, and no other directory is removed; an old panel.env without the path means the
-    # installer's default location.
-    if [[ $(dirname -- "${MANAGED_CONFIG:-${KIXDNS_CONFIG_DIRECTORY}/pipeline.json}") == "${KIXDNS_CONFIG_DIRECTORY}" ]]; then
-      rm -rf -- "${KIXDNS_CONFIG_DIRECTORY}"
-    fi
-    remove_account kixdns
-    groupdel kixdns 2>/dev/null || true
+  if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove && ${HAS_EXTERNAL_BACKUP} == false ]] ||
+    [[ ${KIXDNS_MANAGED} == false && ${LEFT_REMOVED} == true ]]; then
+    # 全新安装的主机，面板的 KixDNS 这次或上次卸载时移除了：安装器为配置建的 /etc/kixdns 和 kixdns 账号一起删。按 panel.env
+    # 记下的配置路径认，配置不在那里就不删别的目录；没记路径的旧 panel.env 按安装器的默认位置。
+    # A freshly installed host whose KixDNS this or an earlier uninstall removed: the /etc/kixdns the installer created for
+    # the config and the kixdns account go too. It is recognised from the config path panel.env records, and no other
+    # directory is removed; an old panel.env without the path means the installer's default location.
+    remove_panel_kixdns_config
+    remove_kixdns_account user group
+  elif [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove ]]; then
+    # 迁移来的主机这次恢复了原来的 KixDNS：只删迁移建的账号和组 / A migrated host whose original KixDNS this run restored:
+    # only the account and group the migration created go
+    remove_kixdns_account "user=${ORIGINAL_USER_CREATED}" "group=${ORIGINAL_GROUP_CREATED}"
+  elif [[ ${KIXDNS_MANAGED} == false ]]; then
+    # 上次卸载恢复了原来的 KixDNS、保留了 panel.env：它记下了迁移建的账号和组 / An earlier uninstall restored the original
+    # KixDNS and kept panel.env, which records the account and group the migration created
+    remove_kixdns_account "user=${LEFT_USER_CREATED}" "group=${LEFT_GROUP_CREATED}"
   fi
   # panel.env 是判断 KixDNS 归属的依据，最后才删：中途失败后重跑仍能认出面板管理的 KixDNS。
   # panel.env is how ownership is decided, so it goes last: a rerun after a mid-way failure still recognises the managed KixDNS.
@@ -600,11 +746,19 @@ restore_incomplete() {
 # running the uninstaller again does not stop or remove it as the panel's (the backup is used up and can no longer tell).
 # It is the same key the removed panel-only mode left: uninstallers since v3.1.1 all read it this way, and the installer
 # drops it on a reinstall.
+# 参数是要一起记下的、等删除面板数据时再删的东西（KIXDNS_REMOVED=true、KIXDNS_USER_CREATED=true 之类，见 LEFT_REMOVED）。
+# The arguments are what to record with it, left to go when the panel data is removed (KIXDNS_REMOVED=true,
+# KIXDNS_USER_CREATED=true and so on, see LEFT_REMOVED).
 mark_kixdns_unmanaged() {
   local temporary
+  local extra
   [[ -f ${PANEL_ENV} ]] || return 0
+  extra="$(printf '%s\n' "$@")"
   temporary="$(mktemp "${PANEL_CONFIG_DIRECTORY}/.panel.env.XXXXXX")"
-  awk '!/^KIXDNS_MANAGEMENT_ENABLED=/ { print } END { print "KIXDNS_MANAGEMENT_ENABLED=false" }' "${PANEL_ENV}" > "${temporary}"
+  awk -v extra="${extra}" '
+    !/^KIXDNS_(MANAGEMENT_ENABLED|REMOVED|USER_CREATED|GROUP_CREATED)=/ { print }
+    END { print "KIXDNS_MANAGEMENT_ENABLED=false"; if (extra != "") print extra }
+  ' "${PANEL_ENV}" > "${temporary}"
   chown --reference="${PANEL_ENV}" -- "${temporary}"
   chmod --reference="${PANEL_ENV}" -- "${temporary}"
   mv -fT -- "${temporary}" "${PANEL_ENV}"
@@ -678,7 +832,9 @@ restore_external_state() {
   # The backup is used up only once the restore is done: first record that the KixDNS is no longer the panel's, then remove
   # the backup. A failure part way leaves the backup, so a rerun carries the restore through; a later migration backs up
   # the KixDNS the host has then instead of keeping this old one.
-  mark_kixdns_unmanaged
+  # 迁移建的 kixdns 账号和组随备份记录一起带进 panel.env，以后删除面板数据时再删 / The record of the kixdns account and group
+  # the migration created moves into panel.env with it, so a later removal of the panel data removes them then
+  mark_kixdns_unmanaged "KIXDNS_USER_CREATED=${ORIGINAL_USER_CREATED}" "KIXDNS_GROUP_CREATED=${ORIGINAL_GROUP_CREATED}"
   rm -rf -- "${EXTERNAL_BACKUP}"
   printf '原来的 KixDNS 已恢复，运行状态和迁移前一样。\n'
   if [[ -n ${ORIGINAL_CONFIG} && ${ORIGINAL_CONFIG} == "${MANAGED_CONFIG}" ]]; then
