@@ -555,7 +555,8 @@ INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 # The uninstaller ships on its own and cannot source the installer, so these functions exist twice and must match
 # exactly: when one side changes without the other, this fails.
 for shared_function in wait_for_service_stable port_accepts_connection owner_and_mode hand_back_directory \
-  unit_service_setting original_config_access hand_back_original_config panel_written_config_file; do
+  unit_service_setting original_config_access hand_back_original_config panel_written_config_file \
+  ensure_root_records genuine_root_record secure_root_records put_back_root_records account_has_processes; do
   installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}")"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   [[ -n ${installer_copy} && ${installer_copy} == "${uninstaller_copy}" ]] || {
@@ -609,7 +610,9 @@ migrate_scratch_host() {
     MIGRATED_KIXDNS_CONFIG=\"\${root}/panel-etc/kixdns/pipeline.json\"
     PANEL_ENV=\"\${root}/panel-etc/panel.env\"
     SYSTEMD_UNIT_DIRECTORY=\"\${root}/units\"
-    EXTERNAL_BACKUP=\"\${root}/state/external-backup\"
+    ROOT_RECORDS=\"\${root}/records\"
+    EXTERNAL_BACKUP=\"\${ROOT_RECORDS}/external-backup\"
+    ROOT_UID=\"\$(id -u)\"
     # 安装器把已有的旧备份先挪进回滚备份 / The installer first moves an old backup already there into the rollback backup
     BACKUP_ROOT=\"\$(mktemp -d \"\${root}/rollback.XXXXXX\")\"
     systemctl() {
@@ -671,8 +674,17 @@ uninstall_scratch_host() {
     PANEL_STATE_DIRECTORY="${root}/state"
     SYSTEMD_UNIT_DIRECTORY="${root}/units"
     PANEL_ENV="${PANEL_CONFIG_DIRECTORY}/panel.env"
-    EXTERNAL_BACKUP="${PANEL_STATE_DIRECTORY}/external-backup"
-    RESOLVED_STATE="${PANEL_STATE_DIRECTORY}/resolved-stub"
+    ROOT_RECORDS="${root}/records"
+    EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+    RESOLVED_STATE="${ROOT_RECORDS}/resolved-stub"
+    # 临时主机上的文件都归跑测试的用户，由他代替 root；FORGED_RECORDS=true 时 root 是别人，面板写的记录就不归 root
+    # The scratch host's files belong to the user running the test, who stands in for root; with FORGED_RECORDS=true root
+    # is someone else, so records the panel wrote are not root's
+    ROOT_UID="$(command id -u)"
+    [[ ${FORGED_RECORDS:-} != true ]] || ROOT_UID=0
+    RECORDS_MOVED=()
+    RECORDS_DIRECTORY_CREATED=false
+    RECORDS_SETTLED=false
     KIXDNS_RUNTIME_DIRECTORY="${root}/run-kixdns"
     KIXDNS_CONFIG_DIRECTORY="${root}/etc-kixdns"
     # SYSTEMCTL_LOG 非空时记下每个改动服务的 systemctl 调用；SYSTEMCTL_FAIL_START=true 时启动服务失败，像真的卸载器那样就此
@@ -706,7 +718,7 @@ uninstall_scratch_host() {
     userdel() { [[ -z ${ACCOUNT_LOG:-} ]] || printf 'userdel %s\n' "$*" >> "${ACCOUNT_LOG}"; }
     groupdel() { [[ -z ${ACCOUNT_LOG:-} ]] || printf 'groupdel %s\n' "$*" >> "${ACCOUNT_LOG}"; }
     terminate_account_processes() { :; }
-    account_has_processes() { [[ ${ACCOUNT_BUSY:-} == true ]]; }
+    account_has_processes() { [[ ${ACCOUNT_BUSY:-} == true && $1 == kixdns ]]; }
     # CHOWN_LOG 非空时记下每个 chown；PANEL_OWNED=true 时临时主机上的文件都算面板账号的（它们其实归跑测试的用户）。
     # With CHOWN_LOG set every chown is recorded; with PANEL_OWNED=true every file of the scratch host counts as the panel
     # account's (they really belong to the user running the test).
@@ -790,7 +802,7 @@ migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
 output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
 assert_not_contains "${output}" "RUN-FAILED" "保留数据恢复原来的 KixDNS 不应失败"
 assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "保留数据时也应恢复原来的 KixDNS"
-[[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：恢复成功后应删掉迁移前的备份\n' >&2; exit 1; }
+[[ ! -e ${host}/records/external-backup ]] || { printf '断言失败：恢复成功后应删掉迁移前的备份\n' >&2; exit 1; }
 assert_equals "$(restore_calls)" "enable kixdns.service --quiet;start kixdns.service;" "第一次恢复应按迁移前的状态启用并启动"
 assert_contains "$(cat "${host}/panel-etc/panel.env")" "KIXDNS_MANAGEMENT_ENABLED=false" \
   "恢复后保留的 panel.env 应记下 KixDNS 已不归面板管"
@@ -814,9 +826,9 @@ printf '{"second":true}\n' > "${host}/etc/second.json"
 printf '[Service]\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${host}/etc/second.json" > "${host}/units/kixdns.service"
 cp -- "${host}/units/kixdns.service" "${host}/second.service"
 migrate_scratch_host "${host}" "${host}/etc/second.json" false false > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
-cmp -s -- "${host}/state/external-backup/kixdns.service" "${host}/second.service" ||
+cmp -s -- "${host}/records/external-backup/kixdns.service" "${host}/second.service" ||
   { printf '断言失败：再迁移时应备份主机上现在的 unit\n' >&2; exit 1; }
-backup="$(cat "${host}/state/external-backup/install.env")"
+backup="$(cat "${host}/records/external-backup/install.env")"
 assert_contains "${backup}" "KIXDNS_CONFIG=${host}/etc/second.json" "再迁移时应记下现在的原配置"
 assert_contains "${backup}" "KIXDNS_WAS_ACTIVE=false" "再迁移时应记下现在没在运行"
 assert_contains "${backup}" "KIXDNS_WAS_ENABLED=false" "再迁移时应记下现在不开机自启"
@@ -841,7 +853,7 @@ for config_action in keep remove; do
   assert_contains "${output}" "原来的 KixDNS（kixdns.service）没能按迁移前的状态恢复" "恢复失败时应说明（${config_action}）"
   assert_contains "${output}" "| sudo bash -s -- --remove-kixdns --${config_action}-config --yes" \
     "恢复失败时应给出接着恢复的命令（${config_action}）"
-  [[ -f ${host}/state/external-backup/install.env && -f ${host}/panel-etc/panel.env ]] ||
+  [[ -f ${host}/records/external-backup/install.env && -f ${host}/panel-etc/panel.env ]] ||
     { printf '断言失败：恢复没做完时备份和 panel.env 都要留着（%s）\n' "${config_action}" >&2; exit 1; }
   : > "${systemctl_log}"
   output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns "--${config_action}-config" --yes)"
@@ -851,7 +863,7 @@ for config_action in keep remove; do
     "重新运行卸载器应按迁移前的状态启动（${config_action}）"
   cmp -s -- "${host}/units/kixdns.service" "${host}/original.service" ||
     { printf '断言失败：重新运行卸载器应放回原来的 unit（%s）\n' "${config_action}" >&2; exit 1; }
-  [[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：恢复做完后应删掉备份（%s）\n' "${config_action}" >&2; exit 1; }
+  [[ ! -e ${host}/records/external-backup ]] || { printf '断言失败：恢复做完后应删掉备份（%s）\n' "${config_action}" >&2; exit 1; }
 done
 [[ ! -e ${host}/panel-etc ]] || { printf '断言失败：恢复做完后删除数据时面板配置目录应删掉\n' >&2; exit 1; }
 
@@ -869,7 +881,7 @@ for config_action in keep remove; do
   assert_contains "${output}" "| sudo bash -s -- --remove-kixdns --${config_action}-config --yes" \
     "起来又崩溃时应给出接着恢复的命令（${config_action}）"
   assert_not_contains "${output}" "原来的 KixDNS 已恢复" "起来又崩溃时不能说已恢复（${config_action}）"
-  [[ -f ${host}/state/external-backup/install.env && -f ${host}/panel-etc/panel.env ]] ||
+  [[ -f ${host}/records/external-backup/install.env && -f ${host}/panel-etc/panel.env ]] ||
     { printf '断言失败：原来的 KixDNS 没稳定运行时备份和 panel.env 都要留着（%s）\n' "${config_action}" >&2; exit 1; }
   output="$(uninstall_scratch_host "${host}" --remove-kixdns "--${config_action}-config" --yes)"
   assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "它能稳定运行以后重新运行卸载器应恢复完（${config_action}）"
@@ -886,17 +898,17 @@ done
 migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
 output="$(SYSTEMCTL_FAIL_START=true uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
 assert_contains "${output}" "RUN-FAILED" "原来的 KixDNS 起不来时卸载应失败"
-backup_before="$(cat "${host}/state/external-backup/install.env")"
+backup_before="$(cat "${host}/records/external-backup/install.env")"
 output="$(migrate_scratch_host "${host}" "${host}/etc/kixdns.json" false true 2>&1)" || true
-assert_equals "$(cat "${host}/state/external-backup/install.env")" "${backup_before}" \
+assert_equals "$(cat "${host}/records/external-backup/install.env")" "${backup_before}" \
   "恢复没做完时安装器不能换掉迁移前的备份"
-assert_contains "${output}" "安装失败：上次卸载没有把原来的 KixDNS 恢复完，迁移前的备份还在 ${host}/state/external-backup。" \
+assert_contains "${output}" "安装失败：上次卸载没有把原来的 KixDNS 恢复完，迁移前的备份还在 ${host}/records/external-backup。" \
   "恢复没做完时安装器应拒绝并说明"
 assert_contains "${output}" "| sudo bash -s -- --remove-kixdns --keep-config --yes" "拒绝时应给出用同样选项接着卸载的命令"
-assert_contains "${output}" "sudo rm -rf ${host}/state/external-backup" "拒绝时应说明不再恢复就删掉备份"
+assert_contains "${output}" "sudo rm -rf ${host}/records/external-backup" "拒绝时应说明不再恢复就删掉备份"
 output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
 assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "接着卸载应把恢复做完"
-[[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：恢复做完后应删掉备份和它的标记\n' >&2; exit 1; }
+[[ ! -e ${host}/records/external-backup ]] || { printf '断言失败：恢复做完后应删掉备份和它的标记\n' >&2; exit 1; }
 
 # 保留增强版、删除面板数据：保留的 KixDNS 还在用副本，副本和它的目录必须留下，面板配置目录里的其他东西照删；
 # 再卸载一次（这时已经没有 panel.env）也一样。
@@ -950,7 +962,11 @@ kept_host() {
   chmod 0755 "${root}/state/bin/kixdns"
 }
 chown_log="${scratch}/chown.log"
-kept_owner_of() { grep -Fx "chown $1 -- $2" "${chown_log}" > /dev/null && printf '%s %s\n' "$1" "$(stat -c '%a' "$2")"; }
+# 改成了谁、权限是多少；chown 带不带 -h 都算（交还时一律不跟着符号链接改）/ Who it became and its mode; chown with or
+# without -h alike (handing back never follows a symlink)
+kept_owner_of() {
+  grep -Fx -e "chown $1 -- $2" -e "chown -h $1 -- $2" "${chown_log}" > /dev/null && printf '%s %s\n' "$1" "$(stat -c '%a' "$2")"
+}
 kept_host "${host}"
 : > "${chown_log}"
 : > "${systemctl_log}"
@@ -971,6 +987,30 @@ done
 assert_equals "$(cat "${host}/state/geo/site-abc.dat" 2>/dev/null || printf missing)" "geosite" "保留的 KixDNS 配置里写着的 GeoSite 必须留着"
 assert_not_contains "$(cat "${systemctl_log}")" "kixdns.service" "保留 KixDNS 时不能停它"
 assert_contains "${output}" "保留的 KixDNS 用到的程序、配置和文件改归 root，面板的其他数据已删除。" "交还时应说明"
+# 回归（P1）：交还给 root 的只能是面板目录里真的那个文件：硬链接到别处的（改它的属主就改到别处去了）不改属主、不读。面板账号
+# 的进程在这之前一个不剩地停掉，查过以后它就换不了了。
+# Regression (P1): only the real file in the panel's directory is handed to root: one hard-linked from elsewhere (changing
+# its owner changes it elsewhere) is neither re-owned nor read. Every process of the panel account is stopped before that,
+# so nothing can swap it after the check.
+kept_host "${host}"
+mkdir -p "${host}/elsewhere"
+printf 'secret\n' > "${host}/elsewhere/shadow"
+rm -f -- "${host}/etc-kixdns/pipeline.json" "${host}/state/geo/site-abc.dat"
+ln "${host}/elsewhere/shadow" "${host}/etc-kixdns/pipeline.json"
+ln "${host}/elsewhere/shadow" "${host}/state/geo/site-abc.dat"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_not_contains "$(cat "${chown_log}")" "${host}/etc-kixdns/pipeline.json" "硬链接到别处的配置不能改属主"
+assert_not_contains "$(cat "${chown_log}")" "${host}/state/geo/site-abc.dat" "硬链接到别处的 Geo 文件不能改属主"
+run_body="$(declare -f run_uninstall)"
+components_line="$(grep -n 'remove_panel_components' <<< "${run_body}" | head -n 1 | cut -d: -f1 || true)"
+stop_line="$(grep -n 'stop_panel_processes' <<< "${run_body}" | head -n 1 | cut -d: -f1 || true)"
+removal_line="$(grep -n 'remove_managed_kixdns' <<< "${run_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${stop_line} && ${components_line} -lt ${stop_line} && ${stop_line} -lt ${removal_line} ]] || {
+  printf '断言失败：面板停了以后、动面板的目录之前，要停掉面板账号的所有进程（components=%s stop=%s removal=%s）\n' \
+    "${components_line}" "${stop_line}" "${removal_line}" >&2
+  exit 1
+}
 # 上次卸载是旧版卸载器做的，已经留下了归空 UID 的配置：没有 panel.env 时按保留的 unit 认出它的配置，照样交还。
 # An older uninstaller already left the config to a freed UID: without panel.env the config is found from the kept unit and
 # handed back all the same.
@@ -1011,6 +1051,9 @@ inplace_host() {
     "${root}/state/bin/kixdns" "${root}/etc/kixdns.json" > "${root}/units/kixdns.service"
   printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
   chmod 0755 "${root}/state/bin/kixdns"
+  # 旧版安装器建的备份：目录 0700、文件 0600 / The backup the older installer made: directory 0700, files 0600
+  chmod 0700 "${root}/state/external-backup"
+  chmod 0600 "${root}/state/external-backup/install.env" "${root}/state/external-backup/kixdns.service"
   # 旧版原地迁移把原配置的目录和文件交给了面板 / The older in-place migration handed the original's directory and file to the panel
   chmod 0750 "${root}/etc"
   chmod 0640 "${root}/etc/kixdns.json"
@@ -1112,6 +1155,62 @@ assert_not_contains "${output}" "RUN-FAILED" "配置不在默认位置的主机�
 [[ -e ${host}/etc-kixdns && -e ${host}/elsewhere/pipeline.json ]] ||
   { printf '断言失败：panel.env 没指向的目录不能删\n' >&2; exit 1; }
 
+# 回归（P2）：面板账号拥有 /var/lib/kixdns-panel，能在那里放一份自己写的「迁移前的备份」，卸载器照着它装 unit、启动，面板就成了
+# root。root 要照着做事的记录现在只放在只有 root 能进的目录里；旧版留在状态目录里的，先挪进去（一次 rename，挪进来以后面板就碰
+# 不到了）再验：目录和每个文件都归 root、不是符号链接、只有一个链接，不对就拒绝照它们做事。
+# Regression (P2): the panel account owns /var/lib/kixdns-panel, so it could put a "pre-migration backup" of its own
+# there, and the uninstaller installed and started the unit it named, making the panel root. The records root acts on now
+# live only in a root-only directory; ones an older version left in the state directory are moved there first (one rename,
+# after which the panel cannot touch them) and checked afterwards: the directory and every file root's, no symlinks, one
+# link each, or nothing is done by them.
+plant_backup() {
+  mkdir -p "${host}/state/external-backup"
+  printf '%s\n' KIXDNS_SERVICE_UNIT=pwn.service KIXDNS_CONFIG=/nonexistent KIXDNS_BINARY=/bin/true KIXDNS_WAS_ACTIVE=true \
+    KIXDNS_WAS_ENABLED=false > "${host}/state/external-backup/install.env"
+  printf '[Service]\nExecStart=/bin/sh -c "id > /root/pwned"\n' > "${host}/state/external-backup/kixdns.service"
+}
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+plant_backup
+: > "${systemctl_log}"
+output="$(FORGED_RECORDS=true SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_contains "${output}" "RUN-FAILED" "面板写的备份不能照着恢复"
+assert_contains "${output}" "不是 root 建的" "拒绝时应说明备份不是 root 的"
+[[ ! -e ${host}/units/pwn.service ]] || { printf '断言失败：不能照面板写的备份装 unit\n' >&2; exit 1; }
+assert_not_contains "$(cat "${systemctl_log}")" "pwn.service" "不能启动面板写的备份里的 unit"
+[[ -f ${host}/units/kixdns.service && -x ${host}/state/bin/kixdns ]] ||
+  { printf '断言失败：拒绝时不能动主机上的 KixDNS\n' >&2; exit 1; }
+[[ -f ${host}/records/external-backup/install.env && ! -e ${host}/state/external-backup ]] ||
+  { printf '断言失败：拒绝时可疑的备份应关在只有 root 能进的目录里\n' >&2; exit 1; }
+# 旧版留在状态目录里的、root 建的备份：挪进只有 root 能进的目录照常用；还没真的开始卸载就退出（比如取消），放回原处，旧版的
+# 卸载器还找得到它。
+# A backup an older version left in the state directory, root's own: moved into the root-only directory and used as
+# usual; leaving before the uninstall really starts (cancelling, say) puts it back, so an older uninstaller still finds it.
+inplace_host "${host}"
+(
+  PANEL_STATE_DIRECTORY="${host}/state"
+  ROOT_RECORDS="${host}/records"
+  EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+  ROOT_UID="$(id -u)"
+  install() {
+    local arguments=()
+    while [[ $# -gt 0 ]]; do
+      case $1 in -o | -g) shift ;; *) arguments+=("$1") ;; esac
+      shift
+    done
+    command install "${arguments[@]}"
+  }
+  chown() { :; }
+  secure_root_records
+  [[ -f ${host}/records/external-backup/install.env ]] && printf 'MOVED\n'
+) > "${scratch}/records.out" 2>&1 || true
+assert_contains "$(cat "${scratch}/records.out")" "MOVED" "root 建的旧备份应挪进只有 root 能进的目录"
+[[ -f ${host}/state/external-backup/install.env && ! -e ${host}/records ]] ||
+  { printf '断言失败：没开始卸载就退出时，挪走的备份应放回原处\n' >&2; exit 1; }
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_contains "${output}" "原来的 KixDNS 已恢复" "旧位置的 root 备份挪过来以后照常恢复"
+[[ ! -e ${host}/state/external-backup && ! -e ${host}/records/external-backup ]] ||
+  { printf '断言失败：恢复做完后两处都不应留着备份\n' >&2; exit 1; }
+
 # ---------------------------------------------------------------------------
 # 面板管的 KixDNS 走了以后再卸载 / Uninstalling again once the panel's KixDNS is gone
 # ---------------------------------------------------------------------------
@@ -1126,7 +1225,7 @@ account_calls() { tr '\n' ';' < "${account_log}"; }
 # panel.env, and a later removal of the panel data removes them then; while other processes still use the account, it stays
 # with the group. Regression: after a restore the account and group the migration created stayed for good.
 ACCOUNTS_MISSING=true migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
-backup="$(cat "${host}/state/external-backup/install.env")"
+backup="$(cat "${host}/records/external-backup/install.env")"
 assert_contains "${backup}" "KIXDNS_USER_CREATED=true" "迁移建了 kixdns 账号时备份应记下"
 assert_contains "${backup}" "KIXDNS_GROUP_CREATED=true" "迁移建了 kixdns 组时备份应记下"
 : > "${account_log}"
@@ -1134,7 +1233,7 @@ output="$(ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} uninstall_scratch_hos
 assert_not_contains "${output}" "RUN-FAILED" "恢复并删除数据不应失败"
 assert_equals "$(account_calls)" "userdel kixdns-panel;userdel kixdns;groupdel kixdns;" "恢复并删除数据时应删掉迁移建的账号和组"
 migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
-assert_contains "$(cat "${host}/state/external-backup/install.env")" "KIXDNS_USER_CREATED=false" "账号原来就有时备份应记下不是迁移建的"
+assert_contains "$(cat "${host}/records/external-backup/install.env")" "KIXDNS_USER_CREATED=false" "账号原来就有时备份应记下不是迁移建的"
 : > "${account_log}"
 output="$(ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
 assert_equals "$(account_calls)" "userdel kixdns-panel;" "原来就有的 kixdns 账号和组不能删"
