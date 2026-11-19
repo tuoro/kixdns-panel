@@ -9,23 +9,29 @@ set -Eeuo pipefail
 # R1：root 照着做事的记录（迁移前的备份 external-backup、关掉 resolved 监听的记录 resolved-stub，连同里面的 restore-incomplete、
 #     *_CREATED，和 /var/lib/kixdns-panel-backup 里的一切）每读一次都先过同一个函数 trusted_record：放记录的目录和它上面每一层都归
 #     root、不是符号链接，放记录的目录是 0700；记录里只有归 root 的普通文件，每个只有一个链接。验不过的马上挪出会被信的名字（挪进
-#     只有 root 能进的 quarantine，名字带时间），这次和以后都不再用；拒绝时说清是哪一份、为什么、接下来怎么办。
+#     只有 root 能进的 quarantine，名字带时间），这次和以后都不再用；拒绝时说清是哪一份、为什么、接下来怎么办。旧版放在面板状态
+#     目录里的记录只接手一次（之后留下 .adopted 标记）；有了标记，那里再有的不验、不用，直接挪走：「归 root」证明不了是 root 建的，
+#     root 自己也会把面板的文件交给 root。
 # R1: a record root acts on (the pre-migration backup external-backup, the record of turning resolved's stub off
 #     resolved-stub, with the restore-incomplete marker and *_CREATED entries in them, and anything under
 #     /var/lib/kixdns-panel-backup) goes through one function, trusted_record, at every read: the records directory and
 #     every level above it root's and no symlink, the records directory 0700; the record holding only regular root-owned
 #     files with one link each. One that fails leaves every trusted name at once (into the root-only quarantine, its name
 #     stamped with the time) and is never used by this run or a later one; the refusal names the copy, the reason and
-#     what to do.
+#     what to do. Records an older version left in the panel's state directory are adopted once (leaving the .adopted
+#     marker); with the marker, anything there later is moved away unchecked and never used: being root's proves nothing
+#     about who made it, as root itself hands panel files to root.
 # R2：面板账号还有任何进程时，root 不碰它能写的路径。先停面板，再以它的身份 kill -KILL -1，一直到 /proc 里没有一个归它（真实、
 #     有效或保存的 UID）的活进程，再发一次（换 PID、改成不可转储都躲不掉）；面板一直停着，直到这些路径上的事全做完，回滚也一样：
-#     放回文件和属主、删这次建的目录和账号，都在重启旧面板之前。在线更新（--panel-only-update）走同一条路。
+#     放回文件和属主、删这次建的目录和账号，都在重启旧面板之前。在线更新（--panel-only-update）走同一条路。面板停下之前先停
+#     helper（面板能请它以 root 起在线更新），安装器、卸载器和在线更新器同一时间只跑一个（同一把锁，整个运行都拿着）。
 # R2: root never touches a path the panel account can write while any process of that account exists. The panel is
 #     stopped, then kill -KILL -1 runs as the account until /proc shows no live process of it (real, effective or saved
 #     UID), and once more (changing PIDs or turning non-dumpable does not escape it); the panel stays stopped until every
 #     root operation on such paths is finished, the rollback included: files and owners put back, this run's directories
 #     and accounts removed, all before the old panel restarts. The online update (--panel-only-update) takes the same
-#     path.
+#     path. The helper stops before the panel (the panel can ask it to start an online update as root), and the
+#     installer, the uninstaller and the online updater run one at a time (one lock, held for the whole run).
 # R3：面板能写的路径上，root 从不跟着符号链接走：chown 用 -h；chmod 只用在照 R2 停了以后、lstat 查过不是符号链接的目录或普通文件上；
 #     已有的、面板能写的目录不用 install -d；这些路径上的重定向、sed -i、cp、mv、rm -rf、find -exec 都要先这样查过。
 # R3: on panel-writable paths root never follows a symlink: chown with -h; chmod only on a directory or regular file checked
@@ -78,6 +84,16 @@ PANEL_ENV_VERIFIED=false
 PANEL_WAS_ACTIVE=false
 PANEL_STOPPED_EARLY=false
 UNINSTALL_STARTED=false
+# R2：面板停下之前先停 helper，结束时照原样重启；照记录停下时面板和 helper 都不重启 / R2: the helper stops before the panel and
+# is restarted as it was at the end; a stop over a record restarts neither
+HELPER_WAS_ACTIVE=false
+KEEP_PANEL_STOPPED=false
+# S4：面板配置目录里有 unit 用着的配置，配置到 unit / S4: configs in the panel config directory a unit uses, config to unit
+declare -A USED_PANEL_CONFIGS=()
+# 和 install.sh 同一把锁（take_root_lock）；/proc 的位置，策略测试里换成临时目录 / The same lock as install.sh's
+# (take_root_lock); where /proc is, a scratch directory in the policy tests
+ROOT_LOCK=/run/kixdns-panel-root.lock
+PROC_ROOT=/proc
 RESOLVED_DROPIN=/etc/systemd/resolved.conf.d/kixdns-panel.conf
 RESOLV_CONF=/etc/resolv.conf
 KIXDNS_MANAGED=false
@@ -395,7 +411,7 @@ load_settings() {
 ensure_root_records() {
   if [[ -e ${ROOT_RECORDS} || -L ${ROOT_RECORDS} ]]; then
     [[ -d ${ROOT_RECORDS} && ! -L ${ROOT_RECORDS} && $(stat -c '%u %a' -- "${ROOT_RECORDS}") == "${ROOT_UID} 700" ]] ||
-      fail "${ROOT_RECORDS} 不是只有 root 能进的目录，不能放安装记录；先查看它是怎么来的"
+      refuse_with_panel_held "${ROOT_RECORDS} 不是只有 root 能进的目录，不能放安装记录；先查看它是怎么来的"
     return 0
   fi
   install -d -o root -g root -m 0700 "${ROOT_RECORDS}"
@@ -505,8 +521,22 @@ refuse_record() {
   else
     where="已经删掉，这次和以后都不会再用"
   fi
-  fail "$1 不能信（$3），不会照它做事。它${where}。
+  refuse_with_panel_held "$1 不能信（$3），不会照它做事。它${where}。
 这台主机就当作没有这份记录：确认以后再运行一次，会接着做下去，不再照它恢复。"
+}
+
+# R1、S1：照记录停下。开头为了记录停了面板的话（panel_held_for_records，两个脚本各有一份），面板和它的 helper 不再重启：重启了它
+# 又能改那些东西，等管理员处理；说清怎么先把面板用起来。参数：说明。
+# R1, S1: stop over a record. When the panel was stopped at the start for the records (panel_held_for_records, each script
+# has its own), the panel and its helper are not restarted: restarted, it could change those things again before the admin
+# can act; how to get the panel running meanwhile is said. Argument: the explanation.
+refuse_with_panel_held() {
+  if panel_held_for_records; then
+    KEEP_PANEL_STOPPED=true
+    fail "$1
+面板和它账号的进程这时都停着，处理好以后再运行一次就会接着做下去；在那之前要先用面板：sudo systemctl start kixdns-panel-helper.service kixdns-panel.service"
+  fi
+  fail "$1"
 }
 
 # R1：用一份记录之前都走这里。返回 0：记录在、能信；返回 1：没有这份记录。放记录的目录不是只有 root 能进的、或者记录本身不能信
@@ -520,7 +550,7 @@ trusted_record() {
   local problem
   [[ -e ${record} || -L ${record} ]] || return 1
   if ! root_only_path "${ROOT_RECORDS}" || [[ $(stat -c '%a' -- "${ROOT_RECORDS}") != 700 ]]; then
-    fail "${ROOT_RECORDS} 不是只有 root 能进的目录（它或它上面的目录不归 root、别人能写，或者是符号链接），里面的记录都不能信；先查看它是怎么来的"
+    refuse_with_panel_held "${ROOT_RECORDS} 不是只有 root 能进的目录（它或它上面的目录不归 root、别人能写，或者是符号链接），里面的记录都不能信；先查看它是怎么来的"
   fi
   problem="$(record_problem "${record}" "${name}")"
   [[ -n ${problem} ]] || return 0
@@ -533,17 +563,59 @@ old_records_present() {
     -e ${PANEL_STATE_DIRECTORY}/resolved-stub || -L ${PANEL_STATE_DIRECTORY}/resolved-stub ]]
 }
 
-# R1、R2：把旧版留在面板状态目录里的记录挪进只有 root 能进的 ROOT_RECORDS。要在面板停了、它的进程都没了以后调用（R2），这时
-# 面板改不了它们：先在原地验（record_problem），能信才挪；同一个文件系统一次 rename，不同的就复制、验过复制的那份再删原来的。
-# 不能信的挪走（quarantine_record）：只有 root 能进的目录里已经有一份能信的，就照用那份、说一声；没有就停下（refuse_record）。
-# 两处都是能信的、内容又一样，删掉旧的；不一样就停下，让人决定。放记录的目录只在验过以后才建。
-# R1, R2: move the records older versions left in the panel's state directory into the root-only ROOT_RECORDS. Call it
-# once the panel has stopped and its processes are gone (R2), so the panel cannot change them: checked in place first
-# (record_problem), moved only when they can be trusted; one rename on the same filesystem, otherwise a copy, checked, and
-# then the original removed. One that cannot be trusted is moved away (quarantine_record): with a trusted copy already in
-# the root-only directory, that one is used and this is said; without, the run stops (refuse_record). Both trusted and the
-# same: the old one goes; different: the run stops for a person to decide. The records directory is only created after
-# the checks pass.
+# R1：旧位置的记录只接手一次。这个版本第一次运行时（安装器或卸载器，旧位置有没有记录都一样）在放记录的目录里留下这个标记；有了
+# 它，旧位置再出现的东西一律不是 root 写的：不验、不用。root 自己也会把面板的文件交给 root（保留 KixDNS、删除面板数据时），
+# 所以「归 root」证明不了是 root 建的。卸载以后标记也留着；管理员删掉整个 ROOT_RECORDS 以后，下次运行才会再验一次旧位置。
+# R1: records from the old place are adopted once. The first run of this version (installer or uninstaller, with or without
+# records in the old place) leaves this marker in the records directory; from then on anything showing up in the old place
+# was not written by root: never checked, never used. Root itself hands panel files to root (keeping KixDNS while removing
+# the panel data), so being root's proves nothing about who made it. The marker survives an uninstall; only once the admin
+# removes the whole ROOT_RECORDS does a later run look at the old place again.
+adoption_done() {
+  [[ -f ${ROOT_RECORDS}/.adopted && ! -L ${ROOT_RECORDS}/.adopted ]] && root_only_path "${ROOT_RECORDS}" &&
+    [[ $(stat -c '%a' -- "${ROOT_RECORDS}") == 700 ]]
+}
+
+mark_adoption_done() {
+  adoption_done && return 0
+  ensure_root_records
+  # 上面有别人能写的一层时，记录本来就一份也不能信（trusted_record 会停下），标记写了也不算数 / With a level above writable by
+  # others no record can be trusted anyway (trusted_record stops), and a marker would count for nothing
+  root_only_path "${ROOT_RECORDS}" || return 0
+  [[ ! -e ${ROOT_RECORDS}/.adopted && ! -L ${ROOT_RECORDS}/.adopted ]] || rm -rf -- "${ROOT_RECORDS}/.adopted"
+  printf '%s\n' "这台主机已经接手过旧版放在 ${PANEL_STATE_DIRECTORY} 里的记录（或者那里本来就没有）；那里以后再有的都不用。" \
+    > "${ROOT_RECORDS}/.adopted"
+}
+
+# R1：已经接手过以后，旧位置的东西不验、不用：挪进 quarantine（不在同一个文件系统就删掉），说一声，接着做。要在面板停了、它的
+# 进程都没了以后调用（R2）。
+# R1: once adopted, whatever is in the old place is never checked or used: moved into quarantine (deleted on another
+# filesystem), said, and the run carries on. Call it once the panel has stopped and its processes are gone (R2).
+discard_old_records() {
+  local name
+  local old
+  local destination
+  local where
+  for name in external-backup resolved-stub; do
+    old=${PANEL_STATE_DIRECTORY}/${name}
+    [[ -e ${old} || -L ${old} ]] || continue
+    destination="$(quarantine_record "${old}" "${name}")"
+    where="已删掉"
+    [[ -z ${destination} ]] || where="挪到了 ${destination}"
+    printf '%s 不用（%s）：这台主机已经接手过旧版的记录，之后这里再有的都不是 root 写的。\n' "${old}" "${where}"
+  done
+}
+
+# R1、R2、S1：这个版本第一次运行时，把旧版留在面板状态目录里的记录挪进只有 root 能进的 ROOT_RECORDS。要在面板停了、它的进程都
+# 没了以后调用（R2），这时面板改不了它们：先在原地验（record_problem），能信才挪；同一个文件系统一次 rename，不同的就复制、验过
+# 复制的那份再换上、再删原来的。只有 root 能进的那里已经有一份时用那份。没用上的（不能信的、已经有一份的）挪进 quarantine，说一声，
+# 当作没有这份记录接着做，不停下。放记录的目录只在验过以后才建。
+# R1, R2, S1: on this version's first run, move the records older versions left in the panel's state directory into the
+# root-only ROOT_RECORDS. Call it once the panel has stopped and its processes are gone (R2), so the panel cannot change
+# them: checked in place first (record_problem), moved only when they can be trusted; one rename on the same filesystem,
+# otherwise a copy, checked, put in place, and then the original removed. With a copy already in the root-only place, that
+# one is used. One not used (untrusted, or already there) goes into quarantine, this is said, and the run carries on as if
+# there were no such record, never stopping. The records directory is only created after the checks pass.
 adopt_old_records() {
   local name
   local old
@@ -555,24 +627,21 @@ adopt_old_records() {
     old=${PANEL_STATE_DIRECTORY}/${name}
     new=${ROOT_RECORDS}/${name}
     [[ -e ${old} || -L ${old} ]] || continue
-    problem="$(record_problem "${old}" "${name}")"
-    if [[ -n ${problem} ]]; then
-      if trusted_record "${name}"; then
-        destination="$(quarantine_record "${old}" "${name}")"
-        where="已删掉"
-        [[ -z ${destination} ]] || where="挪到了 ${destination}"
-        printf '%s 不能信（%s），没有用它（%s）；用的是只有 root 能进的 %s。\n' "${old}" "${problem}" "${where}" "${new}"
-        continue
-      fi
-      refuse_record "${old}" "${name}" "${problem}"
-    fi
     if [[ -e ${new} || -L ${new} ]]; then
       trusted_record "${name}"
-      if diff -r -q -- "${old}" "${new}" >/dev/null 2>&1; then
-        rm -rf -- "${old}"
-        continue
-      fi
-      fail "${old} 和 ${new} 都是 root 建的，内容不一样，分不清该用哪份；查看以后删掉不要的那份再运行"
+      destination="$(quarantine_record "${old}" "${name}")"
+      where="已删掉"
+      [[ -z ${destination} ]] || where="挪到了 ${destination}"
+      printf '%s 没有用（%s）：只有 root 能进的 %s 里已经有一份，用的是那份。\n' "${old}" "${where}" "${new}"
+      continue
+    fi
+    problem="$(record_problem "${old}" "${name}")"
+    if [[ -n ${problem} ]]; then
+      destination="$(quarantine_record "${old}" "${name}")"
+      where="已删掉"
+      [[ -z ${destination} ]] || where="挪到了 ${destination}"
+      printf '%s 不能信（%s），没有用它（%s）；这台主机就当作没有这份记录。\n' "${old}" "${problem}" "${where}"
+      continue
     fi
     ensure_root_records
     if same_filesystem "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}"; then
@@ -583,7 +652,7 @@ adopt_old_records() {
       problem="$(record_problem "${new}.incoming" "${name}")"
       if [[ -n ${problem} ]]; then
         rm -rf -- "${new}.incoming"
-        fail "复制 ${old} 到 ${new} 时出了问题（${problem}），没有挪；现有安装未作修改"
+        refuse_with_panel_held "复制 ${old} 到 ${new} 时出了问题（${problem}），没有挪；现有安装未作修改"
       fi
       mv -T -- "${new}.incoming" "${new}"
       rm -rf -- "${old}"
@@ -593,13 +662,39 @@ adopt_old_records() {
   done
 }
 
-# R1：旧版留在状态目录里的记录：有的话先让面板停下、它的进程都没了（quiesce_for_records，两个脚本各有一份），再验、再挪。
-# R1: records older versions left in the state directory: when there are any, first stop the panel and every process of
-# its account (quiesce_for_records, each script has its own), then check and move them.
+# R1：旧位置有东西时，先让面板停下、它的进程都没了（quiesce_for_records，两个脚本各有一份），再处理：还没接手过就验、能信才挪，
+# 接手过了就不验、挪走。最后留下「接手过」的标记。
+# R1: with anything in the old place, first stop the panel and every process of its account (quiesce_for_records, each
+# script has its own), then deal with it: not yet adopted, check and move what can be trusted; adopted already, move it
+# away unchecked. Then leave the "adopted" marker.
 secure_root_records() {
-  old_records_present || return 0
-  quiesce_for_records
-  adopt_old_records
+  if old_records_present; then
+    quiesce_for_records
+    if adoption_done; then
+      discard_old_records
+    else
+      adopt_old_records
+    fi
+  fi
+  mark_adoption_done
+}
+
+# 安装器、卸载器和在线更新器同一时间只跑一个：同一把锁（ROOT_LOCK，在只有 root 能写的 /run 里，不在任何面板能写的目录里），
+# 整个运行都拿着。在线更新器先拿了锁再调安装器时，安装器用它传下来的那一个（KIXDNS_PANEL_ROOT_LOCK_FD）。面板请 helper 起的
+# 在线更新因此进不来，不会在这次运行中途重启面板。
+# The installer, the uninstaller and the online updater run one at a time: one lock (ROOT_LOCK, in /run, which only root
+# can write, outside every directory the panel can write), held for the whole run. When the online updater took it and
+# then runs the installer, the installer uses the one handed down (KIXDNS_PANEL_ROOT_LOCK_FD). An online update the panel
+# asks the helper for therefore cannot get in, and cannot restart the panel half way through this run.
+take_root_lock() {
+  local fd=${KIXDNS_PANEL_ROOT_LOCK_FD:-}
+  if [[ ${fd} =~ ^[0-9]+$ && $(readlink -- "/proc/$$/fd/${fd}" 2>/dev/null) == "${ROOT_LOCK}" ]] && flock -n "${fd}"; then
+    return 0
+  fi
+  exec {ROOT_LOCK_FD}>> "${ROOT_LOCK}"
+  flock -n "${ROOT_LOCK_FD}" ||
+    fail "另一个安装、卸载或在线更新正在运行（同一时间只能有一个）；等它结束再运行。"
+  export KIXDNS_PANEL_ROOT_LOCK_FD=${ROOT_LOCK_FD}
 }
 
 # R2：要停的进程的 UID：kixdns-panel 账号的，和这些面板能写的路径的属主里已经没有账号的（旧版卸载器删掉面板账号以后，它的进程
@@ -638,15 +733,40 @@ account_signal() {
 # zombie. The Uid line of status is read, not the owner of /proc/<pid> (root for a non-dumpable process). kill -0 -1
 # cannot tell: on Linux it succeeds whenever any other process exists. Argument: the UID.
 account_live_processes() {
-  # 列出来的进程在 cat 读到之前就退出了，cat 会返回 1；开着 pipefail 时整条管道就跟着说「没有」，不管 awk 看到了什么
-  # A process the glob listed may exit before cat reads it, and cat then returns 1; with pipefail the whole pipeline would
-  # say "none" whatever awk saw
-  { cat /proc/[0-9]*/status 2>/dev/null || true; } | awk -v uid="$1" '
-    $1 == "Name:" { if (live && !dead) found = 1; live = 0; dead = 0 }
-    $1 == "State:" && ($2 == "Z" || $2 == "X") { dead = 1 }
-    $1 == "Uid:" && ($2 == uid || $3 == uid || $4 == uid) { live = 1 }
-    END { if (live && !dead) found = 1; exit !found }
-  '
+  local uid=$1
+  local file
+  local line
+  local state
+  local real
+  local effective
+  local saved
+  local live
+  # 一个线程一个线程地看（/proc/<pid>/task/<tid>/status）：主线程退出成了僵尸、别的线程还在跑的进程也算活着。读不到的：任务已经
+  # 不在了就跳过，还在却读不到，当作还活着（宁可停下，也不当作停光了）。
+  # Thread by thread (/proc/<pid>/task/<tid>/status): a process whose main thread exited into a zombie while other threads run
+  # counts as live. One that cannot be read: skipped when the task is gone, counted as live when it is still there (better
+  # to stop than to take it as all gone).
+  for file in "${PROC_ROOT}"/[0-9]*/task/[0-9]*/status; do
+    state=""
+    live=false
+    if ! { while IFS= read -r line; do
+      case ${line} in
+        State:*)
+          read -r _ state _ <<< "${line}"
+          ;;
+        Uid:*)
+          read -r _ real effective saved _ <<< "${line}"
+          [[ ${real} != "${uid}" && ${effective} != "${uid}" && ${saved} != "${uid}" ]] || live=true
+          break
+          ;;
+      esac
+    done < "${file}"; } 2>/dev/null; then
+      [[ ! -e ${file%/status} ]] || return 0
+      continue
+    fi
+    [[ ${live} == false || ${state} == Z || ${state} == X ]] || return 0
+  done
+  return 1
 }
 
 # R2：面板停了以后，把面板账号（和旧面板账号留下的 UID）的进程一个不留地停掉（以它的身份 kill -KILL -1，直到 /proc 里没有它活着的
@@ -733,17 +853,32 @@ quiesce_for_records() {
   if systemctl is-active --quiet kixdns-panel.service 2>/dev/null; then
     PANEL_WAS_ACTIVE=true
   fi
-  printf '旧版把记录放在面板能写的 %s 里：先停下面板和它账号的所有进程，验过以后挪到只有 root 能进的 %s。\n' \
-    "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}"
-  systemctl stop kixdns-panel.service 2>/dev/null || true
+  if systemctl is-active --quiet kixdns-panel-helper.service 2>/dev/null; then
+    HELPER_WAS_ACTIVE=true
+  fi
+  printf '面板能写的 %s 里有旧版记录的名字：先停下面板和它账号的所有进程，再处理它们。\n' "${PANEL_STATE_DIRECTORY}"
   PANEL_STOPPED_EARLY=true
   trap restart_panel_after_early_stop EXIT
-  stop_panel_processes
+  # R2：先停 helper，面板停下时就请不动它以 root 做事 / R2: the helper first, so the panel cannot have it do anything as root
+  # while stopping
+  systemctl stop kixdns-panel-helper.service 2>/dev/null || true
+  systemctl stop kixdns-panel.service 2>/dev/null || true
+  stop_panel_processes refuse_with_panel_held
 }
 
+# 开头为了记录停下面板，在真的开始卸载之前就退出（取消）时照原样重启 helper 和面板；照记录停下的不重启。
+# The panel stopped at the start for the records, and the run ends (is cancelled) before the uninstall really starts: the
+# helper and the panel are restarted as they were; not after a stop over a record.
 restart_panel_after_early_stop() {
-  [[ ${PANEL_STOPPED_EARLY} == true && ${UNINSTALL_STARTED} == false && ${PANEL_WAS_ACTIVE} == true ]] || return 0
-  systemctl start kixdns-panel.service 2>/dev/null || true
+  [[ ${PANEL_STOPPED_EARLY} == true && ${UNINSTALL_STARTED} == false && ${KEEP_PANEL_STOPPED} == false ]] || return 0
+  [[ ${HELPER_WAS_ACTIVE} == false ]] || systemctl start kixdns-panel-helper.service 2>/dev/null || true
+  [[ ${PANEL_WAS_ACTIVE} == false ]] || systemctl start kixdns-panel.service 2>/dev/null || true
+}
+
+# 面板这时是为了记录停着的：还没真的开始卸载 / The panel is stopped for the records right now: the uninstall has not really
+# started
+panel_held_for_records() {
+  [[ ${PANEL_STOPPED_EARLY} == true && ${UNINSTALL_STARTED} == false ]]
 }
 
 # 迁移前原来的 KixDNS 的备份。以前重装会把卸载时留下的面板自带 KixDNS 也备份成「原来的」：它跑的是面板状态目录里的程序，
@@ -947,7 +1082,7 @@ account_has_processes() {
 # that could still change things in the panel's directories: stop every one with kill -1 as that account
 # (quiesce_panel_account).
 stop_panel_processes() {
-  quiesce_panel_account fail "${PANEL_STATE_DIRECTORY}" "${PANEL_CONFIG_DIRECTORY}" "${KIXDNS_CONFIG_DIRECTORY}" \
+  quiesce_panel_account "${1:-fail}" "${PANEL_STATE_DIRECTORY}" "${PANEL_CONFIG_DIRECTORY}" "${KIXDNS_CONFIG_DIRECTORY}" \
     ${MANAGED_CONFIG:+"$(dirname -- "${MANAGED_CONFIG}")"}
 }
 
@@ -1005,6 +1140,9 @@ configs_named_by_units() {
   local line
   local id=""
   local exec_start=""
+  local command
+  local commands
+  local program
   local rest
   local found
   mapfile -t units < <(
@@ -1019,23 +1157,34 @@ configs_named_by_units() {
       Id=*) id=${line#Id=} ;;
       ExecStart=*) exec_start+=" ${line#ExecStart=}" ;;
       '')
-        rest=${exec_start}
-        found=false
-        while [[ ${rest} =~ (^|[[:space:]])(-c|--config)(=|[[:space:]]+)([^[:space:];]+)(.*)$ ]]; do
-          found=true
-          # 写成变量、说明符或相对路径的看不出指着哪里，前面加 ? / One written as a variable, a specifier or a relative path
-          # cannot be told, and gets a leading ?
-          if [[ ${BASH_REMATCH[4]} == /* && ${BASH_REMATCH[4]} != *[\$%]* ]]; then
-            printf '%s\t%s\n' "${id}" "${BASH_REMATCH[4]}"
-          else
-            printf '%s\t?%s\n' "${id}" "${BASH_REMATCH[4]}"
-          fi
-          rest=${BASH_REMATCH[5]}
+        # 一条命令一条命令地看（systemctl show 里每条是「{ path=程序 ; argv[]=… }」）。S3：看不出指着哪里的配置参数，只在程序是
+        # KixDNS 时才算（sh 的 -c、别的程序的相对路径都不是）；任何程序写着的绝对路径都算，留着它不会删错。
+        # Command by command (each reads "{ path=program ; argv[]=… }" in systemctl show). S3: a config argument that cannot
+        # be told counts only when the program is KixDNS (sh's -c, another program's relative path are not); an absolute
+        # path any program names counts, since keeping it cannot remove the wrong thing.
+        commands=${exec_start}
+        while [[ ${commands} == *"path="* ]]; do
+          commands=${commands#*path=}
+          command=${commands%%path=*}
+          [[ ${command} != "${commands}" ]] || commands=""
+          [[ -z ${commands} ]] || commands=${commands#"${command}"}
+          program=${command%%[[:space:];]*}
+          rest=${command#*"argv[]="}
+          found=false
+          while [[ ${rest} =~ (^|[[:space:]])(-c|--config)(=|[[:space:]]+)([^[:space:];]+)(.*)$ ]]; do
+            found=true
+            # 写成变量、说明符或相对路径的看不出指着哪里，前面加 ? / One written as a variable, a specifier or a relative path
+            # cannot be told, and gets a leading ?
+            if [[ ${BASH_REMATCH[4]} == /* && ${BASH_REMATCH[4]} != *[\$%]* ]]; then
+              printf '%s\t%s\n' "${id}" "${BASH_REMATCH[4]}"
+            elif [[ ${program##*/} == kixdns ]]; then
+              printf '%s\t?%s\n' "${id}" "${BASH_REMATCH[4]}"
+            fi
+            rest=${BASH_REMATCH[5]}
+          done
+          # 跑 KixDNS 程序却没写配置参数的，同样看不出 / A KixDNS program with no config argument cannot be told either
+          [[ ${found} == true || ${program##*/} != kixdns ]] || printf '%s\t?\n' "${id}"
         done
-        # 跑 KixDNS 程序却没写配置参数的，同样看不出 / A KixDNS program with no config argument cannot be told either
-        if [[ ${found} == false && ${exec_start} =~ path=([^[:space:];]+) && ${BASH_REMATCH[1]##*/} == kixdns ]]; then
-          printf '%s\t?\n' "${id}"
-        fi
         id=""
         exec_start=""
         ;;
@@ -1069,7 +1218,7 @@ hand_named_config_to_root() {
     mapfile -t unit_files < <(kept_unit_files "${unit}")
     read -r group mode < <(original_config_access "${unit_files[@]}")
     chown -h "root:${group}" -- "${config}"
-    chmod "${mode}" -- "${config}"
+    chmod "$(narrowed_mode "${config}" "${mode}")" -- "${config}"
   fi
   hand_back_directory "${directory}"
   for path in "${!paths[@]}"; do
@@ -1084,11 +1233,13 @@ hand_named_config_to_root() {
   fi
 }
 
-# 有 unit 的配置参数看不出指着哪里（变量、说明符、相对路径，或者跑 KixDNS 却没写），/etc/kixdns 可能就是它用的：整个留着，
-# 面板写到一半的临时文件删掉，归面板的改归 root（文件 root:root 0644，目录交还 root:root 0755），并说明。参数：目录，unit，参数。
-# A unit whose config argument cannot be told (a variable, a specifier, a relative path, or a KixDNS with none): /etc/kixdns
-# may be the one it uses, so it stays whole; panel temporaries go, and what the panel owns goes to root (files
-# root:root 0644, the directory handed back as root:root 0755), and this is said. Arguments: the directory, unit, argument.
+# 有 KixDNS 的 unit 的配置参数看不出指着哪里（变量、说明符、相对路径，或者没写），/etc/kixdns 可能就是它用的：整个留着，面板写到
+# 一半的临时文件删掉，归面板的文件改归 root，组和权限不变（只去掉组和别人的写权限，不放宽），目录交还 root:root 0755，并说明。
+# 参数：目录，unit，参数。
+# A KixDNS unit whose config argument cannot be told (a variable, a specifier, a relative path, or none): /etc/kixdns may be
+# the one it uses, so it stays whole; panel temporaries go, the panel's files go to root with group and mode as they were
+# (only group and others lose write, nothing is widened), the directory is handed back as root:root 0755, and this is said.
+# Arguments: the directory, unit, argument.
 keep_unclear_kixdns_config() {
   local directory=$1
   local unit=$2
@@ -1100,8 +1251,8 @@ keep_unclear_kixdns_config() {
     if [[ ${name} =~ ^\.kixdns-panel-[A-Za-z0-9]{6}$ ]] && panel_owned "${path}"; then
       rm -f -- "${path}"
     elif plain_single_file "${path}" && panel_owned "${path}"; then
-      chown -h root:root -- "${path}"
-      chmod 0644 -- "${path}"
+      chown -h root -- "${path}"
+      chmod go-w -- "${path}"
     fi
   done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
   hand_back_directory "${directory}"
@@ -1162,6 +1313,13 @@ remove_panel_kixdns_config() {
   done
   hand_back_directory "${directory}"
   [[ ${others} == false ]] || printf '%s 里还有不是面板写的文件，目录留着，只删了面板写的配置。\n' "${directory}"
+}
+
+# S3：交还的文件不放宽权限：算出来的权限和它现在的取交集。参数：文件，算出来的权限。
+# S3: a file handed back is never widened: the computed mode intersected with its current one. Arguments: the file, the
+# computed mode.
+narrowed_mode() {
+  printf '%04o\n' "$((8#$2 & 8#$(stat -c '%a' -- "$1")))"
 }
 
 # 这个路径还归面板账号，或者已经归了一个没有账号的 UID（旧版卸载器删掉面板账号以后留下的）。
@@ -1318,12 +1476,14 @@ hand_back_original_config() {
 }
 
 remove_panel_components() {
+  # R2：先停在线更新和 helper，面板停下时就请不动它们以 root 做事 / R2: the online update and the helper first, so the panel
+  # cannot have them do anything as root while stopping
   stop_unit kixdns-panel-update.service
   wait_for_unit_inactive kixdns-panel-update.service
-  stop_unit kixdns-panel.service
-  wait_for_unit_inactive kixdns-panel.service
   stop_unit kixdns-panel-helper.service
   wait_for_unit_inactive kixdns-panel-helper.service
+  stop_unit kixdns-panel.service
+  wait_for_unit_inactive kixdns-panel.service
   # R2：服务停了，面板账号的进程也停光，再删东西 / R2: services stopped, the panel account's processes gone too, then removals
   stop_panel_processes
   rm -f -- /etc/systemd/system/kixdns-panel.service
@@ -1410,6 +1570,8 @@ remove_panel_state() {
     panel_kixdns_left=true
     remove_panel_kixdns_config
   fi
+  collect_used_panel_configs "${kept_kixdns}"
+  hand_used_panel_configs_to_root
   remove_account kixdns-panel
   if [[ ${panel_kixdns_left} == true ]]; then
     remove_kixdns_account user group
@@ -1424,14 +1586,84 @@ remove_panel_state() {
   fi
   # panel.env 是判断 KixDNS 归属的依据，最后才删：中途失败后重跑仍能认出面板管理的 KixDNS。
   # panel.env is how ownership is decided, so it goes last: a rerun after a mid-way failure still recognises the managed KixDNS.
-  if [[ ${kept_kixdns} == true && -d "$(migrated_config_directory)" ]]; then
-    # 保留的 KixDNS 还在用迁移副本：面板配置目录里只留下它。
-    # The kept KixDNS still runs the migration copy: it is all that stays in the panel's config directory.
-    find "${PANEL_CONFIG_DIRECTORY}" -mindepth 1 -maxdepth 1 ! -name kixdns ! -name panel.env -exec rm -rf -- {} +
-    rm -f -- "${PANEL_ENV}"
-  else
-    rm -rf -- "${PANEL_CONFIG_DIRECTORY}"
+  remove_panel_config_directory
+  print_quarantine_note
+}
+
+# S4：面板配置目录里有 unit 用着的配置（保留的 KixDNS 的、迁移副本，或者 v4.3.4 放在 /etc/kixdns-panel 里的）：记下来，删除面板
+# 数据时留着。参数：保留了 KixDNS 没有（true/false）。
+# S4: configs in the panel config directory that a unit uses (the kept KixDNS's, a migration copy, or one v4.3.4 put in
+# /etc/kixdns-panel): recorded so that removing the panel data keeps them. Argument: whether KixDNS was kept (true/false).
+collect_used_panel_configs() {
+  local kept_kixdns=$1
+  local directory=${PANEL_CONFIG_DIRECTORY}
+  local unit
+  local named
+  local config
+  USED_PANEL_CONFIGS=()
+  [[ -d ${directory} && ! -L ${directory} ]] || return 0
+  while IFS=$'\t' read -r unit named; do
+    [[ ${named} == "${directory}"/* && -z ${USED_PANEL_CONFIGS[${named}]:-} ]] || continue
+    plain_single_file "${named}" || continue
+    USED_PANEL_CONFIGS[${named}]=${unit}
+  done < <(configs_named_by_units)
+  [[ ${kept_kixdns} == true ]] || return 0
+  config="$(kept_kixdns_config)"
+  if [[ ${config} == "${directory}"/* ]] && plain_single_file "${config}"; then
+    USED_PANEL_CONFIGS[${config}]=${USED_PANEL_CONFIGS[${config}]:-${KIXDNS_SERVICE_UNIT}}
   fi
+}
+
+# S4：有 unit 用着的、还归面板的配置交给 root，组照用着它的 unit（不放宽），说明改了什么。面板账号还在的时候做，列出的改之前的
+# 样子还写得出它的名字。
+# S4: the configs a unit uses that are still the panel's go to root, with the group of the unit using them (never wider),
+# and what changed is said. Done while the panel account still exists, so the before-values listed still name it.
+hand_used_panel_configs_to_root() {
+  local config
+  for config in "${!USED_PANEL_CONFIGS[@]}"; do
+    # 保留的 KixDNS 的配置已经由 hand_kept_kixdns_to_root 交给了 root / The kept KixDNS's config went to root in
+    # hand_kept_kixdns_to_root already
+    panel_owned "${config}" || continue
+    hand_named_config_to_root "${USED_PANEL_CONFIGS[${config}]}" "${config}"
+  done
+}
+
+# 删除面板配置目录。S4：有 unit 用着的配置在里面时，只留那些配置所在的那一层，别的都删，目录交给 root（组不变、去掉组和别人的写
+# 权限）；没有就整个删掉。
+# Removing the panel config directory. S4: with configs a unit uses inside, only the level holding them stays, everything
+# else goes, and the directory goes to root (group as it was, group and others losing write); otherwise it goes whole.
+remove_panel_config_directory() {
+  local directory=${PANEL_CONFIG_DIRECTORY}
+  local config
+  local top
+  local name
+  local -A tops=()
+  if [[ ! -d ${directory} || -L ${directory} ]]; then
+    rm -f -- "${directory}"
+    return 0
+  fi
+  if [[ ${#USED_PANEL_CONFIGS[@]} -eq 0 ]]; then
+    rm -rf -- "${directory}"
+    return 0
+  fi
+  for config in "${!USED_PANEL_CONFIGS[@]}"; do
+    top=${config#"${directory}"/}
+    tops[${top%%/*}]=1
+  done
+  while IFS= read -r -d '' name; do
+    [[ -n ${tops[${name}]:-} ]] || rm -rf -- "${directory:?}/${name}"
+  done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
+  chown -h root -- "${directory}"
+  chmod go-w -- "${directory}"
+}
+
+# 卸载以后只有 root 能进的 quarantine 里还有挪走的东西：说一声，留给管理员查看、删掉。
+# After the uninstall something moved away is still in the root-only quarantine: say so, for the admin to look at and remove.
+print_quarantine_note() {
+  [[ -d ${ROOT_RECORDS}/quarantine && ! -L ${ROOT_RECORDS}/quarantine ]] || return 0
+  [[ -n "$(find "${ROOT_RECORDS}/quarantine" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] || return 0
+  printf '只有 root 能进的 %s 里还有挪走的、不能信的记录，留着给你查看；不要了就删掉：sudo rm -rf %s\n' \
+    "${ROOT_RECORDS}/quarantine" "${ROOT_RECORDS}/quarantine"
 }
 
 # 删掉面板的状态目录。它单独挂载时（比如一个文件系统专门放它）删不掉挂载点：里面清空了就留着挂载点、说一声。参数：目录。
@@ -1502,7 +1734,11 @@ hand_kept_kixdns_to_root() {
   local path
   local name
   local unit_files=()
-  local keep=("${state}/bin/kixdns")
+  local -A keep=(["${state}/bin/kixdns"]=1)
+  # R1：交给 root 之前先删掉 root 会读的记录名字（这次运行开头已经接手过真的），面板在这之后放进来的也就交不到 root 手里
+  # R1: before anything goes to root, the record names root reads are removed (the genuine ones were adopted at the start of
+  # this run), so nothing the panel put there since can end up root's
+  rm -rf -- "${state}/external-backup" "${state}/resolved-stub"
   mapfile -t unit_files < <(kept_unit_files)
   read -r group mode < <(original_config_access "${unit_files[@]}")
   case ${mode} in
@@ -1516,13 +1752,12 @@ hand_kept_kixdns_to_root() {
     # Only the Geo data it really reads (in the state directory's geo) stays; other panel data the config names (panel.db,
     # say) does not
     while IFS= read -r path; do
-      if [[ ${path} == "${state}/geo/"* ]] && plain_single_file "${path}"; then
-        keep+=("${path}")
-      fi
+      kept_geo_path "${path}" || continue
+      keep[${path}]=1
     done < <(grep -oE '"/[^"\\]*"' -- "${config}" 2>/dev/null | sed -e 's/^"//' -e 's/"$//' | sort -u)
   fi
   while IFS= read -r -d '' path; do
-    [[ " ${keep[*]} " == *" ${path} "* ]] || rm -f -- "${path}"
+    [[ -n ${keep[${path}]:-} ]] || rm -f -- "${path}"
   done < <(find "${state}" \( -type f -o -type l \) -print0)
   find "${state}" -mindepth 1 -depth -type d -empty ! -path "${state}/bin" -delete
   while IFS= read -r -d '' path; do
@@ -1564,6 +1799,17 @@ hand_kept_kixdns_to_root() {
     fi
   fi
   printf '保留的 KixDNS 用到的程序、配置和文件改归 root，面板的其他数据已删除。\n'
+}
+
+# 保留的 KixDNS 的配置里写着、要留下的 Geo 文件：绝对路径，在状态目录的 geo/ 下面，没有空白、控制字符，没有 . 或 .. 这样的一段，
+# 是普通文件、只有一个链接。别的都不留。参数：路径。
+# A Geo file the kept KixDNS's config names and that stays: an absolute path under the state directory's geo/, with no
+# whitespace, no control character, no . or .. segment, a regular file with one link. Nothing else stays. Argument: the path.
+kept_geo_path() {
+  local path=$1
+  [[ ${path} == "${PANEL_STATE_DIRECTORY}/geo/"?* && ${path} != *[[:space:][:cntrl:]]* ]] || return 1
+  [[ ${path}/ != */./* && ${path}/ != */../* && ${path} != *//* ]] || return 1
+  plain_single_file "${path}"
 }
 
 state_value() {
@@ -1828,6 +2074,10 @@ main() {
   parse_arguments "$@"
   [[ ${EUID} -eq 0 ]] || fail "要用 root 权限运行"
   command -v systemctl >/dev/null 2>&1 || fail "系统未安装 systemd"
+  command -v flock >/dev/null 2>&1 || fail "系统缺少 flock"
+  # 同一时间只跑一个安装、卸载或在线更新，整个运行都拿着锁 / One install, uninstall or online update at a time, the lock held
+  # for the whole run
+  take_root_lock
   run_uninstall
 }
 

@@ -8,6 +8,10 @@ readonly PANEL_ENV="/etc/kixdns-panel/panel.env"
 readonly INSTALLER="/usr/local/libexec/kixdns-panel-one-click-install"
 readonly PANEL_SERVER="/usr/local/bin/kixdns-panel-server"
 readonly GITHUB_TOKEN_FILE="/var/lib/kixdns-panel/github-token"
+# 安装器、卸载器和在线更新器共用的锁（install.sh 的 take_root_lock）；策略测试里换成临时文件
+# The lock the installer, the uninstaller and the online updater share (take_root_lock in install.sh); a scratch file in the
+# policy tests
+ROOT_LOCK="/run/kixdns-panel-root.lock"
 TARGET_VERSION=""
 GITHUB_API_CONFIG=""
 STEP_ERRORS=""
@@ -176,6 +180,12 @@ main() {
     printf '%s\n' '已有面板在线更新任务正在执行' >&2
     return 1
   }
+  # 整个更新都拿着安装器、卸载器也用的那把锁：它们正在运行时不更新；安装器从 KIXDNS_PANEL_ROOT_LOCK_FD 认出这一把，接着用
+  # The whole update holds the lock the installer and uninstaller use too: no update while either runs; the installer
+  # recognises this one from KIXDNS_PANEL_ROOT_LOCK_FD and carries on with it
+  exec 8>> "${ROOT_LOCK}"
+  flock -n 8 || fail_because "安装器或卸载器正在运行，这次不更新；等它结束再试"
+  export KIXDNS_PANEL_ROOT_LOCK_FD=8
   write_status checking "正在检查最新正式版"
   sleep 2
   prepare_github_api_config

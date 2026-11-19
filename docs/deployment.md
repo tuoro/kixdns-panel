@@ -112,7 +112,7 @@ printf '%s  %s\n' "${DIGEST#sha256:}" kixdns-panel.zip | sha256sum --check -
 
 - 把原配置一字不差地复制到 `/etc/kixdns-panel/kixdns/pipeline.json`（路径写入 `panel.env`），面板只改这份副本。原配置文件和它所在的目录不动，属主和权限也不改；面板能写的只有副本所在的目录和 `/var/lib/kixdns-panel`
 - 用增强版替换 KixDNS 程序和 systemd unit
-- 把原 unit（连同它的 drop-in，不管放在哪）与运行、开机状态备份到 `/var/lib/kixdns-panel-backup/external-backup/`，这个目录只有 root 能进。卸载恢复成功后这份备份就删掉，以后再迁移按那时主机上的 KixDNS 重新备份。旧版把备份放在面板能写的 `/var/lib/kixdns-panel/external-backup/`；安装器和卸载器第一次运行时先停下面板和它账号的所有进程，在原地查它是不是 root 建的（目录和每个文件都归 root、不是符号链接、没有别的硬链接），是才挪过来（不在同一个文件系统就复制过来、查过再删原来的）。不是 root 建的挪进只有 root 能进的 `/var/lib/kixdns-panel-backup/quarantine/`，这次和以后都不再用，并说明；只有 root 能进的那里已经有一份能信的，就照用那份。挪过来以后不再放回旧位置，所以新版的安装器和卸载器要一起用：旧版的卸载器看不到新位置的备份
+- 把原 unit（连同它的 drop-in，不管放在哪）与运行、开机状态备份到 `/var/lib/kixdns-panel-backup/external-backup/`，这个目录只有 root 能进。卸载恢复成功后这份备份就删掉，以后再迁移按那时主机上的 KixDNS 重新备份。旧版把备份放在面板能写的 `/var/lib/kixdns-panel/external-backup/`。这一版的安装器或卸载器在一台主机上第一次运行时，先停下面板和它账号的所有进程，在原地查它是不是 root 建的（目录和每个文件都归 root、不是符号链接、没有别的硬链接），是才挪过来（不在同一个文件系统就复制过来、查过再换上、再删原来的）；不是的挪进只有 root 能进的 `/var/lib/kixdns-panel-backup/quarantine/`（不在同一个文件系统就直接删掉），这次和以后都不再用，说一声，当作没有这份备份接着做；只有 root 能进的那里已经有一份时，用那份，旧位置的照样挪走。第一次运行以后（旧位置原来有没有备份都一样）在 `/var/lib/kixdns-panel-backup/.adopted` 留下标记：之后旧位置再出现的东西一律不验、不用，直接挪走，因为「归 root」证明不了是 root 建的（保留 KixDNS、删除面板数据时，root 自己也会把面板的文件交给 root）。挪过来以后不再放回旧位置，所以新版的安装器和卸载器要一起用：旧版的卸载器看不到新位置的备份
 - 保持原来的运行状态：运行中的迁移后继续运行，已停止的保持停止；增强版起不来时整个安装回滚到迁移前，副本和它的目录一并删掉
 - 卸载面板时选择移除增强版，放回原 unit 并恢复原来的运行状态。原来的 KixDNS 用回迁移前的配置，副本随增强版删除；在面板里改过的配置不会带回去，需要的话卸载前先备份副本
 
@@ -130,7 +130,7 @@ v4.3.4 及更早的安装器迁移时直接接管原配置：原位置不变，�
 
 KixDNS 默认监听 `0.0.0.0:53`。安装器在改动主机之前按配置里的 `bind_udp`/`bind_tcp` 检查端口：
 
-- **被 systemd-resolved 占用**（Ubuntu 默认的 `127.0.0.53`）：有终端时询问是否关闭它的本机监听，默认不关。同意后安装器写入 `/etc/systemd/resolved.conf.d/kixdns-panel.conf`（`DNSStubListener=no`），在 `/etc/resolv.conf` 指向本机缓存时把它改指向 `/run/systemd/resolve/resolv.conf`，重启 systemd-resolved，并确认端口已空出、本机域名解析仍正常；任何一步失败都会回滚。原来的 `resolv.conf` 记录在 `/var/lib/kixdns-panel/resolved-stub/`，卸载时选择移除 KixDNS 会恢复原样（保留 KixDNS 时只给出恢复命令，因为它还在用这个端口）
+- **被 systemd-resolved 占用**（Ubuntu 默认的 `127.0.0.53`）：有终端时询问是否关闭它的本机监听，默认不关。同意后安装器写入 `/etc/systemd/resolved.conf.d/kixdns-panel.conf`（`DNSStubListener=no`），在 `/etc/resolv.conf` 指向本机缓存时把它改指向 `/run/systemd/resolve/resolv.conf`，重启 systemd-resolved，并确认端口已空出、本机域名解析仍正常；任何一步失败都会回滚。原来的 `resolv.conf` 记录在只有 root 能进的 `/var/lib/kixdns-panel-backup/resolved-stub/`，卸载时选择移除 KixDNS 会恢复原样（保留 KixDNS 时只给出恢复命令，因为它还在用这个端口）
 - **不同意或无人值守**：什么都不改，安装结果里给出手动执行的命令
 - **被其他程序占用**：报告进程名和 PID，从不动它；这次安装若要重启一个原本在运行的 KixDNS，会在改动主机之前停下
 
@@ -203,10 +203,10 @@ sudo systemctl restart kixdns-panel.service
 
 **root 做事的规则**：安装器、卸载器把 `kixdns-panel` 账号当作攻击者：它不能变成 root，也不能左右 root 做什么。root 碰到面板能写的路径、读面板能影响的数据时都照下面四条（`scripts/install.sh` 和 `scripts/uninstall.sh` 开头写着同样的四条）：
 
-1. 迁移前的备份、关掉 systemd-resolved 监听时的记录，和 `/var/lib/kixdns-panel-backup/` 里的一切，每读一次都先验：这个目录和它上面每一层都归 root、不是符号链接，目录是 `0700`；记录里只有归 root 的普通文件，每个只有一个链接。验不过的挪进 `/var/lib/kixdns-panel-backup/quarantine/`（名字带时间），这次和以后都不再用，并说清是哪一份、为什么、接下来怎么办
-2. 面板账号还有进程时，root 不碰它能写的路径：先停面板，再以它的身份 `kill -KILL -1`，一直到一个都不剩；这些路径上的事全做完（安装失败的回滚也一样）才重新启动面板。在线更新走同一条路
+1. 迁移前的备份、关掉 systemd-resolved 监听时的记录，和 `/var/lib/kixdns-panel-backup/` 里的一切，每读一次都先验：这个目录和它上面每一层都归 root、不是符号链接，目录是 `0700`；记录里只有归 root 的普通文件，每个只有一个链接。验不过的挪进 `/var/lib/kixdns-panel-backup/quarantine/`（名字带时间；不在同一个文件系统就直接删掉），这次和以后都不再用，并说清是哪一份、为什么、接下来怎么办。旧版放在面板状态目录里的记录只接手一次，之后那里再有的都不用（见上面「迁移」）
+2. 面板账号还有进程时，root 不碰它能写的路径：先停 `kixdns-panel-helper`（面板能请它以 root 起在线更新），再停面板，再以它的身份 `kill -KILL -1`，一直到一个都不剩；这些路径上的事全做完（安装失败的回滚也一样）才重新启动 helper 和面板。安装器、卸载器和在线更新同一时间只跑一个（`/run/kixdns-panel-root.lock`，整个运行都拿着）。在线更新走同一条路
 3. 面板能写的路径上不跟着符号链接走：`chown -h`；`chmod` 只用在停了面板以后查过不是符号链接的目录和普通文件上；已有的、面板能写的目录不用 `install -d`
-4. `panel.env` 只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才能改的 KixDNS unit 认，对不上安装器就停下、卸载器就当作 KixDNS 不归面板管、全部保留，它记的账号和归属一律不认
+4. `panel.env` 只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才能改的 KixDNS unit 认，对不上安装器就停下，卸载器就当作 KixDNS 不归面板管：KixDNS、它的 unit 用着的配置（哪怕在 `/etc/kixdns-panel` 里）和 kixdns 账号都留着；它记的账号和归属一律不认
 
 **日志页的权限边界**：日志页需要 `kixdns-panel` 属于 `systemd-journal` 组，而 journald 不支持按 unit 授权，所以该组能读宿主机全部 journal。不接受的话，把 `kixdns-panel` 移出该组并停用日志页；不要改用带通配符的 sudoers 规则，那会扩大命令执行范围。
 
@@ -342,6 +342,9 @@ sudo kixdns-panel-uninstall
 - 保留 KixDNS、删除面板配置时，面板账号随之删掉。保留的 KixDNS 要用的程序、配置，和配置里写着的面板目录里的文件（比如面板导入的 GeoSite），改归 root，组按它的 unit 运行用的账号（通常是 kixdns，只读、不能改）；查询日志、下载的内核版本、没用到的 Geo 文件等面板数据删掉。不会留下归一个已删账号的文件
 - 上次卸载保留了 KixDNS 并删除了配置，再次运行卸载器时 KixDNS 仍然保留，即使指定 `--remove-kixdns`；旧版卸载器留下的、还归已删面板账号的配置，这时也会交还 root
 - 保留的程序已经不在、只剩 unit 时（v3.1.1 重复卸载留下的状态），面板创建的 unit 随面板移除，其他 unit 原样保留并给出提示
+- 保留的 KixDNS（或者照它的 unit 认出来的 KixDNS）用的配置在 `/etc/kixdns-panel` 里时（比如 v4.3.4 用 `--kixdns-config /etc/kixdns-panel/pipeline.json` 装的），删除面板配置只删别的，这份配置留着，改归 root，组按用着它的 unit，权限不放宽
+- 有 KixDNS 的 unit 的配置参数看不出指着哪里（写成变量、相对路径，或者没写）时，`/etc/kixdns` 整个留着，面板的文件改归 root，组和权限不变；别的程序（比如 `sh -c`、mosdns 的相对路径配置）不算
+- 卸载以后 `/var/lib/kixdns-panel-backup/` 留着：里面的 `.adopted` 标记说明这台主机已经接手过旧版的记录，`quarantine/` 里是挪走的、不能信的记录（删除面板配置时卸载器会说一声），留给你查看。要彻底清掉：`sudo rm -rf /var/lib/kixdns-panel-backup`。之后再装这一版，`/var/lib/kixdns-panel/` 里的 `external-backup`、`resolved-stub` 会再被当作旧版的记录验一次，所以先确认那里没有这两个名字（删除面板配置时它们已经随状态目录删掉）
 
 无人值守：
 

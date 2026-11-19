@@ -2,6 +2,9 @@
 # shellcheck disable=SC1090,SC1091,SC2016,SC2034
 set -Eeuo pipefail
 
+# 临时目录和 CI 一样只有自己能写：panel.env 上面每一层都没人能写才信它（R4）/ Scratch directories writable by their owner
+# alone, as in CI: panel.env is trusted only with no level above it writable by others (R4)
+umask 022
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ONE_CLICK="${PACKAGE_ROOT}/scripts/one-click-install.sh"
 WORK="$(mktemp -d)"
@@ -59,6 +62,10 @@ assert_not_contains "${help}" "仅安装面板" "帮助不应再提仅安装面�
 # source 时脚本末尾的守卫跳过 main，只加载函数；它自带的 set -Eeuo pipefail 正好也用于断言。
 # Sourcing skips main via the guard at the end and only loads functions; its set -Eeuo pipefail suits the assertions.
 source "${ONE_CLICK}"
+# 临时目录里的东西归跑测试的用户，由他代替 root / What is in the scratch tree belongs to the user running the tests, who
+# stands in for root
+ROOT_UID="$(id -u)"
+ROOT_CHAIN_TOP=${WORK}
 
 # ---- 参数解析 / argument parsing ----
 VERSION="" REINSTALL=false INSTALLER_ARGUMENTS=()
@@ -199,6 +206,17 @@ printf 'KIXDNS_MANAGEMENT_ENABLED=true\nKIXDNS_PANEL_INSTALLED_RELEASE=v3.1.0\n'
 mv "${PANEL_SERVER}" "${PANEL_SERVER}.gone"
 if already_installed v3.1.0; then printf '断言失败：卸载后残留的 panel.env 不应算已安装\n' >&2; exit 1; fi
 mv "${PANEL_SERVER}.gone" "${PANEL_SERVER}"
+# 回归（S2，R4）：面板能改的 panel.env 记的版本不能让这次安装跳过（v4.3.4 把 /etc/kixdns-panel 交给面板的主机上，面板写上新版本号，
+# 升级就说「已安装，无需重复安装」）。
+# Regression (S2, R4): the version a panel.env the panel can change records must not skip this install (on a host where
+# v4.3.4 gave /etc/kixdns-panel to the panel, the panel wrote the new version in and the upgrade said "already installed").
+chmod 0666 "${PANEL_ENV}"
+if already_installed v3.1.0; then printf '断言失败：面板能改的 panel.env 记的版本不能让安装跳过\n' >&2; exit 1; fi
+chmod 0644 "${PANEL_ENV}"
+chmod 0777 "${WORK}"
+if already_installed v3.1.0; then printf '断言失败：panel.env 上面一层别人能写时，它记的版本不能让安装跳过\n' >&2; exit 1; fi
+chmod 0700 "${WORK}"
+already_installed v3.1.0 || { printf '断言失败：能信的 panel.env 记的版本照旧用来短路\n' >&2; exit 1; }
 
 # ---- 端到端（桩 curl） / end to end with a stubbed curl ----
 architecture="$(detect_architecture)"

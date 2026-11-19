@@ -10,6 +10,11 @@ readonly TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
 # Tests rewrite these paths, so they are not readonly and the policy test can run sandboxed.
 PANEL_ENV="/etc/kixdns-panel/panel.env"
 PANEL_SERVER="/usr/local/bin/kixdns-panel-server"
+# R4、S2：panel.env 和它上面每一层都归 root（这个 UID）、别人写不进时，它记的版本才能用来跳过这次安装；查到 ROOT_CHAIN_TOP 为止
+# R4, S2: the version panel.env records may skip this install only when it and every level above it are root's (this UID)
+# and nobody else can write them; checked up to ROOT_CHAIN_TOP
+ROOT_UID=0
+ROOT_CHAIN_TOP=/
 TEMP_PARENT="/var/tmp"
 VERSION=""
 REINSTALL=false
@@ -243,9 +248,24 @@ fetch_release_json() {
   cat -- "${body_file}"
 }
 
+# R4：panel.env 能不能信：它和它上面的每一层目录都归 root、别人写不进、不是符号链接。/ R4: whether panel.env can be
+# trusted: it and every directory above it are root's, not writable by others, and no symlink.
+panel_env_trusted() {
+  local path=${PANEL_ENV}
+  while :; do
+    [[ -e ${path} && ! -L ${path} ]] || return 1
+    [[ $(stat -c '%u' -- "${path}") == "${ROOT_UID}" ]] || return 1
+    (((8#$(stat -c '%a' -- "${path}") & 8#022) == 0)) || return 1
+    [[ ${path} != "${ROOT_CHAIN_TOP}" && ${path} != / ]] || return 0
+    path="$(dirname -- "${path}")"
+  done
+}
+
+# panel.env 里的一项；面板能改的 panel.env 一项也不给（S2：它记的版本不能让这次安装被跳过）。
+# A setting from panel.env; one the panel can change yields nothing (S2: the version it records must not skip this install).
 panel_env_value() {
   local key=$1
-  [[ -f ${PANEL_ENV} ]] || return 1
+  [[ -f ${PANEL_ENV} ]] && panel_env_trusted || return 1
   awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
 }
 

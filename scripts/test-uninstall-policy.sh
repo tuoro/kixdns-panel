@@ -612,7 +612,7 @@ for shared_function in wait_for_service_stable port_accepts_connection owner_and
   unit_service_setting original_config_access hand_back_original_config panel_written_config_file \
   ensure_root_records root_only_path record_problem same_filesystem quarantine_record refuse_record trusted_record \
   old_records_present adopt_old_records secure_root_records panel_process_uids account_signal account_live_processes \
-  quiesce_panel_account \
+  quiesce_panel_account refuse_with_panel_held adoption_done mark_adoption_done discard_old_records take_root_lock \
   panel_env_trusted managed_unit_config original_unit_files panel_owned; do
   installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
@@ -747,8 +747,20 @@ uninstall_scratch_host() {
     panel_env_trusted() { real_panel_env_trusted; }
     if [[ ${FORGED_RECORDS:-} == true ]]; then
       ROOT_UID=0
-      # 只冒充记录：panel.env 照样是 root 的 / Only the records are forged: panel.env is root's as ever
+      # 只冒充记录：panel.env 照样是 root 的，只有 root 能进的记录目录也照样是 root 的 / Only the records are forged: panel.env
+      # is root's as ever, and so is the root-only records directory
       panel_env_trusted() { return 0; }
+      stat() {
+        if [[ $1 == -c && ${*: -1} == "${root}/records" ]]; then
+          case $2 in
+            %u) printf '0\n' ;;
+            '%u %a') printf '0 %s\n' "$(command stat -c '%a' -- "${root}/records")" ;;
+            *) command stat "$@" ;;
+          esac
+          return
+        fi
+        command stat "$@"
+      }
     fi
     ROOT_CHAIN_TOP=${root}
     KIXDNS_RUNTIME_DIRECTORY="${root}/run-kixdns"
@@ -1312,12 +1324,15 @@ fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
 plant_backup
 : > "${systemctl_log}"
 output="$(FORGED_RECORDS=true SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
-assert_contains "${output}" "RUN-FAILED" "面板写的备份不能照着恢复"
-assert_contains "${output}" "不是 root 建的" "拒绝时应说明备份不是 root 的"
+# S1（第四轮）：以前在这里停下，面板每次一起来又放一份，以后每次卸载都停在这里；现在挪走、当作没有备份接着卸载
+# S1 (fourth review): this used to stop the run, and as the panel planted a new one whenever it started, every later
+# uninstall stopped too; now it is moved away and the uninstall goes on as if there were no backup
+assert_not_contains "${output}" "RUN-FAILED" "面板写的备份不能让卸载停下"
+assert_contains "${output}" "不是 root 建的" "应说明备份不是 root 的"
+assert_contains "${output}" "这台主机就当作没有这份记录。" "面板写的备份应当作没有"
 [[ ! -e ${host}/units/pwn.service ]] || { printf '断言失败：不能照面板写的备份装 unit\n' >&2; exit 1; }
 assert_not_contains "$(cat "${systemctl_log}")" "pwn.service" "不能启动面板写的备份里的 unit"
-[[ -f ${host}/units/kixdns.service && -x ${host}/state/bin/kixdns ]] ||
-  { printf '断言失败：拒绝时不能动主机上的 KixDNS\n' >&2; exit 1; }
+assert_contains "${output}" "${host}/records/quarantine 里还有挪走的、不能信的记录，留着给你查看" "删除面板数据时应说明 quarantine 里还有东西"
 [[ ! -e ${host}/records/external-backup && ! -e ${host}/state/external-backup ]] ||
   { printf '断言失败：拒绝时可疑的备份不能还留在会被信的名字上\n' >&2; exit 1; }
 [[ -n "$(find "${host}/records/quarantine" -mindepth 1 -maxdepth 1 -name 'external-backup.*' -print -quit 2>/dev/null)" ]] ||
@@ -1536,7 +1551,8 @@ fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
 plant_backup
 : > "${systemctl_log}"
 output="$(FORGED_RECORDS=true SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
-assert_contains "${output}" "${host}/state/external-backup 不能信（它不是 root 建的），不会照它做事。" "第一次卸载应拒绝面板写的备份"
+assert_contains "${output}" "${host}/state/external-backup 不能信（它不是 root 建的），没有用它（挪到了" "第一次卸载应不用面板写的备份"
+assert_not_contains "${output}" "RUN-FAILED" "面板写的备份不能让卸载停下"
 [[ ! -e ${host}/records/external-backup && ! -e ${host}/state/external-backup ]] ||
   { printf '断言失败：拒绝的备份不能还留在会被信的名字上\n' >&2; exit 1; }
 output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
@@ -1582,13 +1598,19 @@ for unclear_option in '-c ${KIXDNS_CONFIG}' '--config=pipeline.json' ''; do
   fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
   assert_not_contains "$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)" "RUN-FAILED" "先移除面板的 KixDNS 不应失败"
   printf '[Service]\nExecStart=/usr/local/bin/kixdns run %s\n' "${unclear_option}" > "${host}/units/kixdns.service"
+  # 和安装器装的一样是 0640 / 0640, as the installer leaves it
+  chmod 0640 "${host}/etc-kixdns/pipeline.json"
   : > "${chown_log}"
   output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true \
     uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
   [[ -f ${host}/etc-kixdns/pipeline.json ]] ||
     { printf '断言失败：看不出 unit 用哪份配置时 /etc/kixdns 要整个留着（%s）\n' "${unclear_option}" >&2; exit 1; }
   assert_contains "${output}" "看不出它用的是哪份配置，${host}/etc-kixdns 整个留着" "看不出时应说明（${unclear_option}）"
-  assert_contains "$(cat "${chown_log}")" "chown -h root:root -- ${host}/etc-kixdns/pipeline.json" "留着的配置应改归 root（${unclear_option}）"
+  # S3（第四轮）：只把属主改成 root，组和权限不变（以前改成 root:root 0644，0640 的配置谁都能读了）
+  # S3 (fourth review): only the owner becomes root, group and mode stay (it used to become root:root 0644, so a 0640
+  # config turned readable by all)
+  assert_contains "$(cat "${chown_log}")" "chown -h root -- ${host}/etc-kixdns/pipeline.json" "留着的配置应改归 root（${unclear_option}）"
+  assert_equals "$(stat -c '%a' "${host}/etc-kixdns/pipeline.json")" "640" "留着的配置不能放宽权限（${unclear_option}）"
 done
 
 # 回归（#5）：保留 KixDNS、删除面板数据时，以前凡是配置里写着的状态目录里的路径都留下（比如 panel.db），还交给 kixdns 组读。现在
@@ -1744,6 +1766,145 @@ for reader in value present resolved; do
   assert_not_contains "${output}" "已恢复原样" "验不过的 resolved 记录不能照着恢复（${reader}）"
   assert_not_contains "${output}" "STILL-TRUSTED-NAME" "验不过的记录不能还留在会被信的名字上（${reader}）"
 done
+
+# 回归（S3）：只有程序是 KixDNS 的 unit，它看不出指着哪里的配置参数才算数。sh 的 -c、mosdns 的相对路径配置不能让 /etc/kixdns 整个
+# 留着（以前留着，面板的文件还交给了 root:root 0644）；绝对路径不管是哪个程序写的都照旧算，留着它不会删错。
+# Regression (S3): only a unit whose program is KixDNS has a config argument that cannot be told count. sh's -c, mosdns's
+# relative config must not keep /etc/kixdns whole (they did, and handed the panel's files to root:root 0644); an absolute
+# path counts as before whatever the program, since keeping it cannot remove the wrong thing.
+named_output="$(
+  SYSTEMD_UNIT_DIRECTORY="${scratch}/named-units"
+  rm -rf -- "${SYSTEMD_UNIT_DIRECTORY}"
+  mkdir -p "${SYSTEMD_UNIT_DIRECTORY}"
+  printf '[Service]\nExecStart=/bin/sh -c "exec sleep infinity"\n' > "${SYSTEMD_UNIT_DIRECTORY}/keepalive.service"
+  printf '[Service]\nExecStart=/usr/local/bin/mosdns start -c config.yaml -d /etc/mosdns\n' > "${SYSTEMD_UNIT_DIRECTORY}/mosdns.service"
+  printf '[Service]\nExecStart=/usr/local/bin/other -c /etc/kixdns/pipeline.json\n' > "${SYSTEMD_UNIT_DIRECTORY}/other.service"
+  printf '[Service]\nExecStart=/opt/kixdns run -c relative.json\n' > "${SYSTEMD_UNIT_DIRECTORY}/kx.service"
+  printf '[Service]\nExecStart=/opt/bin/kixdns run\n' > "${SYSTEMD_UNIT_DIRECTORY}/bare.service"
+  configs_named_by_units | sort
+)"
+assert_not_contains "${named_output}" "keepalive.service" "sh 的 -c 不能算 KixDNS 的配置参数"
+assert_not_contains "${named_output}" "mosdns.service" "别的程序的相对路径配置不能算"
+assert_contains "${named_output}" "other.service"$'\t'"/etc/kixdns/pipeline.json" "任何程序写着的绝对路径都照旧算"
+assert_contains "${named_output}" "kx.service"$'\t'"?relative.json" "KixDNS 的相对路径配置看不出指着哪里"
+assert_contains "${named_output}" "bare.service"$'\t'"?" "没写配置参数的 KixDNS 看不出用哪份配置"
+# S3：有 unit 用着、交给 root 的配置也不放宽权限：算出来的和它现在的取交集
+# S3: a config a unit uses and that goes to root is not widened either: the computed mode intersected with the current one
+narrowed_file="${scratch}/narrowed"
+: > "${narrowed_file}"
+chmod 0600 "${narrowed_file}"
+assert_equals "$(narrowed_mode "${narrowed_file}" 0640)" "0600" "交还时算出来的权限不能比现在的宽"
+chmod 0644 "${narrowed_file}"
+assert_equals "$(narrowed_mode "${narrowed_file}" 0640)" "0640" "交还时可以收紧到算出来的权限"
+
+# 回归（M1，结构 2）：保留 KixDNS、删除面板数据时，配置里写着一个带空格的「Geo 路径」（只要以 geo/ 开头），以前拿 " ${keep[*]} " 做
+# 子串比较，空格隔开的别的路径也就算「留下」：面板在旧位置放的一份备份（停下时才放，躲过开头的检查）交给了 root，下一次安装当它是
+# 真的接手。现在交给 root 之前先删掉 root 会读的记录名字；留下的只认精确的、在 geo/ 下、没有空白和 . .. 的普通文件。
+# Regression (M1, structural change 2): keeping KixDNS and removing the panel data, a "Geo path" with spaces in the config
+# (it only had to start with geo/) made, through the substring test on " ${keep[*]} ", any path appearing in it count as
+# kept: a backup the panel put in the old place (while stopping, after the start-of-run check) went to root, and the next
+# install adopted it as genuine. Now the record names root reads go before anything is handed to root, and only exact,
+# plain files under geo/ with no whitespace and no . or .. segment stay.
+kept_host "${host}"
+mkdir -p "${host}/state/external-backup" "${host}/state/geo/a ${host}/state"
+printf 'KIXDNS_SERVICE_UNIT=pwn.service\n' > "${host}/state/external-backup/install.env"
+printf '[Service]\nExecStart=/bin/sh -c "id > /root/pwned"\n' > "${host}/state/external-backup/kixdns.service"
+crafted="${host}/state/geo/a ${host}/state/external-backup/install.env ${host}/state/external-backup/kixdns.service z"
+mkdir -p "$(dirname -- "${crafted}")"
+printf 'x\n' > "${crafted}"
+printf '{"settings":{"geosite_data_paths":["%s"],"note":"%s"}}\n' "${host}/state/geo/site-abc.dat" "${crafted}" \
+  > "${host}/etc-kixdns/pipeline.json"
+# 面板在开头的检查以后才放：这里跳过开头的接手 / The panel plants it after the start-of-run check: the start is skipped here
+: > "${chown_log}"
+output="$(
+  secure_root_records() { :; }
+  PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes
+)"
+[[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：交给 root 之前应删掉旧位置的记录名字\n' >&2; exit 1; }
+assert_not_contains "$(cat "${chown_log}")" "external-backup" "旧位置的记录名字不能交给 root"
+[[ ! -e ${crafted} ]] || { printf '断言失败：带空格的 Geo 路径不能留下\n' >&2; exit 1; }
+assert_equals "$(cat "${host}/state/geo/site-abc.dat" 2>/dev/null || printf missing)" "geosite" "配置里写着的真的 GeoSite 应留下"
+# 每一条规则单独看：这些文件都真的在，只有最后一个能留下 / Each rule on its own: all these files really exist, and only the
+# last one stays
+odd_state="${scratch}/odd-state"
+rm -rf -- "${odd_state}"
+mkdir -p "${odd_state}/geo"
+: > "${odd_state}/panel.db"
+: > "${odd_state}/geo/x.dat"
+: > "${odd_state}/geo/tab"$'\t'"x.dat"
+: > "${odd_state}/geo/sp ace.dat"
+ln "${odd_state}/geo/x.dat" "${odd_state}/geo/linked.dat"
+: > "${odd_state}/geo/plain.dat"
+for odd_geo in "geo/../panel.db" "geo/./x.dat" "geo/tab"$'\t'"x.dat" "geo/sp ace.dat" "geo/linked.dat" "geo" "geo/"; do
+  ! (PANEL_STATE_DIRECTORY=${odd_state} kept_geo_path "${odd_state}/${odd_geo}") ||
+    { printf '断言失败：%s 不能算要留下的 Geo 文件\n' "${odd_geo}" >&2; exit 1; }
+done
+(PANEL_STATE_DIRECTORY=${odd_state} kept_geo_path "${odd_state}/geo/plain.dat") ||
+  { printf '断言失败：geo 下的普通文件应留下\n' >&2; exit 1; }
+
+# 回归（S4）：保留 KixDNS、删除面板数据，保留的 KixDNS 用的是 /etc/kixdns-panel 里的配置（v4.3.4 的 --kixdns-config，或者 R4 照
+# unit 认出来的）：以前整个删掉 /etc/kixdns-panel，KixDNS 下次启动就失败。现在留下那份配置，交给 root、组照 unit，不放宽；别的都删。
+# Regression (S4): keeping KixDNS and removing the panel data while the kept KixDNS uses a config in /etc/kixdns-panel
+# (v4.3.4's --kixdns-config, or what R4 took from the unit): /etc/kixdns-panel used to go whole, so KixDNS failed at its next
+# start. Now that config stays, goes to root with the unit's group, is not widened, and everything else goes.
+kept_host "${host}"
+mv -- "${host}/etc-kixdns/pipeline.json" "${host}/panel-etc/pipeline.json"
+printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_CONFIG=%s\n' "${host}/panel-etc/pipeline.json" > "${host}/panel-etc/panel.env"
+sed -i "s|${host}/etc-kixdns/pipeline.json|${host}/panel-etc/pipeline.json|" "${host}/units/kixdns.service"
+: > "${host}/panel-etc/other-panel-file"
+chmod 0640 "${host}/panel-etc/pipeline.json"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "保留的 KixDNS 的配置在面板配置目录里时卸载不应失败"
+[[ -f ${host}/panel-etc/pipeline.json ]] || { printf '断言失败：保留的 KixDNS 用着的面板配置目录里的配置要留着\n' >&2; exit 1; }
+[[ ! -e ${host}/panel-etc/panel.env && ! -e ${host}/panel-etc/other-panel-file ]] ||
+  { printf '断言失败：面板配置目录里别的都应删掉\n' >&2; exit 1; }
+assert_contains "$(cat "${chown_log}")" "chown -h root:kixdns -- ${host}/panel-etc/pipeline.json" "留着的配置应交给 root、组照 unit"
+assert_equals "$(stat -c '%a' "${host}/panel-etc/pipeline.json")" "640" "留着的配置不能放宽权限"
+
+# 回归（结构 1）：「接手过」的标记卸载以后也留着：放记录的目录不删；quarantine 里有东西时说一声。
+# Regression (structural change 1): the "adopted" marker outlives an uninstall: the records directory is not removed;
+# something left in quarantine is said.
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "全新安装的主机卸载不应失败"
+[[ -f ${host}/records/.adopted ]] || { printf '断言失败：卸载以后「接手过」的标记应留着\n' >&2; exit 1; }
+# 有了标记，旧位置再有的不验、不用 / With the marker, anything in the old place later is neither checked nor used
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+mkdir -p "${host}/records"
+chmod 0700 "${host}/records"
+printf 'adopted\n' > "${host}/records/.adopted"
+mkdir -p "${host}/state/external-backup"
+chmod 0700 "${host}/state/external-backup"
+printf '%s\n' KIXDNS_SERVICE_UNIT=pwn.service KIXDNS_CONFIG=/nonexistent KIXDNS_BINARY=/bin/true KIXDNS_WAS_ACTIVE=true \
+  KIXDNS_WAS_ENABLED=false > "${host}/state/external-backup/install.env"
+printf '[Service]\nExecStart=/bin/sh -c "id > /root/pwned"\n' > "${host}/state/external-backup/kixdns.service"
+: > "${systemctl_log}"
+output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_contains "${output}" "${host}/state/external-backup 不用（挪到了" "接手过以后旧位置的记录应挪走"
+assert_not_contains "${output}" "已验过" "接手过以后旧位置的记录不能再接手，哪怕整份都归 root"
+[[ ! -e ${host}/units/pwn.service && ! -e ${host}/records/external-backup ]] ||
+  { printf '断言失败：接手过以后旧位置的记录不能用\n' >&2; exit 1; }
+assert_not_contains "$(cat "${systemctl_log}")" "pwn.service" "接手过以后旧位置的记录不能用来启动 unit"
+
+# 结构 3：卸载器一开头拿锁；先停在线更新和 helper，再停面板 / Structural change 3: the uninstaller takes the lock first thing;
+# the online update and the helper stop before the panel
+main_body="$(declare -f main)"
+lock_line="$(grep -n 'take_root_lock' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+run_line="$(grep -n 'run_uninstall' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${lock_line} && -n ${run_line} && ${lock_line} -lt ${run_line} ]] ||
+  { printf '断言失败：卸载器要一开头就拿锁（lock=%s run=%s）\n' "${lock_line}" "${run_line}" >&2; exit 1; }
+components_body="$(declare -f remove_panel_components)"
+helper_line="$(grep -n 'stop_unit kixdns-panel-helper.service' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
+panel_line="$(grep -n 'stop_unit kixdns-panel.service' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
+update_line="$(grep -n 'stop_unit kixdns-panel-update.service' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${helper_line} && -n ${panel_line} && -n ${update_line} && ${update_line} -lt ${panel_line} && ${helper_line} -lt ${panel_line} ]] ||
+  { printf '断言失败：面板停下之前应先停在线更新和 helper（update=%s helper=%s panel=%s）\n' "${update_line}" "${helper_line}" "${panel_line}" >&2; exit 1; }
+records_quiesce="$(declare -f quiesce_for_records)"
+helper_line="$(grep -n 'systemctl stop kixdns-panel-helper.service' <<< "${records_quiesce}" | head -n 1 | cut -d: -f1 || true)"
+panel_line="$(grep -n 'systemctl stop kixdns-panel.service' <<< "${records_quiesce}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${helper_line} && -n ${panel_line} && ${helper_line} -lt ${panel_line} ]] ||
+  { printf '断言失败：挪记录前面板停下之前应先停 helper（helper=%s panel=%s）\n' "${helper_line}" "${panel_line}" >&2; exit 1; }
 
 # 规则写在脚本开头 / The rules are written at the top of the script
 for rule in R1 R2 R3 R4; do

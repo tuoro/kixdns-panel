@@ -1761,8 +1761,20 @@ config_directory_run() {
     ROOT_UID="$(id -u)"
     if [[ ${FORGED_RECORDS:-} == true ]]; then
       ROOT_UID=0
-      # 只冒充记录：panel.env 照样是 root 的 / Only the records are forged: panel.env is root's as ever
+      # 只冒充记录：panel.env 照样是 root 的，只有 root 能进的记录目录也照样是 root 的 / Only the records are forged: panel.env
+      # is root's as ever, and so is the root-only records directory
       panel_env_trusted() { return 0; }
+      stat() {
+        if [[ $1 == -c && ${*: -1} == "${root}/records" ]]; then
+          case $2 in
+            %u) printf '0\n' ;;
+            '%u %a') printf '0 %s\n' "$(command stat -c '%a' -- "${root}/records")" ;;
+            *) command stat "$@" ;;
+          esac
+          return
+        fi
+        command stat "$@"
+      }
     fi
     INSTALL_MODE=auto
     PANEL_ONLY_UPDATE=false
@@ -2109,19 +2121,23 @@ assert_contains "${output}" "FILES=unit-fragment unit-dropin-1.conf unit-dropin-
 assert_contains "${output}" "ACCESS=staff 0640" "备份的 unit 和 drop-in 应一起定组和权限"
 assert_contains "${output}" "KIXDNS_UNIT_FRAGMENT=${WORK}/unit-backup/vendor/kixdns.service" "备份应记下原来的 unit 放在哪"
 
-# 回归（P2）：备份不是 root 建的（面板账号能在它的状态目录里放一份），安装器不照它改管副本、交还文件，在改动主机之前停下。
+# 回归（P2）：备份不是 root 建的（面板账号能在它的状态目录里放一份），安装器不照它改管副本、交还文件。S1（第四轮）以前在改动主机
+# 之前停下，面板每次一起来又放一份，以后每次运行都停在这里；现在挪进 quarantine、说一声，当作没有这份记录接着装。
 # Regression (P2): a backup root did not make (the panel account can put one in its state directory) is not acted on: no
-# copy, no hand-back, the installer stops before touching the host.
+# copy, no hand-back. Before S1 (fourth review) the installer stopped there, and as the panel planted a new one whenever it
+# started, every later run stopped too; now it goes into quarantine, this is said, and the install goes on as if there were
+# no such record.
 legacy_host_tree 'User=kxu\n'
 output="$(FORGED_RECORDS=true config_directory_run)"
 assert_contains "${output}" "不是 root 建的" "面板写的备份应被拒绝"
-assert_not_contains "${output}" "PLANNED" "面板写的备份应在改动主机之前拒绝"
+assert_contains "${output}" "这台主机就当作没有这份记录。" "面板写的备份应挪走、接着做"
+assert_not_contains "${output}" "安装失败" "面板写的备份不能让安装停下"
 assert_not_contains "${output}" "chown root:" "面板写的备份不能让安装器交还任何文件"
-# 一份记录要整份都是 root 的才算：面板建的空目录、目录别人能写、里面有符号链接或别的硬链接的，都不算；放记录的目录本身要是只有
-# root 能进的 0700；新旧两处都有一份时分不清用哪份，也停下。
+# 一份记录要整份都是 root 的才算：面板建的空目录、目录别人能写、里面有符号链接或别的硬链接的，都不算，都挪走、接着做；放记录的
+# 目录本身要是只有 root 能进的 0700，不是就停下。
 # A record counts only when all of it is root's: an empty directory the panel made, a directory others can write, or one
-# holding a symlink or a file with another hard link does not; the directory holding the records must itself be root-only
-# 0700; and with a copy in both the old and the new place there is no telling which to use, so the run stops too.
+# holding a symlink or a file with another hard link does not, and each is moved away while the run goes on; the
+# directory holding the records must itself be root-only 0700, or the run stops.
 legacy_host_tree 'User=kxu\n'
 rm -f -- "${root}/state/external-backup"/*
 output="$(FORGED_RECORDS=true config_directory_run)"
@@ -2135,7 +2151,9 @@ for record_case in symlink hardlink writable; do
   esac
   output="$(config_directory_run)"
   assert_contains "${output}" "${root}/state/external-backup 不能信" "记录里有${record_case}时不能照它做事"
-  assert_not_contains "${output}" "PLANNED" "记录里有${record_case}时应在改动主机之前拒绝"
+  assert_contains "${output}" "这台主机就当作没有这份记录。" "记录里有${record_case}时应挪走、接着做"
+  [[ ! -e ${root}/state/external-backup && ! -e ${root}/records/external-backup ]] ||
+    { printf '断言失败：记录里有%s时不能留在会被信的名字上\n' "${record_case}" >&2; exit 1; }
 done
 legacy_host_tree 'User=kxu\n'
 mkdir -p "${root}/records"
@@ -2143,6 +2161,10 @@ chmod 0755 "${root}/records"
 output="$(config_directory_run)"
 assert_contains "${output}" "${root}/records 不是只有 root 能进的目录，不能放安装记录" "放记录的目录别人能进时应拒绝"
 assert_not_contains "${output}" "PLANNED" "放记录的目录别人能进时应在改动主机之前拒绝"
+# S1：照记录停下时面板不重启，说清怎么先把面板用起来 / S1: a stop over a record does not restart the panel, and says how to
+# get it running meanwhile
+assert_contains "${output}" "面板和它账号的进程这时都停着，处理好以后再运行一次就会接着做下去" "照记录停下时应说明面板停着"
+assert_equals "$(grep -c '^systemctl start kixdns-panel.service' <<< "${output}" || true)" "0" "照记录停下时不能重启面板"
 legacy_host_tree 'User=kxu\n'
 mkdir -p "${root}/records/external-backup"
 chmod 0700 "${root}/records"
@@ -2151,23 +2173,26 @@ output="$(config_directory_run)"
 # trusted (an empty directory here), it is moved away and the run stops
 assert_contains "${output}" "${root}/records/external-backup 不能信（里面没有 install.env）" "只有 root 能进的那份不能信时应停下"
 assert_not_contains "${output}" "PLANNED" "两处都有、新的那份不能信时应在改动主机之前停下"
-# 两份都能信、内容不一样：停下让人决定；一样：删掉旧的接着装 / Both trusted but different: stop for a person to decide;
-# the same: the old one goes and the install goes on
+# 只有 root 能进的那里已经有一份能信的：用那份，旧位置的不验、挪走，内容一样不一样都这样（第四轮以前，两份都能信又不一样时停下）
+# A trusted copy already in the root-only place: that one is used and the old one is moved away unchecked, alike or not
+# (before the fourth review, two trusted copies that differed stopped the run)
 legacy_host_tree 'User=kxu\n'
 mkdir -p "${root}/records"
 chmod 0700 "${root}/records"
 cp -a -- "${root}/state/external-backup" "${root}/records/external-backup"
 printf 'KIXDNS_WAS_ACTIVE=false\n' >> "${root}/records/external-backup/install.env"
 output="$(config_directory_run)"
-assert_contains "${output}" "${root}/state/external-backup 和 ${root}/records/external-backup 都是 root 建的，内容不一样，分不清该用哪份" \
-  "两份都能信、内容不一样时应停下"
+assert_contains "${output}" "${root}/state/external-backup 没有用（挪到了 ${root}/records/quarantine/external-backup." \
+  "两份都在时旧位置那份应挪走"
+assert_contains "${output}" "只有 root 能进的 ${root}/records/external-backup 里已经有一份，用的是那份。" "两份都在时应说明用的是哪一份"
+assert_contains "$(cat "${root}/records/external-backup/install.env")" "KIXDNS_WAS_ACTIVE=false" "两份都在时应照用只有 root 能进的那份"
 legacy_host_tree 'User=kxu\n'
 mkdir -p "${root}/records"
 chmod 0700 "${root}/records"
 cp -a -- "${root}/state/external-backup" "${root}/records/external-backup"
 output="$(config_directory_run)"
 assert_contains "${output}" "PLANNED upgrade ${root}/panel-etc/kixdns/pipeline.json" "两份一样时照常装"
-[[ ! -e ${root}/state/external-backup ]] || { printf '断言失败：两份一样时应删掉旧位置那份\n' >&2; exit 1; }
+[[ ! -e ${root}/state/external-backup ]] || { printf '断言失败：两份一样时旧位置那份应挪走\n' >&2; exit 1; }
 # ---------------------------------------------------------------------------
 # 第三轮审查：先定 root 照着做事的规则（R1–R4，写在 install.sh 开头），每一处都照做
 # Third review: the rules for what root acts on come first (R1–R4, at the top of install.sh), and every site follows them
@@ -2182,13 +2207,12 @@ assert_contains "${output}" "PLANNED upgrade ${root}/panel-etc/kixdns/pipeline.j
 # or any later one; running again treats the host as having no such record.
 legacy_host_tree 'User=kxu\n'
 output="$(FORGED_RECORDS=true config_directory_run)"
-assert_contains "${output}" "${root}/state/external-backup 不能信（它不是 root 建的），不会照它做事。" "面板写的备份应被拒绝并说明是哪一份"
-assert_not_contains "${output}" "PLANNED" "面板写的备份应在改动主机之前拒绝"
 [[ ! -e ${root}/records/external-backup && ! -e ${root}/state/external-backup ]] ||
   { printf '断言失败：拒绝的备份不能还留在会被信的名字上\n' >&2; exit 1; }
 quarantined="$(find "${root}/records/quarantine" -mindepth 1 -maxdepth 1 -name 'external-backup.*' -print -quit 2>/dev/null || true)"
 [[ -n ${quarantined} && -f ${quarantined}/install.env ]] || { printf '断言失败：拒绝的备份应挪进 quarantine\n' >&2; exit 1; }
-assert_contains "${output}" "已经挪到只有 root 能进的 ${quarantined}，这次和以后都不会再用" "拒绝时应说明它去了哪里"
+assert_contains "${output}" "${root}/state/external-backup 不能信（它不是 root 建的），没有用它（挪到了 ${quarantined}）；这台主机就当作没有这份记录。" \
+  "面板写的备份应挪走，说明是哪一份、去了哪里"
 output="$(config_directory_run)"
 assert_not_contains "${output}" "不能信" "再运行一次不能再碰那份记录"
 assert_contains "${output}" "PLANNED upgrade" "再运行一次应当作没有这份记录接着装"
@@ -2321,12 +2345,34 @@ chmod 0700 "${root}/records"
 cp -a -- "${root}/state/external-backup" "${root}/records/external-backup"
 chmod 0770 "${root}/state/external-backup"
 output="$(config_directory_run)"
-assert_contains "${output}" "${root}/state/external-backup 不能信（别人能往里写），没有用它" "旧位置那份不能信时应说明"
-assert_contains "${output}" "用的是只有 root 能进的 ${root}/records/external-backup。" "应说明照用的是哪一份"
-notice_line="$(grep -F '没有用它' <<< "${output}" || true)"
+assert_contains "${output}" "${root}/state/external-backup 没有用（挪到了" "旧位置那份应挪走"
+assert_contains "${output}" "用的是那份。" "应说明照用的是哪一份"
+notice_line="$(grep -F '没有用（' <<< "${output}" || true)"
 assert_equals "$(grep -o 'quarantine/external-backup\.' <<< "${notice_line}" | wc -l)" "1" "挪去的地方只说一次"
 assert_contains "${output}" "PLANNED upgrade ${root}/panel-etc/kixdns/pipeline.json" "照用能信的那份接着装"
 [[ ! -e ${root}/state/external-backup ]] || { printf '断言失败：不能信的旧备份应挪走\n' >&2; exit 1; }
+
+# 回归（结构 1，R1）：旧位置的记录只接手一次。第一次运行（旧位置什么都没有也一样）留下标记；之后旧位置再有的，哪怕整份都归 root
+# （root 自己交给 root 的），也不验、不用，挪走、接着做。以前保留 KixDNS、删除面板数据时 root 把面板放的一份交给了 root，下一次
+# 安装就当它是真的接手了。
+# Regression (structural change 1, R1): records from the old place are adopted once. The first run (with nothing in the old
+# place too) leaves the marker; after it, anything showing up in the old place, even all of it root's (handed to root by
+# root itself), is never checked or used: moved away, and the run goes on. Before, keeping KixDNS while removing the panel
+# data had root hand a copy the panel planted to root, and the next install adopted it as genuine.
+upgrade_host_tree
+output="$(config_directory_run)"
+[[ -f ${root}/records/.adopted ]] || { printf '断言失败：第一次运行即使没有可接手的也应留下标记\n' >&2; exit 1; }
+legacy_host_tree 'User=kxu\n'
+mkdir -p "${root}/records"
+chmod 0700 "${root}/records"
+printf 'adopted\n' > "${root}/records/.adopted"
+output="$(config_directory_run)"
+assert_contains "${output}" "${root}/state/external-backup 不用（挪到了 ${root}/records/quarantine/external-backup." "接手过以后旧位置的记录应挪走"
+assert_contains "${output}" "这台主机已经接手过旧版的记录，之后这里再有的都不是 root 写的" "接手过以后应说明为什么不用"
+assert_not_contains "${output}" "已验过" "接手过以后旧位置的记录不能再验、再接手"
+[[ ! -e ${root}/records/external-backup && ! -e ${root}/state/external-backup ]] ||
+  { printf '断言失败：接手过以后旧位置的记录不能出现在会被信的名字上\n' >&2; exit 1; }
+assert_not_contains "${output}" "PLANNED upgrade ${root}/panel-etc/kixdns/pipeline.json" "接手过以后旧位置的记录不能用来改管副本"
 
 # 回归（S-F）：状态目录单独挂一个文件系统时，记录没法一次 rename 挪过去，以前安装、卸载都停下，还留下一个空的记录目录。现在面板
 # 停了以后在原地验过、复制过去、验过复制的那份，再删原来的。
@@ -2345,6 +2391,37 @@ assert_contains "${output}" "旧版放在 ${root}/state/external-backup 的记�
 [[ ! -e ${root}/state/external-backup ]] || { printf '断言失败：复制过去以后应删掉原来的\n' >&2; exit 1; }
 cmp -s -- "${root}/separate-before" "${root}/records/external-backup/kixdns.service" ||
   { printf '断言失败：复制过去的备份应和原来一样\n' >&2; exit 1; }
+
+# 回归（S2，R4）：panel.env 面板能改时，它记的「已经装了这一版」不能让升级跳过；是不是同一版照 root 的面板程序和包里的比。
+# Regression (S2, R4): when the panel can change panel.env, its "this version is installed already" must not skip the
+# upgrade; whether it is the same version compares root's panel program with the package's.
+version_skip() {
+  local base="${WORK}/version-skip"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/package/bin" "${base}/panel-etc"
+  printf 'new server\n' > "${base}/package/bin/kixdns-panel-server"
+  printf '%s\n' "${1}" > "${base}/panel-server"
+  printf 'KIXDNS_PANEL_INSTALLED_COMMIT=%s\n' "${PANEL_BUILD_COMMIT_FIXTURE}" > "${base}/panel-etc/panel.env"
+  [[ ${2:-} != untrusted ]] || chmod 0777 "${base}/panel-etc"
+  (
+    ROOT_CHAIN_TOP=${base}
+    ROOT_UID="$(id -u)"
+    PACKAGE_ROOT="${base}/package"
+    PANEL_ENV="${base}/panel-etc/panel.env"
+    PANEL_SERVER_BINARY="${base}/panel-server"
+    PANEL_RELEASE=""
+    PANEL_BUILD_COMMIT=${PANEL_BUILD_COMMIT_FIXTURE}
+    EXISTING_PANEL=true
+    PANEL_ENV_TRUSTED=true
+    panel_env_trusted || PANEL_ENV_TRUSTED=false
+    same_panel_version_installed && printf 'SAME\n' || printf 'DIFFERENT\n'
+  )
+  chmod 0755 "${base}/panel-etc"
+}
+PANEL_BUILD_COMMIT_FIXTURE=0123456789abcdef0123456789abcdef01234567
+assert_equals "$(version_skip 'old server')" "SAME" "能信的 panel.env 记的版本照旧用来判断"
+assert_equals "$(version_skip 'old server' untrusted)" "DIFFERENT" "面板能改的 panel.env 记的版本不能让升级跳过"
+assert_equals "$(version_skip 'new server' untrusted)" "SAME" "面板能改的 panel.env 时，面板程序和包里的一样才算同一版"
 
 # 回归（S-D，R4）：v4.3.4 能把 --kixdns-config 放进 /etc/kixdns-panel，这个目录（连同 panel.env）就归了面板。面板改了 panel.env
 # 里的配置路径，升级就把它指的目录（容器里是 systemd 的 drop-in 目录）交给了面板。现在 panel.env 只有它和上面每一层目录都只有
@@ -2537,13 +2614,43 @@ real_account_live_processes "$(id -u)" ||
   { printf '断言失败：跑测试的用户还有进程时应看得出来\n' >&2; exit 1; }
 ! real_account_live_processes 2147480000 ||
   { printf '断言失败：没有进程的 UID 不能算还有进程\n' >&2; exit 1; }
-# 列出来的进程有一个在 cat 读到之前就退出了（cat 返回 1，这里让它一定这样）：开着 pipefail 也不能因此说没有进程了。
-# A process the glob listed exited before cat read it (cat returns 1, made certain here): with pipefail on, that must not
-# turn into "no process left".
-(
-  cat() { command cat "$@"; return 1; }
-  real_account_live_processes "$(id -u)"
-) || { printf '断言失败：有进程中途退出时也应看得出还有进程\n' >&2; exit 1; }
+# R2（第四轮的 NIT）：一个线程一个线程地看。在一份假的 /proc 里：主线程退出成了僵尸、别的线程还在跑的进程算活着；只剩僵尸的不算；
+# 读到一半不见了的任务跳过；还在却读不到的，当作还活着。
+# R2 (the fourth review's NIT): thread by thread. In a fake /proc: a process whose main thread exited into a zombie while
+# another thread runs is live; one left as zombies only is not; a task gone part way is skipped; one still there that cannot
+# be read counts as live.
+fake_proc_task() {
+  local base=$1 pid=$2 tid=$3 state=$4 uid=$5
+  mkdir -p "${base}/${pid}/task/${tid}"
+  printf 'Name:\tx\nUmask:\t0022\nState:\t%s (x)\nTgid:\t%s\nPid:\t%s\nUid:\t%s\t%s\t%s\t%s\nGid:\t1\t1\t1\t1\n' \
+    "${state}" "${pid}" "${tid}" "${uid}" "${uid}" "${uid}" "${uid}" > "${base}/${pid}/task/${tid}/status"
+}
+live_in_fake_proc() {
+  (
+    PROC_ROOT=$1
+    real_account_live_processes 4711 && printf 'LIVE\n' || printf 'NONE\n'
+  )
+}
+fake_proc="${WORK}/fake-proc"
+rm -rf -- "${fake_proc}"
+fake_proc_task "${fake_proc}" 100 100 Z 4711
+fake_proc_task "${fake_proc}" 100 101 S 4711
+fake_proc_task "${fake_proc}" 200 200 S 1000
+assert_equals "$(live_in_fake_proc "${fake_proc}")" "LIVE" "主线程是僵尸、别的线程还在跑的进程也算活着"
+rm -rf -- "${fake_proc}/100/task/101"
+assert_equals "$(live_in_fake_proc "${fake_proc}")" "NONE" "只剩僵尸的进程不算活着"
+mkdir -p "${fake_proc}/300/task/300"
+assert_equals "$(live_in_fake_proc "${fake_proc}")" "NONE" "读到一半不见了的任务应跳过"
+fake_proc_task "${fake_proc}" 400 400 S 4711
+chmod 0000 "${fake_proc}/400/task/400/status"
+if [[ -r ${fake_proc}/400/task/400/status ]]; then
+  # root 跑测试时 chmod 拦不住读，就让它变成目录 / Under root chmod does not stop the read; make it a directory instead
+  rm -f -- "${fake_proc}/400/task/400/status"
+  mkdir -p "${fake_proc}/400/task/400/status"
+fi
+assert_equals "$(live_in_fake_proc "${fake_proc}")" "LIVE" "还在却读不到的任务应当作还活着"
+chmod 0644 "${fake_proc}/400/task/400/status" 2>/dev/null || true
+rm -rf -- "${fake_proc}"
 # R2：开头为了挪旧版的记录停了面板，没真的开始安装就退出时照原样重启它；没开头停过的照常看 systemd。
 # R2: when the panel was stopped at the start to move older records and the run ends before the install really starts, it
 # is restarted as it was; otherwise systemd is asked as usual.
@@ -2567,10 +2674,94 @@ early_restart="$(
   )
 )" || true
 assert_contains "${early_restart}" "systemctl stop kixdns-panel.service" "挪旧版的记录之前应停面板"
-assert_contains "$(sed -n '/systemctl stop kixdns-panel.service/,$p' <<< "${early_restart}")" "STOP-PROCESSES fail" \
+# 停不掉进程时照记录停下、面板不重启（S1；第四轮以前是 fail）/ Processes that cannot be stopped stop the run over the
+# record with the panel kept stopped (S1; fail before the fourth review)
+assert_contains "$(sed -n '/systemctl stop kixdns-panel.service/,$p' <<< "${early_restart}")" "STOP-PROCESSES refuse_with_panel_held" \
   "挪旧版的记录之前、停了面板以后，应停光面板账号的进程"
+# 结构 3：先停 helper 再停面板，结束时 helper 也照原样重启 / Structural change 3: the helper stops before the panel, and is
+# restarted as it was at the end
+helper_stop_line="$(grep -n '^systemctl stop kixdns-panel-helper.service' <<< "${early_restart}" | head -n 1 | cut -d: -f1 || true)"
+panel_stop_line="$(grep -n '^systemctl stop kixdns-panel.service' <<< "${early_restart}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${helper_stop_line} && -n ${panel_stop_line} && ${helper_stop_line} -lt ${panel_stop_line} ]] || {
+  printf '断言失败：面板停下之前应先停 helper（helper=%s panel=%s）\n' "${helper_stop_line}" "${panel_stop_line}" >&2
+  exit 1
+}
+assert_contains "${early_restart}" "systemctl start kixdns-panel-helper.service" "没真的开始安装就退出时应重启开头停下的 helper"
 assert_contains "${early_restart}" "systemctl start kixdns-panel.service" "没真的开始安装就退出时应重启开头停下的面板"
 assert_contains "${early_restart}" "WAS-RUNNING" "开头停过面板时，看的是停之前它在不在运行"
+# S1：照记录停下时（KEEP_PANEL_STOPPED）面板和 helper 都不重启 / S1: after a stop over a record (KEEP_PANEL_STOPPED) neither
+# the panel nor the helper restarts
+kept_stopped="$(
+  (
+    systemctl() { printf 'systemctl %s\n' "$*"; [[ $1 == is-active ]]; }
+    stop_panel_processes() { :; }
+    quiesce_for_records
+    refuse_with_panel_held "记录不对"
+  ) 2>&1
+)" || true
+assert_contains "${kept_stopped}" "面板和它账号的进程这时都停着" "照记录停下时应说明面板停着"
+assert_equals "$(grep -c '^systemctl start' <<< "${kept_stopped}" || true)" "0" "照记录停下时面板和 helper 都不能重启"
+# 结构 3：安装器一开头拿锁（在读 panel.env、挪记录之前）；面板停下之前先停 helper；回滚里 helper 和旧面板都在放回属主以后才重启；
+# panel.env 也只在停光面板的进程以后放回（第四轮的 NIT）。
+# Structural change 3: the installer takes the lock first thing (before panel.env is read or records moved); the helper
+# stops before the panel; in a rollback the helper and the old panel restart only after the owners are back; panel.env is
+# put back only once the panel's processes are gone too (the fourth review's NIT).
+lock_line="$(grep -n 'take_root_lock' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+trust_line="$(grep -n 'check_panel_env_trust' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${lock_line} && -n ${trust_line} && ${lock_line} -lt ${trust_line} ]] ||
+  { printf '断言失败：安装器要一开头就拿锁（lock=%s trust=%s）\n' "${lock_line}" "${trust_line}" >&2; exit 1; }
+helper_line="$(grep -n 'stop_panel_helper' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+panel_line="$(grep -n 'systemctl stop kixdns-panel.service' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${helper_line} && -n ${panel_line} && ${helper_line} -lt ${panel_line} ]] ||
+  { printf '断言失败：安装时面板停下之前应先停 helper（helper=%s panel=%s）\n' "${helper_line}" "${panel_line}" >&2; exit 1; }
+rollback_body="$(declare -f rollback_install)"
+owners_line="$(grep -n 'restore_owners' <<< "${rollback_body}" | head -n 1 | cut -d: -f1 || true)"
+helper_restart_line="$(grep -n 'restart kixdns-panel-helper.service' <<< "${rollback_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${owners_line} && -n ${helper_restart_line} && ${owners_line} -lt ${helper_restart_line} ]] ||
+  { printf '断言失败：回滚时 helper 要在放回属主以后才重启（owners=%s helper=%s）\n' "${owners_line}" "${helper_restart_line}" >&2; exit 1; }
+# shellcheck disable=SC2016 # 找的就是函数正文里没展开的写法 / What is looked for is the unexpanded text of the function
+guarded="$(sed -n '/if \[\[ ${quiesced} == true \]\]; then/,/^    fi$/p' <<< "${rollback_body}" | head -n 20)"
+# shellcheck disable=SC2016 # 同上 / As above
+assert_contains "${guarded}" 'restore_path "${PANEL_ENV}" panel-env' "回滚放回 panel.env 也要在停光面板的进程以后"
+# shellcheck disable=SC2016 # 同上 / As above
+[[ $(grep -c 'restore_path "${PANEL_ENV}" panel-env' <<< "${rollback_body}") == 1 ]] ||
+  { printf '断言失败：回滚只在停光面板的进程以后放回 panel.env\n' >&2; exit 1; }
+# 结构 3：同一时间只跑一个。锁在别人手里时停下并说明；在线更新器拿着锁再调安装器时，安装器认出传下来的那一把，接着用。
+# Structural change 3: one at a time. With the lock held elsewhere the run stops and says so; when the online updater holds
+# it and runs the installer, the installer recognises the one handed down and carries on with it.
+lock_file="${WORK}/root.lock"
+rm -f -- "${lock_file}"
+exec 7>> "${lock_file}"
+flock -n 7
+lock_output="$(
+  ROOT_LOCK=${lock_file}
+  unset KIXDNS_PANEL_ROOT_LOCK_FD
+  fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+  take_root_lock
+  printf 'LOCKED\n'
+)" || true
+assert_contains "${lock_output}" "FAILED 另一个安装、卸载或在线更新正在运行" "锁在别人手里时应停下并说明"
+assert_not_contains "${lock_output}" "LOCKED" "锁在别人手里时不能接着做"
+lock_output="$(
+  ROOT_LOCK=${lock_file}
+  KIXDNS_PANEL_ROOT_LOCK_FD=7
+  fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+  take_root_lock
+  printf 'LOCKED\n'
+)" || true
+assert_contains "${lock_output}" "LOCKED" "在线更新器传下来的锁应接着用"
+exec 7>&-
+lock_output="$(
+  ROOT_LOCK=${lock_file}
+  KIXDNS_PANEL_ROOT_LOCK_FD=7
+  fail() { printf 'FAILED %s\n' "$*"; exit 1; }
+  take_root_lock
+  printf 'LOCKED FD=%s\n' "${KIXDNS_PANEL_ROOT_LOCK_FD}"
+  flock -n 7 2>/dev/null && printf 'STALE-FD-USED\n'
+)" || true
+assert_contains "${lock_output}" "LOCKED" "没人拿着锁时应拿到"
+assert_not_contains "${lock_output}" "STALE-FD-USED" "环境里写着、却不是这把锁的文件描述符不能当成锁"
+
 # R3：内核包的身份目录已经有时不用 install -d；里面的文件先删掉同名的再写。/ R3: an existing bundle directory gets no
 # install -d; its files are removed by name before being written.
 output="$(
@@ -3388,10 +3579,23 @@ sed -e "s|/var/lib/kixdns-panel-update|${online_update_root}/status|g" \
   -e "s|/usr/local/bin/kixdns-panel-server|${online_update_root}/server|" \
   -e "s|/var/lib/kixdns-panel/github-token|${online_update_root}/github-token|" \
   -e "s|/run/kixdns-panel-update.lock|${online_update_root}/lock|" \
+  -e "s|/run/kixdns-panel-root.lock|${online_update_root}/root.lock|" \
   "${PACKAGE_ROOT}/scripts/panel-online-update.sh" > "${online_update_root}/updater.sh"
 printf '#!/usr/bin/env bash\nprintf "kixdns-panel-server 3.1.1\\n"\n' > "${online_update_root}/server"
 printf 'KIXDNS_PANEL_INSTALLED_RELEASE=v3.1.1\n' > "${online_update_root}/panel.env"
 chmod 0755 "${online_update_root}/server"
+
+# 结构 3：在线更新器整个运行都拿着安装器、卸载器也用的那把锁。它们正在运行时不更新、也不下载；拿到了就传给安装器
+# （KIXDNS_PANEL_ROOT_LOCK_FD），安装器接着用这一把。
+# Structural change 3: the online updater holds the lock the installer and uninstaller use for its whole run. While either
+# runs it neither updates nor downloads; once it has the lock it hands it to the installer (KIXDNS_PANEL_ROOT_LOCK_FD),
+# which carries on with it.
+updater_body="$(cat -- "${online_update_root}/updater.sh")"
+assert_contains "${updater_body}" "export KIXDNS_PANEL_ROOT_LOCK_FD=8" "在线更新器应把锁传给安装器"
+root_lock_line="$(grep -n 'flock -n 8' <<< "${updater_body}" | head -n 1 | cut -d: -f1 || true)"
+download_line="$(grep -n 'releases/latest' <<< "${updater_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${root_lock_line} && -n ${download_line} && ${root_lock_line} -lt ${download_line} ]] ||
+  { printf '断言失败：在线更新器要先拿锁再查新版（lock=%s download=%s）\n' "${root_lock_line}" "${download_line}" >&2; exit 1; }
 
 # 参数：一键安装器的脚本正文，curl 替身的函数体。输出状态文件里的 state 与 message。
 # Arguments: the one-click installer's body and a function body standing in for curl.
@@ -3437,6 +3641,19 @@ assert_equals "$(jq -r '.message | length' "${online_update_root}/status/status.
 
 output="$(online_update_status "exit 0" "${latest_release}")"
 assert_equals "${output}" "complete 面板已更新到 v3.1.2" "安装器成功时状态应为完成"
+
+# 结构 3：安装器或卸载器拿着锁时，在线更新停下并说明，不查新版、不调安装器；拿到锁的更新把它传给安装器。
+# Structural change 3: with the installer or uninstaller holding the lock, the online update stops and says so, neither
+# asking for the latest release nor running the installer; an update that got the lock hands it to the installer.
+rm -f -- "${online_update_root}/one-click-ran"
+exec 6>> "${online_update_root}/root.lock"
+flock -n 6
+output="$(online_update_status "printf 'RAN\n' > '${online_update_root}/one-click-ran'" "${latest_release}")"
+exec 6>&-
+assert_equals "${output}" "failed 在线更新失败：安装器或卸载器正在运行，这次不更新；等它结束再试" "安装器或卸载器正在运行时在线更新应停下并说明"
+[[ ! -e ${online_update_root}/one-click-ran ]] || { printf '断言失败：安装器或卸载器正在运行时在线更新不能调安装器\n' >&2; exit 1; }
+output="$(online_update_status "printf '%s\n' \"\${KIXDNS_PANEL_ROOT_LOCK_FD:-}\" \"\$(readlink /proc/\$\$/fd/8)\" > '${online_update_root}/one-click-ran'" "${latest_release}")"
+assert_equals "$(tr '\n' ' ' < "${online_update_root}/one-click-ran")" "8 ${online_update_root}/root.lock " "在线更新器应把拿着的锁传给安装器"
 
 # 回归（P1）：Token 文件在面板的状态目录里，面板账号能在检查和读取之间把它换成指向 root 才能读的文件的符号链接。按文件属主的
 # 身份去读（换了也只能读到那个身份本来就能读的），最多等 5 秒。

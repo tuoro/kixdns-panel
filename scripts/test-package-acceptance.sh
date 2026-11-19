@@ -127,13 +127,16 @@ verify_removed() {
     /etc/kixdns-panel \
     /etc/kixdns \
     /var/lib/kixdns-panel \
-    /var/lib/kixdns-panel-backup \
     /run/kixdns-panel/control.sock \
     /etc/systemd/system/kixdns-panel.service \
     /etc/systemd/system/kixdns-panel-helper.service \
     /etc/systemd/system/kixdns.service; do
     [[ ! -e ${path} && ! -L ${path} ]] || fail "卸载后仍残留 ${path}"
   done
+  # 「旧位置的记录接手过」的标记卸载以后留着（R1）：放记录的目录只有 root 能进，里面只剩它
+  # The "old records adopted" marker outlives the uninstall (R1): the records directory is root-only and holds it alone
+  [[ $(stat -c '%U:%G:%a' -- "${ROOT_RECORDS}" 2>/dev/null) == root:root:700 ]] || fail "卸载后放记录的目录应只有 root 能进"
+  [[ "$(find "${ROOT_RECORDS}" -mindepth 1 -printf '%P\n')" == .adopted ]] || fail "卸载后放记录的目录里应只剩「接手过」的标记"
   ! getent passwd kixdns-panel >/dev/null || fail "卸载后仍残留面板账号"
 }
 
@@ -538,6 +541,8 @@ make_legacy_in_place() {
   sed -i -E '/^KIXDNS_(MANAGED_CONFIG|LEGACY_IN_PLACE|USER_CREATED|GROUP_CREATED|UNIT_FRAGMENT)=/d' "${EXTERNAL_BACKUP}/install.env"
   rm -f -- "${EXTERNAL_BACKUP}/unit-fragment" "${EXTERNAL_BACKUP}"/unit-dropin-*.conf
   mv -T -- "${EXTERNAL_BACKUP}" /var/lib/kixdns-panel/external-backup
+  # 只装过旧版的主机：没有「接手过」的标记 / A host that only ever ran the older version: no "adopted" marker
+  rm -f -- "${ROOT_RECORDS}/.adopted"
   rmdir -- "${ROOT_RECORDS}" 2>/dev/null || true
   sed -i -e "s|--config [^ ]*|--config ${legacy_config}|" -e "s|^ConditionPathExists=.*|ConditionPathExists=${legacy_config}|" \
     "${MIGRATION_UNIT}"
