@@ -633,10 +633,15 @@ print_reclaim_backup_note() {
 refuse_unfinished_restore() {
   local marker=${EXTERNAL_BACKUP}/restore-incomplete
   local options
+  local unit
   [[ -f ${marker} ]] || return 0
   options="$(head -n 1 -- "${marker}")"
   [[ ${options} =~ ^--(keep|remove)-config$ ]] || options=--keep-config
-  fail "上次卸载没有把原来的 KixDNS 恢复完，迁移前的备份还在 ${EXTERNAL_BACKUP}。先查明原因（journalctl -u ${KIXDNS_SERVICE_UNIT} -n 50 --no-pager），再用同样的选项重新运行卸载，恢复做完以后再安装：
+  # 要查的是备份记下的原来的 unit（只放进提示里，只要字符安全）/ The unit to look into is the original one the backup
+  # records (it only goes into the message, so safe characters are enough)
+  unit="$(state_file_value "${EXTERNAL_BACKUP}/install.env" KIXDNS_SERVICE_UNIT || true)"
+  [[ -n ${unit} && ${unit} != *[!A-Za-z0-9:_.@-]* ]] || unit=${KIXDNS_SERVICE_UNIT}
+  fail "上次卸载没有把原来的 KixDNS 恢复完，迁移前的备份还在 ${EXTERNAL_BACKUP}。先查明原因（journalctl -u ${unit} -n 50 --no-pager），再用同样的选项重新运行卸载，恢复做完以后再安装：
   curl -fsSL ${UNINSTALL_URL} | sudo bash -s -- --remove-kixdns ${options} --yes
 不再恢复原来的 KixDNS 的话，删掉这份备份再安装：sudo rm -rf ${EXTERNAL_BACKUP}"
 }
@@ -644,7 +649,6 @@ refuse_unfinished_restore() {
 validate_install_mode() {
   local config_parent
   validate_unit
-  refuse_unfinished_restore
   validate_absolute_path "KixDNS 配置路径" "${KIXDNS_CONFIG_PATH}"
   validate_absolute_path "KixDNS 二进制路径" "${KIXDNS_BINARY_PATH}"
   validate_absolute_path "KixDNS 控制 Socket 路径" "${KIXDNS_CONTROL_SOCKET}"
@@ -694,14 +698,23 @@ legacy_in_place_migration() {
 # panel was half way through writing.
 shared_config_directory() {
   local directory
-  local name
   directory="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
   [[ ${directory} != "${KIXDNS_CONFIG_DIRECTORY}" && ${directory} != "${MIGRATED_KIXDNS_CONFIG_DIRECTORY}" &&
     -d ${directory} && ! -L ${directory} ]] || return 1
+  [[ -n "$(other_file_in "${directory}" "${KIXDNS_CONFIG_PATH##*/}")" ]]
+}
+
+# 目录里第一个不是面板写的东西（见 panel_written_config_file），没有时什么也不输出。参数：目录，配置的文件名。
+# The first thing in the directory the panel did not write (see panel_written_config_file); nothing when there is none.
+# Arguments: the directory, the config's file name.
+other_file_in() {
+  local name
   while IFS= read -r -d '' name; do
-    panel_written_config_file "${name}" "${KIXDNS_CONFIG_PATH##*/}" || return 0
-  done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
-  return 1
+    if ! panel_written_config_file "${name}" "$2"; then
+      printf '%s\n' "$1/${name}"
+      return 0
+    fi
+  done < <(find "$1" -mindepth 1 -maxdepth 1 -printf '%f\0' 2>/dev/null)
 }
 
 # 升级时面板不该再写的配置目录：在改动主机之前定下怎么换、记下要改的属主和权限原来的样子（见 CONFIG_CONVERSION）。
@@ -749,15 +762,27 @@ owner_and_mode() {
   printf '%s %04o\n' "$(stat -c '%U:%G' -- "$1")" "$((8#${mode}))"
 }
 
-# 把一个面板用过、现在要交还的目录改归 root:root、权限 0755。面板自己的目录（面板配置目录、状态目录和它们下面的）不交还。
+# 这个路径还归面板账号，或者已经归了一个没有账号的 UID（旧版卸载器删掉面板账号以后留下的）。
+# The path still belongs to the panel account, or already to a UID with no account (left once an older uninstaller removed
+# the panel account).
+panel_owned() {
+  local owner
+  owner="$(stat -c '%U' -- "$1" 2>/dev/null)" || return 1
+  [[ ${owner} == kixdns-panel || ${owner} == UNKNOWN ]]
+}
+
+# 把一个面板用过、现在要交还的目录改归 root:root、权限 0755。面板自己的目录（面板配置目录、状态目录和它们下面的）不交还；
+# 已经不归面板的（比如管理员自己改回 root 的）照原样留着，不改成 0755。
 # Hands a directory the panel used back to root:root with mode 0755. The panel's own directories (its config and state
-# directories and what lies below them) are not handed back.
+# directories and what lies below them) are not handed back; one no longer the panel's (one the admin gave back to root
+# himself, say) is left as it is, not made 0755.
 hand_back_directory() {
   local directory=$1
   case ${directory} in
     "${PANEL_CONFIG_DIRECTORY}" | "${PANEL_CONFIG_DIRECTORY}"/* | "${PANEL_STATE_DIRECTORY}" | "${PANEL_STATE_DIRECTORY}"/*) return 0 ;;
   esac
   [[ -d ${directory} && ! -L ${directory} ]] || return 0
+  panel_owned "${directory}" || return 0
   chown root:root -- "${directory}"
   chmod 0755 -- "${directory}"
 }
@@ -909,14 +934,21 @@ require_dedicated_config_directory() {
   local config_parent
   local recorded
   local reason
+  local other
   config_parent="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
   for recorded in "$(environment_value KIXDNS_CONFIG || true)" "${KIXDNS_UNIT_CONFIG_PATH}"; do
     [[ -z ${recorded} || $(dirname -- "${recorded}") != "${config_parent}" ]] || return 0
   done
   if [[ ${config_parent} == "${PANEL_CONFIG_DIRECTORY}" ]]; then
     reason="这里的 panel.env 只能由 root 修改"
-  elif [[ ! -e ${config_parent} || ${config_parent} == "${KIXDNS_CONFIG_DIRECTORY}" ||
-    ${config_parent} == "${MIGRATED_KIXDNS_CONFIG_DIRECTORY}" ]]; then
+  elif [[ ${config_parent} == "${KIXDNS_CONFIG_DIRECTORY}" && ! -L ${config_parent} ]]; then
+    # 面板固定的 /etc/kixdns：里面只有这份配置（和面板写到一半的临时文件）时才交给面板，放着别的东西就和别的目录一样不交
+    # The panel's fixed /etc/kixdns: handed to the panel only while it holds this config alone (and panel temporaries);
+    # holding anything else, it is not handed over, like any other directory
+    other="$(other_file_in "${config_parent}" "${KIXDNS_CONFIG_PATH##*/}")"
+    [[ -n ${other} ]] || return 0
+    fail "KixDNS 配置要放在 ${config_parent}，面板要能写这个目录，可里面还放着别的文件（${other}）。先把它们移走再重新运行。"
+  elif [[ ! -e ${config_parent} || ${config_parent} == "${MIGRATED_KIXDNS_CONFIG_DIRECTORY}" ]]; then
     return 0
   else
     reason="这个目录已经存在，安装器不会把它交给面板"
@@ -1822,6 +1854,8 @@ preserve_external_install() {
   fragment="$(systemctl show --property=FragmentPath --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
   if [[ -n ${fragment} && -f ${fragment} ]]; then
     cat -- "${fragment}" > "${EXTERNAL_BACKUP}/unit-fragment"
+  else
+    fragment=""
   fi
   read -ra dropins <<< "$(systemctl show --property=DropInPaths --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
   for dropin in "${dropins[@]}"; do
@@ -2423,23 +2457,27 @@ print_port53_notice() {
 print_conversion_summary() {
   local entry
   local path
+  local now
+  local changes=""
+  # 只列真改了的路径 / Only paths that really changed are listed
+  for entry in "${CONVERSION_BEFORE[@]}"; do
+    path=${entry%%|*}
+    [[ -e ${path} ]] || continue
+    now="$(owner_and_mode "${path}")"
+    [[ ${now} != "${entry#*|}" ]] || continue
+    changes+="  ${path}：${entry#*|} → ${now}"$'\n'
+  done
   case ${CONFIG_CONVERSION} in
     legacy)
       printf '配置：改为管理副本 %s，以后在面板里改的都写进副本；原配置 %s 留着升级这时的内容，交还给原来的 KixDNS\n' \
         "${KIXDNS_CONFIG_PATH}" "${ORIGINAL_KIXDNS_CONFIG_PATH}"
-      printf '旧版迁移时把原配置交给了面板，没有记下它原来的属主和权限，这次改成：\n'
+      [[ -z ${changes} ]] || printf '旧版迁移时把原配置交给了面板，没有记下它原来的属主和权限，这次改成：\n%s' "${changes}"
       ;;
     shared)
-      printf '配置：从 %s 挪到 %s；%s 里还放着别的文件，面板不再写它\n' "${ORIGINAL_KIXDNS_CONFIG_PATH}" \
-        "${KIXDNS_CONFIG_PATH}" "$(dirname -- "${ORIGINAL_KIXDNS_CONFIG_PATH}")"
+      printf '配置：从 %s 挪到 %s；%s 里还放着别的文件，面板不再写它\n%s' "${ORIGINAL_KIXDNS_CONFIG_PATH}" \
+        "${KIXDNS_CONFIG_PATH}" "$(dirname -- "${ORIGINAL_KIXDNS_CONFIG_PATH}")" "${changes}"
       ;;
-    *) return 0 ;;
   esac
-  for entry in "${CONVERSION_BEFORE[@]}"; do
-    path=${entry%%|*}
-    [[ -e ${path} ]] || continue
-    printf '  %s：%s → %s\n' "${path}" "${entry#*|}" "$(owner_and_mode "${path}")"
-  done
 }
 
 print_summary() {
@@ -2560,6 +2598,8 @@ main() {
   # 先把旧版放在面板状态目录里的记录挪进只有 root 能进的地方、验过，再读它们 / First move the records older versions kept in
   # the panel's state directory into the root-only place and check them, then read them
   secure_root_records
+  # 上次卸载没恢复完时什么都不问就停下 / When an earlier uninstall did not finish the restore, stop before asking anything
+  refuse_unfinished_restore
   load_existing_panel_settings
   validate_panel_only_update
   skip_if_already_installed

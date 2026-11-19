@@ -106,6 +106,18 @@ source "${UNINSTALLER}"
 # in the scratch tree, never touching the real services of the dev host: SYSTEMD_UNIT_DIRECTORY first (standing in for
 # /etc/systemd/system), then OTHER_UNIT_DIRECTORY (standing in for /usr/local/lib/systemd/system).
 fake_systemctl_show() {
+  local each
+  local exec_start
+  # 一次查几个 unit 的 Id 和 ExecStart，像 systemctl 那样一个 unit 一段、段间空一行
+  # Id and ExecStart of several units at once, one block per unit with a blank line between, as systemctl prints them
+  if [[ $2 == --property=Id ]]; then
+    for each in "${@:4}"; do
+      exec_start="$(fake_systemctl_show show --property=ExecStart --value "${each}")"
+      [[ -z ${exec_start} ]] || printf 'ExecStart=%s\n' "${exec_start}"
+      printf 'Id=%s\n\n' "${each}"
+    done
+    return 0
+  fi
   local property=${2#--property=}
   local unit=${4:-}
   local directory
@@ -135,8 +147,22 @@ fake_systemctl_show() {
     User) awk '/^User=/ { value = $0; sub(/^User=/, "", value) } END { print value }' "${files[@]}" ;;
   esac
 }
+# 临时主机上的 unit 文件：/etc/systemd/system 和 OTHER_UNIT_DIRECTORY 里的 / The scratch host's unit files: those in
+# /etc/systemd/system and in OTHER_UNIT_DIRECTORY
+fake_systemctl_list() {
+  local file
+  [[ $1 == list-unit-files ]] || return 0
+  for file in "${SYSTEMD_UNIT_DIRECTORY}"/*.service "${OTHER_UNIT_DIRECTORY:-/nonexistent}"/*.service; do
+    [[ ! -f ${file} ]] || printf '%s enabled enabled\n' "${file##*/}"
+  done
+}
 use_fake_systemctl() {
-  systemctl() { [[ $1 != show ]] || fake_systemctl_show "$@"; }
+  systemctl() {
+    case $1 in
+      show) fake_systemctl_show "$@" ;;
+      list-units | list-unit-files) fake_systemctl_list "$@" ;;
+    esac
+  }
 }
 use_fake_systemctl
 
@@ -558,7 +584,7 @@ INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 for shared_function in wait_for_service_stable port_accepts_connection owner_and_mode hand_back_directory \
   unit_service_setting original_config_access hand_back_original_config panel_written_config_file \
   ensure_root_records genuine_root_record secure_root_records put_back_root_records account_has_processes \
-  original_unit_files; do
+  original_unit_files panel_owned; do
   installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}")"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   [[ -n ${installer_copy} && ${installer_copy} == "${uninstaller_copy}" ]] || {
@@ -649,6 +675,9 @@ migrate_scratch_host() {
     fi
     record_existing_accounts
     unset -f id getent
+    # 和 install.sh 的 main 一样，什么都不问之前先看上次卸载有没有恢复完 / As install.sh's main does, check that an earlier
+    # uninstall finished its restore before anything is asked
+    refuse_unfinished_restore
     INSTALL_MODE=managed
     detect_existing_kixdns
     determine_install_kind
@@ -699,6 +728,10 @@ uninstall_scratch_host() {
     # the uninstaller keeps asking for the original KixDNS's state while waiting for it to settle, and by default it stays
     # the same main process; with SYSTEMCTL_UNSTABLE=true it never comes up (always activating in a Restart= crash loop).
     systemctl() {
+      if [[ $1 == list-units || $1 == list-unit-files ]]; then
+        fake_systemctl_list "$@"
+        return 0
+      fi
       if [[ $1 == show ]]; then
         if [[ $2 == --property=ActiveState && ${SYSTEMCTL_UNSTABLE:-} == true ]]; then
           printf 'activating\n'
@@ -971,6 +1004,19 @@ chown_log="${scratch}/chown.log"
 kept_owner_of() {
   grep -Fx -e "chown $1 -- $2" -e "chown -h $1 -- $2" "${chown_log}" > /dev/null && printf '%s %s\n' "$1" "$(stat -c '%a' "$2")"
 }
+# 回归（U3）：安装器关掉 resolved 监听时的记录在只有 root 能进的目录里，保留 KixDNS、删除面板数据时留着它：卸载器给出的恢复命令
+# 要用它。
+# Regression (U3): the record the installer left when it turned resolved's stub off lives in the root-only directory, and
+# keeping KixDNS while removing the panel data leaves it: the restore commands the uninstaller prints need it.
+kept_host "${host}"
+mkdir -p "${host}/records/resolved-stub"
+chmod 0700 "${host}/records" "${host}/records/resolved-stub"
+printf 'RESOLV_CONF_KIND=file\n' > "${host}/records/resolved-stub/install.env"
+printf 'nameserver 127.0.0.53\n' > "${host}/records/resolved-stub/resolv.conf"
+output="$(PANEL_OWNED=true ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+assert_contains "${output}" "sudo cp -a --remove-destination ${host}/records/resolved-stub/resolv.conf" "保留 KixDNS 时应给出恢复 resolv.conf 的命令"
+[[ -f ${host}/records/resolved-stub/resolv.conf && -f ${host}/records/resolved-stub/install.env ]] ||
+  { printf '断言失败：恢复命令要用的 resolved 记录必须留着\n' >&2; exit 1; }
 kept_host "${host}"
 : > "${chown_log}"
 : > "${systemctl_log}"
@@ -1074,7 +1120,7 @@ assert_not_contains "${output}" "RUN-FAILED" "公共目录里的配置保留时�
 assert_equals "$(kept_owner_of root:root "${host}/etc")" "root:root 755" "公共目录只交还 root、谁都能进"
 assert_equals "$(kept_owner_of root:root "${host}/etc/kixdns.json")" "root:root 600" "unit 以 root 运行时配置只留给 root"
 inplace_host "${host}"
-output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+output="$(PANEL_OWNED=true uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
 assert_not_contains "${output}" "RUN-FAILED" "原地迁移的主机卸载不应失败"
 assert_equals "$(cat "${host}/etc/kixdns.json" 2>/dev/null || printf missing)" '{"edited":true}' "原地迁移的主机卸载时不动它的配置"
 assert_contains "${output}" "它用的配置 ${host}/etc/kixdns.json 是面板最后保存的内容：旧版安装器迁移时直接改用了这个文件，迁移前的内容没有留底。" \
@@ -1105,11 +1151,39 @@ mkdir -p "${host}/vendor-units"
 printf '[Service]\nUser=kxu\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${host}/etc/kixdns.json" \
   > "${host}/vendor-units/kixdns.service"
 : > "${chown_log}"
-output="$(OTHER_UNIT_DIRECTORY=${host}/vendor-units CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true \
+output="$(OTHER_UNIT_DIRECTORY=${host}/vendor-units PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true \
   uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
 assert_not_contains "${output}" "RUN-FAILED" "unit 不在备份里的原地迁移主机卸载不应失败"
 assert_equals "$(kept_owner_of root:990 "${host}/etc/kixdns.json")" "root:990 640" \
   "unit 不在备份里时应按名字找到它，按它运行用的账号交还，不能交还成谁都能读"
+# 只列真改了的：目录已经是 0755 时不列它。/ Only what really changed is listed: a directory already 0755 is not.
+inplace_host "${host}"
+chmod 0755 "${host}/etc"
+output="$(PANEL_OWNED=true uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "  ${host}/etc：" "没改的目录不能列出"
+assert_contains "${output}" "  ${host}/etc/kixdns.json：" "改了的配置照旧列出"
+# 管理员已经把目录改回 root：照他改的留着。/ The admin already gave the directory back to root: it stays as he set it.
+inplace_host "${host}"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_equals "$(stat -c '%a' "${host}/etc")" "750" "不归面板的目录不能再交还"
+# 回归（S3）：没升级过的旧版原地迁移主机，保留 KixDNS 和面板数据卸载（--keep-kixdns --keep-config）：面板的 KixDNS 接着用原配置，
+# 可旧版交给面板的原配置目录（这里是 /etc 这样的公共目录）以前一直归面板（kixdns-panel:kixdns 0750，别的账号连 /etc 都进不去）。
+# 面板卸载了，目录交还 root:root 0755 并列出来；配置文件留给接着运行的 KixDNS 读，以后重装时再交还。
+# Regression (S3): a host an older version migrated in place and never upgraded, uninstalled keeping KixDNS and the panel
+# data (--keep-kixdns --keep-config): the panel's KixDNS goes on with the original config, but the original's directory
+# the older version gave the panel (a shared one such as /etc here) used to stay the panel's (kixdns-panel:kixdns 0750,
+# other accounts could not even enter /etc). The panel is gone, so the directory goes back as root:root 0755 and is
+# listed; the config file stays readable for the KixDNS that keeps running and is handed back at a later reinstall.
+inplace_host "${host}"
+: > "${host}/etc/passwd-like"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --keep-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "保留 KixDNS 和数据卸载旧版原地迁移的主机不应失败"
+assert_equals "$(kept_owner_of root:root "${host}/etc")" "root:root 755" "保留 KixDNS 和数据时原配置的目录也应交还 root"
+assert_contains "${output}" "旧版迁移时把原配置所在的目录交给了面板，面板卸载以后交还：" "交还目录时应说明"
+assert_contains "${output}" "  ${host}/etc：" "交还目录时应列出它"
+assert_not_contains "$(cat "${chown_log}")" "${host}/etc/kixdns.json" "接着运行的 KixDNS 要读的配置这时不动"
+[[ -f ${host}/records/external-backup/install.env ]] || { printf '断言失败：保留 KixDNS 时迁移前的备份要留着\n' >&2; exit 1; }
 # 升级时已经改管副本的旧版原地迁移主机：恢复时删副本、放回原 unit，原配置里是升级那时面板保存的内容，要照实说。
 # A host an older version migrated in place and an upgrade moved onto a copy: the restore removes the copy and puts the
 # original unit back, and the original holds what the panel had saved at that upgrade, which is said as it is.
@@ -1301,8 +1375,10 @@ assert_contains "${panel_env}" "KIXDNS_REMOVED=true" "移除面板的 KixDNS、�
 own_kixdns
 : > "${systemctl_log}"
 : > "${account_log}"
+# 交还目录前要看它还归不归面板：临时主机上的文件都算面板的 / Handing a directory back checks it is still the panel's: every
+# file of the scratch host counts as the panel's
 output="$(OTHER_UNIT_DIRECTORY=${other_units} SYSTEMCTL_LOG=${systemctl_log} ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} \
-  uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+  PANEL_OWNED=true uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
 assert_not_contains "${output}" "RUN-FAILED" "以后删除数据不应失败"
 assert_not_contains "$(cat "${systemctl_log}")" "kixdns.service" "以后再卸载不能停、不能禁用用户自己的 KixDNS"
 [[ -f ${other_units}/kixdns.service && -f ${host}/etc-kixdns/own.json ]] ||
@@ -1328,6 +1404,62 @@ uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes > /dev/null
 output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
 assert_not_contains "${output}" "RUN-FAILED" "只剩面板文件时删除数据不应失败"
 [[ ! -e ${host}/etc-kixdns ]] || { printf '断言失败：/etc/kixdns 里只剩面板写的文件时应整个删掉\n' >&2; exit 1; }
+# /etc/kixdns 里的子目录不是面板写的，哪怕它的名字像面板的临时文件：目录留着，子目录也留着。
+# A subdirectory of /etc/kixdns is not something the panel wrote, even named like a panel temporary file: the directory
+# stays, and so does the subdirectory.
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+assert_not_contains "$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)" "RUN-FAILED" "先移除面板的 KixDNS 不应失败"
+mkdir -p "${host}/etc-kixdns/.kixdns-panel-Zz99Yy"
+printf 'mine\n' > "${host}/etc-kixdns/.kixdns-panel-Zz99Yy/notes"
+output="$(uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+[[ -f ${host}/etc-kixdns/.kixdns-panel-Zz99Yy/notes ]] || { printf '断言失败：/etc/kixdns 里的子目录不是面板写的，不能删\n' >&2; exit 1; }
+# 回归（M2）：移除面板的 KixDNS、保留数据以后，用户照 KixDNS 的文档自己装了 KixDNS：/etc/systemd/system/kixdns.service，以 root
+# 运行，ExecStart 用 -c 指向 /etc/kixdns/pipeline.json（正是面板留下的那份）。以前删除面板数据时把它当成面板写的配置删掉，
+# 用户的 KixDNS 下次启动就失败。属主看不出是谁的，只能看 unit：任何 unit 的 ExecStart 用 -c、--config、--config= 指着的配置都不删，
+# 归面板的改归 root（组和权限按那个 unit 运行用的账号），并说明。
+# Regression (M2): after the panel's KixDNS was removed and the data kept, the user installed KixDNS by its docs:
+# /etc/systemd/system/kixdns.service, running as root, ExecStart pointing with -c at /etc/kixdns/pipeline.json (the very
+# one the panel left). Removing the panel data used to delete it as the panel's config, and the user's KixDNS failed on its
+# next start. Ownership cannot tell whose it is, only units can: a config any unit's ExecStart names with -c, --config or
+# --config= is never removed; when it is the panel's it goes to root (group and mode by the account that unit runs as),
+# and that is said.
+for own_option in '-c ' '--config '; do
+  fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+  chmod 0750 "${host}/etc-kixdns"
+  assert_not_contains "$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)" "RUN-FAILED" \
+    "先移除面板的 KixDNS 不应失败（${own_option}）"
+  printf '[Service]\nExecStart=/usr/local/bin/kixdns run %s%s\n' "${own_option}" "${host}/etc-kixdns/pipeline.json" \
+    > "${host}/units/kixdns.service"
+  chmod 0640 "${host}/etc-kixdns/pipeline.json"
+  : > "${chown_log}"
+  output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true \
+    uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+  assert_not_contains "${output}" "RUN-FAILED" "用户自己的 KixDNS 用着面板留下的配置时删除数据不应失败（${own_option}）"
+  [[ -f ${host}/etc-kixdns/pipeline.json ]] ||
+    { printf '断言失败：有 unit 用着的配置不能删（%s）\n' "${own_option}" >&2; exit 1; }
+  assert_equals "$(kept_owner_of root:root "${host}/etc-kixdns/pipeline.json")" "root:root 600" \
+    "unit 以 root 运行时，它用着的配置改归 root、只给 root（${own_option}）"
+  assert_equals "$(kept_owner_of root:root "${host}/etc-kixdns")" "root:root 755" "配置所在的目录交还 root（${own_option}）"
+  assert_contains "${output}" "kixdns.service 还在用 ${host}/etc-kixdns/pipeline.json，这份配置留着，交还 root：" \
+    "留下有 unit 用着的配置时应说明（${own_option}）"
+  assert_contains "${output}" "  ${host}/etc-kixdns/pipeline.json：" "应列出改了的配置（${own_option}）"
+done
+# 别的名字的 unit、放在别处、用 --config= 写法，以别的账号运行：一样留着，组按那个账号。
+# A unit of another name, living elsewhere, using the --config= form and running as another account: kept just the same,
+# with that account's group.
+rm -rf -- "${other_units}"
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+assert_not_contains "$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)" "RUN-FAILED" "先移除面板的 KixDNS 不应失败"
+mkdir -p "${other_units}"
+printf '[Service]\nUser=kxu\nExecStart=/opt/dns/kixdns run --config=%s --admin-socket /run/dns/admin.sock\n' \
+  "${host}/etc-kixdns/pipeline.json" > "${other_units}/dns-own.service"
+: > "${chown_log}"
+output="$(OTHER_UNIT_DIRECTORY=${other_units} PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true \
+  uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+[[ -f ${host}/etc-kixdns/pipeline.json ]] || { printf '断言失败：别的 unit 用着的配置也不能删\n' >&2; exit 1; }
+assert_equals "$(kept_owner_of root:990 "${host}/etc-kixdns/pipeline.json")" "root:990 640" "组和权限按用着它的 unit 运行用的账号"
+assert_contains "${output}" "dns-own.service 还在用 ${host}/etc-kixdns/pipeline.json" "应说明是哪个 unit 用着"
+rm -rf -- "${other_units}"
 # 第一次卸载是旧版卸载器做的、没记下归属：panel.env 还说归面板管。按 systemd 实际加载的 unit 认，用户放在别处的同名 unit 跑的
 # 是别的程序，就不是面板的，不碰。
 # The first uninstall was done by an older uninstaller that recorded nothing: panel.env still says the panel's. Going by the

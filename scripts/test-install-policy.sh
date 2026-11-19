@@ -1451,6 +1451,36 @@ accounts_line="$(grep -n 'create_accounts' <<< "${main_body}" | head -n 1 | cut 
   exit 1
 }
 
+# 回归（N2）：上次卸载没恢复完时，安装器在问任何问题之前就拒绝（以前先问装成什么，答完才说不能装），查原因的命令写的是备份
+# 记下的 unit，不是这次默认的名字。
+# Regression (N2): when an earlier uninstall did not finish the restore, the installer refuses before asking anything (it
+# used to ask how to install and only then say it could not), and the command to find the cause names the unit the backup
+# records, not this run's default name.
+main_body="$(declare -f main)"
+refuse_line="$(grep -n 'refuse_unfinished_restore' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+for later in load_existing_panel_settings skip_if_already_installed choose_install_mode; do
+  later_line="$(grep -n "${later}" <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+  [[ -n ${refuse_line} && -n ${later_line} && ${refuse_line} -lt ${later_line} ]] || {
+    printf '断言失败：恢复没做完的拒绝要在 %s 之前（refuse=%s %s=%s）\n' "${later}" "${refuse_line}" "${later}" "${later_line}" >&2
+    exit 1
+  }
+done
+validate_body="$(declare -f validate_install_mode)"
+assert_not_contains "${validate_body}" "refuse_unfinished_restore" "恢复没做完的拒绝只在开头做一次"
+unfinished_restore_refusal() {
+  (
+    EXTERNAL_BACKUP="${WORK}/unfinished/external-backup"
+    mkdir -p "${EXTERNAL_BACKUP}"
+    printf 'KIXDNS_SERVICE_UNIT=dns-own.service\n' > "${EXTERNAL_BACKUP}/install.env"
+    printf -- '--remove-config\n' > "${EXTERNAL_BACKUP}/restore-incomplete"
+    KIXDNS_SERVICE_UNIT=kixdns.service
+    refuse_unfinished_restore
+  ) 2>&1 || true
+}
+output="$(unfinished_restore_refusal)"
+assert_contains "${output}" "journalctl -u dns-own.service -n 50 --no-pager" "查原因的命令应写备份记下的 unit"
+assert_contains "${output}" "| sudo bash -s -- --remove-kixdns --remove-config --yes" "拒绝时应给出用同样选项接着卸载的命令"
+
 # 回归（P1）：面板账号能写的目录里，root 要做的每件事（改属主、改权限、install -d、读写配置）都得等面板停了、kixdns-panel
 # 账号的进程一个不剩以后，再查一遍类型才做。以前面板还在跑的时候安装器就动手：面板在检查和 chown 之间把配置换成指向
 # /etc/shadow 的符号链接，/etc/shadow 就归了面板。
@@ -1694,7 +1724,13 @@ config_directory_run() {
       [[ ${*: -1} != */kixdns-panel.service ]] || grep '^ReadWritePaths=' "${*: -2:1}"
     }
     chown() { printf 'chown %s\n' "$*"; }
-    chmod() { printf 'chmod %s\n' "$*"; }
+    # 权限真的改（只在临时目录里），列出改了什么时才看得出；属主改不了，只记下来
+    # Modes really change (inside the scratch tree only), so the list of what changed can see them; owners cannot, and are
+    # only recorded
+    chmod() { printf 'chmod %s\n' "$*"; [[ ${*: -1} != "${root}"/* ]] || command chmod "$@"; }
+    # 临时主机上的文件都算面板的，REPAIRED_DIRECTORY 这个目录除外（管理员已经改回 root 的）/ Every file of the scratch host
+    # counts as the panel's, except REPAIRED_DIRECTORY (one the admin already gave back to root)
+    panel_owned() { [[ $1 != "${REPAIRED_DIRECTORY:-}" ]]; }
     rm() { [[ ${*: -1} != "${root}"/* ]] || command rm "$@"; }
     id() { printf '990\n'; }
     # 原来的 KixDNS 以 kxu 账号运行时，它的主组是 1001；还有个 staff 组 / When the original KixDNS runs as the kxu account, its
@@ -1711,6 +1747,7 @@ config_directory_run() {
     PANEL_STATE_DIRECTORY="${root}/state"
     parse_arguments "$@"
     secure_root_records
+    refuse_unfinished_restore
     load_existing_panel_settings
     # 没有 unit 时不检测：主机上 PATH 里或 /usr/local/bin 下有 kixdns 会把这里变成迁移。
     # Without a unit, skip detection: a kixdns on this host's PATH or in /usr/local/bin would turn this into a migration.
@@ -1791,8 +1828,25 @@ assert_contains "${output}" "PLANNED fresh ${root}/etc-kixdns/pipeline.json" "�
 assert_contains "${output}" "install -d -o kixdns-panel -g kixdns -m 0750 ${root}/etc-kixdns" "默认目录照旧交给面板"
 # 不跟着符号链接改（P1）/ Without following a symlink (P1)
 assert_contains "${output}" "chown -h kixdns-panel:kixdns -- ${root}/etc-kixdns/pipeline.json" "默认目录里已有的配置照旧归面板"
+# 回归（N4）：/etc/kixdns 是面板固定的位置，可它里面放着配置以外的东西时，和别的目录一样不交给面板：以前只看路径，面板拿到
+# 这个目录就能改里面别人的文件。所以这里先把准备好的 pipeline.json 移走，再试别的文件名；pipeline.json 还在时 custom.json 要拒绝。
+# Regression (N4): /etc/kixdns is the panel's fixed place, but when it holds anything besides the config it is not handed
+# to the panel, like any other directory: only the path used to count, and a panel given the directory could change the
+# others' files in it. So the prepared pipeline.json is moved off before another file name is tried; with pipeline.json
+# still there, custom.json is refused.
+output="$(config_directory_run --kixdns-config "${root}/etc-kixdns/custom.json")"
+assert_contains "${output}" "安装失败：KixDNS 配置要放在 ${root}/etc-kixdns，面板要能写这个目录，可里面还放着别的文件（${root}/etc-kixdns/pipeline.json）。先把它们移走再重新运行。" \
+  "/etc/kixdns 里放着别的文件时应拒绝并说明"
+assert_not_contains "${output}" "PLANNED" "/etc/kixdns 里放着别的文件时应在改动主机之前拒绝"
+rm -f -- "${root}/etc-kixdns/pipeline.json"
 output="$(config_directory_run --kixdns-config "${root}/etc-kixdns/custom.json")"
 assert_contains "${output}" "PLANNED fresh ${root}/etc-kixdns/custom.json" "默认目录里的其他文件名应可用"
+config_directory_tree
+mkdir -p "${root}/etc-kixdns"
+: > "${root}/etc-kixdns/notes.txt"
+output="$(config_directory_run)"
+assert_contains "${output}" "可里面还放着别的文件（${root}/etc-kixdns/notes.txt）" "/etc/kixdns 里放着别的文件时默认安装也应拒绝"
+assert_not_contains "${output}" "PLANNED" "/etc/kixdns 里放着别的文件时默认安装应在改动主机之前拒绝"
 
 # 放着 panel.env 的面板配置目录不能交给面板，哪怕它还不存在：面板能改 panel.env，下次以 root 运行的安装器就会照着它改别的目录。
 # The panel's config directory, which holds panel.env, never goes to the panel, even before it exists: a panel that could
@@ -1847,6 +1901,11 @@ legacy_host_tree() {
   # 和旧版安装器建的一样：目录 0700、文件 0600 / As the older installer made it: directory 0700, files 0600
   chmod 0700 "${root}/state/external-backup"
   chmod 0600 "${root}/state/external-backup/install.env" "${root}/state/external-backup/kixdns.service"
+  # 旧版把原配置的目录交给面板时改成 0750；配置的权限和交还后的不同，交还时才看得出改了
+  # The older version made the original config's directory 0750 when it handed it to the panel; the config's mode differs
+  # from the one it gets back, so the hand-back shows
+  chmod 0750 "${root}/etc"
+  chmod 0600 "${root}/etc/foo.json"
 }
 for legacy_arguments in "" --panel-only-update; do
   legacy_host_tree 'User=kxu\n'
@@ -1889,6 +1948,22 @@ for legacy_case in "|0600|root:root" 'DynamicUser=yes\n|0644|root:root' 'User=kx
   assert_contains "${output}" "chown -h ${legacy_owner} -- ${root}/etc/foo.json" "原配置的属主应按原来的 unit 定（${legacy_lines:-root}）"
   assert_contains "${output}" "chmod ${legacy_mode} -- ${root}/etc/foo.json" "原配置的权限应按原来的 unit 定（${legacy_lines:-root}）"
 done
+# 回归（N1）：「这次改成」下面只列真改了的路径：目录已经是 root:root 0755 时不列它。
+# Regression (N1): under "changed this time" only paths that really changed are listed: a directory already root:root 0755
+# is not.
+legacy_host_tree 'User=kxu\n'
+chmod 0755 "${root}/etc"
+output="$(config_directory_run)"
+assert_not_contains "${output}" "  ${root}/etc：" "没改的目录不能列在「这次改成」下面"
+assert_contains "${output}" "  ${root}/etc/foo.json：" "改了的配置照旧列出"
+# 管理员已经把目录改回 root（不再归面板）：照他改的留着，不再交还成 0755。
+# The admin already gave the directory back to root (no longer the panel's): it stays as he set it, not handed back as 0755.
+legacy_host_tree 'User=kxu\n'
+output="$(REPAIRED_DIRECTORY="${root}/etc" config_directory_run)"
+assert_not_contains "${output}" "chown root:root -- ${root}/etc"$'\n' "不归面板的目录不能再交还"
+assert_equals "$(stat -c '%a' "${root}/etc")" "750" "不归面板的目录的权限照管理员改的留着"
+assert_not_contains "${output}" "  ${root}/etc：" "没交还的目录不能列出"
+
 # 回归（S2、I4）：交还原配置时的组按原来的 unit 运行用的账号定，这个账号可能写在别处：v4.3.4 的 unit 不在 /etc/systemd/system
 # 时备份里没有它（service-file-missing），要按名字在 systemd 的搜索路径上找；User= 也可能写在 drop-in 里。以前找不到 unit 就当
 # 看不出来，0700 目录里 0600 的私有配置交还成谁都能读的 0644；drop-in 里的 User= 一旦漏看也一样。
@@ -1991,6 +2066,19 @@ for shared_arguments in "" --panel-only-update; do
     "安装结果应说明配置挪到哪（${label}）"
   assert_contains "${output}" "  ${root}/etc：" "安装结果应列出交还的目录（${label}）"
 done
+# 回归（N4）：照提示把 /etc/kixdns/pipeline.json 移走以后，/etc/kixdns 里还放着别的文件：这个目录也不交给面板，在改动主机之前停下。
+# Regression (N4): once /etc/kixdns/pipeline.json was moved off as told, /etc/kixdns still holds other files: that directory
+# is not handed to the panel either, and the run stops before the host is touched.
+upgrade_host_tree
+: > "${root}/etc/passwd-like"
+mkdir -p "${root}/etc-kixdns"
+: > "${root}/etc-kixdns/README"
+output="$(config_directory_run)"
+assert_contains "${output}" "安装失败：KixDNS 配置要放在 ${root}/etc-kixdns，面板要能写这个目录，可里面还放着别的文件（${root}/etc-kixdns/README）。" \
+  "挪配置的新目录里放着别的文件时应拒绝"
+assert_not_contains "${output}" "PLANNED" "挪配置的新目录里放着别的文件时应在改动主机之前拒绝"
+[[ -f ${root}/etc/foo.json ]] || { printf '断言失败：拒绝时公共目录里的配置要留着\n' >&2; exit 1; }
+
 # 同类（I1）：旧版原地迁移的主机用 --keep-kixdns 卸载过，留下的增强版跑的还是公共目录里的原配置；接回它时也一样挪走，不再把
 # 公共目录交给面板。
 # Sibling (I1): a host an older version migrated in place, uninstalled with --keep-kixdns, leaves the enhanced KixDNS running
@@ -2035,6 +2123,7 @@ conversion_rollback() {
     mkdir -p "${BACKUP_ROOT}"
     getent() { [[ $1 == passwd && $2 == kxu ]] && printf 'kxu:x:1001:1001::/nonexistent:/usr/sbin/nologin\n'; }
     chown() { :; }
+    panel_owned() { return 0; }
     systemctl() { :; }
     update_panel_environment() { :; }
     install() {

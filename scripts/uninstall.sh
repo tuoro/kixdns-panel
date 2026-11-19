@@ -646,6 +646,84 @@ panel_written_config_file() {
   [[ $1 == "$2" || $1 =~ ^\.kixdns-panel-[A-Za-z0-9]{6}$ ]]
 }
 
+# 主机上各个 service unit 的 ExecStart 用 -c、--config 或 --config= 指着的配置，一行一个「unit<TAB>配置」。用户自己装的 KixDNS
+# 可能就用着面板以前的配置（KixDNS 的文档写的正是 /etc/kixdns/pipeline.json），属主看不出是谁的，只能看有没有 unit 在用：加载了的
+# unit 和装着的 unit 文件都算，一次查完。
+# The config each service unit's ExecStart names with -c, --config or --config=, one "unit<TAB>config" per line. A KixDNS
+# the user installed may use the panel's former config (KixDNS's own docs name exactly /etc/kixdns/pipeline.json), and its
+# owner cannot tell whose it is: only whether a unit uses it can. Loaded units and installed unit files both count, all
+# asked at once.
+configs_named_by_units() {
+  local units=()
+  local line
+  local id=""
+  local exec_start=""
+  local rest
+  mapfile -t units < <(
+    {
+      systemctl list-units --all --type=service --plain --no-legend --no-pager 2>/dev/null || true
+      systemctl list-unit-files --type=service --plain --no-legend --no-pager 2>/dev/null || true
+    } | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.service$/) { print $i; break } }' | grep -v '@\.service$' | sort -u
+  )
+  [[ ${#units[@]} -gt 0 ]] || return 0
+  while IFS= read -r line; do
+    case ${line} in
+      Id=*) id=${line#Id=} ;;
+      ExecStart=*) exec_start+=" ${line#ExecStart=}" ;;
+      '')
+        rest=${exec_start}
+        while [[ ${rest} =~ (^|[[:space:]])(-c|--config)(=|[[:space:]]+)([^[:space:];]+)(.*)$ ]]; do
+          printf '%s\t%s\n' "${id}" "${BASH_REMATCH[4]}"
+          rest=${BASH_REMATCH[5]}
+        done
+        id=""
+        exec_start=""
+        ;;
+    esac
+  done < <(systemctl show --property=Id --property=ExecStart "${units[@]}" 2>/dev/null || true; printf '\n')
+}
+
+# 有 unit 用着、所以不删的配置：归面板的改归 root，组和权限按那个 unit 运行用的账号定（original_config_access），列出改了什么。
+# 参数：unit，配置。
+# A config kept because a unit uses it: when it is the panel's it goes to root, with the group and mode the account that
+# unit runs as decides (original_config_access), and what changed is listed. Arguments: the unit, the config.
+hand_named_config_to_root() {
+  local unit=$1
+  local config=$2
+  local directory
+  local unit_files=()
+  local group
+  local mode
+  local path
+  local before
+  local paths=()
+  local befores=()
+  local changes=""
+  directory="$(dirname -- "${config}")"
+  for path in "${config}" "${directory}"; do
+    [[ -e ${path} ]] || continue
+    paths+=("${path}")
+    befores+=("$(owner_and_mode "${path}")")
+  done
+  if plain_single_file "${config}" && panel_owned "${config}"; then
+    mapfile -t unit_files < <(kept_unit_files "${unit}")
+    read -r group mode < <(original_config_access "${unit_files[@]}")
+    chown -h "root:${group}" -- "${config}"
+    chmod "${mode}" -- "${config}"
+  fi
+  hand_back_directory "${directory}"
+  for path in "${!paths[@]}"; do
+    before=${befores[${path}]}
+    [[ ${before} != "$(owner_and_mode "${paths[${path}]}")" ]] || continue
+    changes+="  ${paths[${path}]}：${before} → $(owner_and_mode "${paths[${path}]}")"$'\n'
+  done
+  if [[ -n ${changes} ]]; then
+    printf '%s 还在用 %s，这份配置留着，交还 root：\n%s' "${unit}" "${config}" "${changes}"
+  else
+    printf '%s 还在用 %s，这份配置留着。\n' "${unit}" "${config}"
+  fi
+}
+
 # 删除面板数据时，删掉面板为 KixDNS 配置用的 /etc/kixdns：里面只有面板写的文件时整个删掉；还有别的（比如用户自己的 KixDNS
 # 的配置）时只删面板写的，目录留着，交还 root。配置不在 /etc/kixdns 时什么也不删。
 # Removing the panel data removes the /etc/kixdns the panel used for the KixDNS config: whole when it holds only files the
@@ -656,34 +734,60 @@ remove_panel_kixdns_config() {
   local directory=${KIXDNS_CONFIG_DIRECTORY}
   local name
   local others=false
+  local unit
+  local named
+  local -A named_by=()
+  local kept=()
   [[ $(dirname -- "${config}") == "${directory}" && -d ${directory} && ! -L ${directory} ]] || return 0
+  while IFS=$'\t' read -r unit named; do
+    [[ ${named} != "${directory}"/* || -n ${named_by[${named}]:-} ]] || named_by[${named}]=${unit}
+  done < <(configs_named_by_units)
   while IFS= read -r -d '' name; do
     if ! panel_written_config_file "${name}" "${config##*/}" || [[ -d ${directory}/${name} && ! -L ${directory}/${name} ]]; then
       others=true
+    elif [[ -n ${named_by[${directory}/${name}]:-} ]]; then
+      # 面板写的，可有 unit 用着：不删 / The panel wrote it, but a unit uses it: not removed
+      kept+=("${directory}/${name}")
     fi
   done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
-  if [[ ${others} == false ]]; then
+  if [[ ${others} == false && ${#kept[@]} -eq 0 ]]; then
     rm -rf -- "${directory}"
     return 0
   fi
   while IFS= read -r -d '' name; do
+    [[ -z ${named_by[${directory}/${name}]:-} ]] || continue
     if panel_written_config_file "${name}" "${config##*/}" && [[ ! -d ${directory}/${name} || -L ${directory}/${name} ]]; then
       rm -f -- "${directory:?}/${name}"
     fi
   done < <(find "${directory}" -mindepth 1 -maxdepth 1 -printf '%f\0')
+  for named in "${kept[@]}"; do
+    hand_named_config_to_root "${named_by[${named}]}" "${named}"
+  done
   hand_back_directory "${directory}"
-  printf '%s 里还有不是面板写的文件，目录留着，只删了面板写的配置。\n' "${directory}"
+  [[ ${others} == false ]] || printf '%s 里还有不是面板写的文件，目录留着，只删了面板写的配置。\n' "${directory}"
 }
 
-# 把一个面板用过、现在要交还的目录改归 root:root、权限 0755。面板自己的目录（面板配置目录、状态目录和它们下面的）不交还。
+# 这个路径还归面板账号，或者已经归了一个没有账号的 UID（旧版卸载器删掉面板账号以后留下的）。
+# The path still belongs to the panel account, or already to a UID with no account (left once an older uninstaller removed
+# the panel account).
+panel_owned() {
+  local owner
+  owner="$(stat -c '%U' -- "$1" 2>/dev/null)" || return 1
+  [[ ${owner} == kixdns-panel || ${owner} == UNKNOWN ]]
+}
+
+# 把一个面板用过、现在要交还的目录改归 root:root、权限 0755。面板自己的目录（面板配置目录、状态目录和它们下面的）不交还；
+# 已经不归面板的（比如管理员自己改回 root 的）照原样留着，不改成 0755。
 # Hands a directory the panel used back to root:root with mode 0755. The panel's own directories (its config and state
-# directories and what lies below them) are not handed back.
+# directories and what lies below them) are not handed back; one no longer the panel's (one the admin gave back to root
+# himself, say) is left as it is, not made 0755.
 hand_back_directory() {
   local directory=$1
   case ${directory} in
     "${PANEL_CONFIG_DIRECTORY}" | "${PANEL_CONFIG_DIRECTORY}"/* | "${PANEL_STATE_DIRECTORY}" | "${PANEL_STATE_DIRECTORY}"/*) return 0 ;;
   esac
   [[ -d ${directory} && ! -L ${directory} ]] || return 0
+  panel_owned "${directory}" || return 0
   chown root:root -- "${directory}"
   chmod 0755 -- "${directory}"
 }
@@ -931,28 +1035,20 @@ remove_panel_state() {
   fi
 }
 
-# 这个路径还归面板账号，或者已经归了一个没有账号的 UID（旧版卸载器删掉面板账号以后留下的）。
-# The path still belongs to the panel account, or already to a UID with no account (left once an older uninstaller removed
-# the panel account).
-panel_owned() {
-  local owner
-  owner="$(stat -c '%U' -- "$1" 2>/dev/null)" || return 1
-  [[ ${owner} == kixdns-panel || ${owner} == UNKNOWN ]]
-}
-
-# 保留的 KixDNS 的 unit 里 systemd 加载的那几个文件：主文件和 drop-in，一行一个。
-# The files systemd loads for the kept KixDNS's unit: the main file and the drop-ins, one per line.
+# 一个 unit（默认是保留的 KixDNS 的）里 systemd 加载的那几个文件：主文件和 drop-in，一行一个。
+# The files systemd loads for a unit (the kept KixDNS's by default): the main file and the drop-ins, one per line.
 kept_unit_files() {
+  local unit=${1:-${KIXDNS_SERVICE_UNIT}}
   local fragment
   local dropins
   local file
-  fragment="$(systemctl show --property=FragmentPath --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
-  printf '%s\n' "${fragment:-${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}}"
-  dropins="$(systemctl show --property=DropInPaths --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
+  fragment="$(systemctl show --property=FragmentPath --value "${unit}" 2>/dev/null || true)"
+  printf '%s\n' "${fragment:-${SYSTEMD_UNIT_DIRECTORY}/${unit}}"
+  dropins="$(systemctl show --property=DropInPaths --value "${unit}" 2>/dev/null || true)"
   if [[ -n ${dropins} ]]; then
     tr ' ' '\n' <<< "${dropins}"
   else
-    for file in "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}.d"/*.conf; do
+    for file in "${SYSTEMD_UNIT_DIRECTORY}/${unit}.d"/*.conf; do
       [[ ! -f ${file} ]] || printf '%s\n' "${file}"
     done
   fi
@@ -1223,6 +1319,32 @@ hand_back_in_place_config() {
   done
 }
 
+# 保留 KixDNS 和面板数据（--keep-kixdns --keep-config）的旧版原地迁移、没升级过的主机：面板的 KixDNS 接着用原配置，可旧版把
+# 原配置所在的目录（可能是 /etc 这样的公共目录）交给了面板。面板卸载了，目录交还 root:root 0755（hand_back_directory）并列出来；
+# 配置文件留给接着运行的 KixDNS 读（它和面板账号、面板数据一起留着），以后重装时升级会交还它。
+# A host an older version migrated in place and never upgraded, uninstalled keeping KixDNS and the panel data
+# (--keep-kixdns --keep-config): the panel's KixDNS goes on with the original config, but the older version gave the panel
+# the original's directory (a shared one such as /etc, maybe). The panel is gone, so the directory goes back as
+# root:root 0755 (hand_back_directory) and is listed; the config file stays readable for the KixDNS that keeps running
+# (it stays with the panel account and data), and a later reinstall hands it back when it upgrades.
+hand_back_kept_in_place_directory() {
+  local config
+  local directory
+  local before
+  local after
+  [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep && ${CONFIG_ACTION} == keep && ${HAS_EXTERNAL_BACKUP} == true ]] ||
+    return 0
+  config="$(backup_value KIXDNS_CONFIG || true)"
+  [[ -n ${config} && ${config} == "${MANAGED_CONFIG}" && -z $(backup_value KIXDNS_MANAGED_CONFIG || true) ]] || return 0
+  directory="$(dirname -- "${config}")"
+  [[ -d ${directory} && ! -L ${directory} ]] || return 0
+  before="$(owner_and_mode "${directory}")"
+  hand_back_directory "${directory}"
+  after="$(owner_and_mode "${directory}")"
+  [[ ${before} != "${after}" ]] || return 0
+  printf '旧版迁移时把原配置所在的目录交给了面板，面板卸载以后交还：\n  %s：%s → %s\n' "${directory}" "${before}" "${after}"
+}
+
 restore_external_state() {
   [[ ${RESTORED_EXTERNAL} == true ]] || return 0
   if [[ ${ORIGINAL_ENABLED} == true ]]; then
@@ -1316,6 +1438,7 @@ run_uninstall() {
   stop_panel_processes
   remove_dead_kixdns_units
   remove_managed_kixdns
+  hand_back_kept_in_place_directory
   restore_resolved_stub
   systemctl daemon-reload
   # 先把原来的 KixDNS 恢复完，再删面板数据：恢复中途失败时 panel.env 和备份都还在，重新运行能认出、接着恢复。

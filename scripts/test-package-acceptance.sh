@@ -4,6 +4,9 @@ set -Eeuo pipefail
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CONFIG_PATH=/etc/kixdns/pipeline.json
 PANEL_ENV=/etc/kixdns-panel/panel.env
+# 迁移前的备份在只有 root 能进的目录里 / The pre-migration backup lives in the root-only directory
+ROOT_RECORDS=/var/lib/kixdns-panel-backup
+EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
 ACCEPTANCE_PY="${PACKAGE_ROOT}/scripts/package_acceptance.py"
 INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 UNINSTALLER="${PACKAGE_ROOT}/scripts/uninstall.sh"
@@ -42,6 +45,7 @@ require_clean_host() {
     /etc/kixdns-panel \
     /etc/kixdns \
     /var/lib/kixdns-panel \
+    /var/lib/kixdns-panel-backup \
     /run/kixdns-panel/control.sock \
     /etc/systemd/system/kixdns-panel.service \
     /etc/systemd/system/kixdns-panel-helper.service \
@@ -123,6 +127,7 @@ verify_removed() {
     /etc/kixdns-panel \
     /etc/kixdns \
     /var/lib/kixdns-panel \
+    /var/lib/kixdns-panel-backup \
     /run/kixdns-panel/control.sock \
     /etc/systemd/system/kixdns-panel.service \
     /etc/systemd/system/kixdns-panel-helper.service \
@@ -352,7 +357,7 @@ systemctl is-enabled --quiet kixdns.service || fail "迁移后 KixDNS 没有保�
 [[ $(unit_main_executable kixdns.service) == /var/lib/kixdns-panel/bin/kixdns ]] ||
   fail "迁移后运行的不是增强版程序"
 python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
-[[ -f /var/lib/kixdns-panel/external-backup/install.env ]] || fail "迁移没有备份原 unit 与运行状态"
+[[ -f ${EXTERNAL_BACKUP}/install.env ]] || fail "迁移没有备份原 unit 与运行状态"
 # 面板管理的是原配置的副本，放在面板自己建的目录里；面板 unit 只能写这个目录和状态目录。
 # The panel manages a copy of the original config in a directory of its own; the panel unit may write only that and its state.
 [[ $(original_config_state) == "${original_before}" ]] || fail "迁移改动了原配置或它所在的目录"
@@ -366,9 +371,9 @@ grep -Fxq 'KIXDNS_CONFIG=/etc/kixdns-panel/kixdns/pipeline.json' "${PANEL_ENV}" 
 grep -Fq -- '--config /etc/kixdns-panel/kixdns/pipeline.json ' "${MIGRATION_UNIT}" || fail "增强版 unit 没有运行迁移副本"
 grep -Fxq 'ReadWritePaths=/etc/kixdns-panel/kixdns /var/lib/kixdns-panel' /etc/systemd/system/kixdns-panel.service ||
   fail "面板 unit 放开了迁移副本所在目录以外的路径"
-grep -Fxq "KIXDNS_CONFIG=${CONFIG_PATH}" /var/lib/kixdns-panel/external-backup/install.env ||
+grep -Fxq "KIXDNS_CONFIG=${CONFIG_PATH}" "${EXTERNAL_BACKUP}/install.env" ||
   fail "迁移备份没有记下原配置"
-grep -Fxq 'KIXDNS_MANAGED_CONFIG=/etc/kixdns-panel/kixdns/pipeline.json' /var/lib/kixdns-panel/external-backup/install.env ||
+grep -Fxq 'KIXDNS_MANAGED_CONFIG=/etc/kixdns-panel/kixdns/pipeline.json' "${EXTERNAL_BACKUP}/install.env" ||
   fail "迁移备份没有记下面板管理的副本"
 # 在面板里改配置：改的是副本，原配置不变。/ Edit the config in the panel: the copy changes, the original does not.
 python3 "${ACCEPTANCE_PY}" verify --dns-port "${migration_port}" --mode migrated
@@ -395,7 +400,7 @@ systemctl is-enabled --quiet kixdns.service || fail "卸载后原来的 KixDNS �
 python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
 [[ $(original_config_state) == "${original_before}" ]] || fail "卸载恢复后原配置或它所在的目录和迁移前不一样"
 ! systemctl is-active --quiet kixdns-panel.service || fail "卸载后面板服务仍在运行"
-[[ ! -e /var/lib/kixdns-panel/external-backup ]] || fail "恢复以后仍留着迁移前的备份"
+[[ ! -e ${EXTERNAL_BACKUP} ]] || fail "恢复以后仍留着迁移前的备份"
 grep -Fxq 'KIXDNS_MANAGEMENT_ENABLED=false' "${PANEL_ENV}" || fail "恢复以后保留的 panel.env 没有记下 KixDNS 已不归面板管"
 
 # 再迁移之前，主机上的 KixDNS 换了一份配置，改成不开机自启、照常运行。新配置写着一个只有 kixdns 账号读得到的 GeoSite
@@ -444,13 +449,13 @@ systemctl is-active --quiet kixdns.service || fail "再迁移后 KixDNS 没有�
 [[ $(unit_main_executable kixdns.service) == /var/lib/kixdns-panel/bin/kixdns ]] ||
   fail "再迁移后运行的不是增强版程序"
 python3 "${ACCEPTANCE_PY}" dns --dns-port "${second_port}"
-cmp -s -- /var/lib/kixdns-panel/external-backup/kixdns.service "${MIGRATION_ROOT}/second.service" ||
+cmp -s -- "${EXTERNAL_BACKUP}/kixdns.service" "${MIGRATION_ROOT}/second.service" ||
   fail "再迁移没有备份主机上现在的 unit"
-grep -Fxq "KIXDNS_CONFIG=${second_config}" /var/lib/kixdns-panel/external-backup/install.env ||
+grep -Fxq "KIXDNS_CONFIG=${second_config}" "${EXTERNAL_BACKUP}/install.env" ||
   fail "再迁移的备份没有记下现在的原配置"
-grep -Fxq 'KIXDNS_WAS_ACTIVE=true' /var/lib/kixdns-panel/external-backup/install.env ||
+grep -Fxq 'KIXDNS_WAS_ACTIVE=true' "${EXTERNAL_BACKUP}/install.env" ||
   fail "再迁移的备份没有记下现在在运行"
-grep -Fxq 'KIXDNS_WAS_ENABLED=false' /var/lib/kixdns-panel/external-backup/install.env ||
+grep -Fxq 'KIXDNS_WAS_ENABLED=false' "${EXTERNAL_BACKUP}/install.env" ||
   fail "再迁移的备份没有记下现在不开机自启"
 ! grep -q '^KIXDNS_MANAGEMENT_ENABLED=' "${PANEL_ENV}" || fail "重新安装后 panel.env 还说 KixDNS 不归面板管"
 
@@ -527,7 +532,13 @@ make_legacy_in_place() {
   chown root:kixdns "${temporary}"
   chmod 0640 "${temporary}"
   mv -fT -- "${temporary}" "${PANEL_ENV}"
-  sed -i -E '/^KIXDNS_(MANAGED_CONFIG|LEGACY_IN_PLACE|USER_CREATED|GROUP_CREATED)=/d' /var/lib/kixdns-panel/external-backup/install.env
+  # 旧版的备份：没有副本、账号和 unit 内容的记录，放在面板的状态目录里（升级时挪进只有 root 能进的目录）
+  # An older version's backup: no record of the copy, the accounts or the unit's content, kept in the panel's state
+  # directory (an upgrade moves it into the root-only directory)
+  sed -i -E '/^KIXDNS_(MANAGED_CONFIG|LEGACY_IN_PLACE|USER_CREATED|GROUP_CREATED|UNIT_FRAGMENT)=/d' "${EXTERNAL_BACKUP}/install.env"
+  rm -f -- "${EXTERNAL_BACKUP}/unit-fragment" "${EXTERNAL_BACKUP}"/unit-dropin-*.conf
+  mv -T -- "${EXTERNAL_BACKUP}" /var/lib/kixdns-panel/external-backup
+  rmdir -- "${ROOT_RECORDS}" 2>/dev/null || true
   sed -i -e "s|--config [^ ]*|--config ${legacy_config}|" -e "s|^ConditionPathExists=.*|ConditionPathExists=${legacy_config}|" \
     "${MIGRATION_UNIT}"
   sed -i "s|^ReadWritePaths=.*|ReadWritePaths=${legacy_directory} /var/lib/kixdns-panel|" /etc/systemd/system/kixdns-panel.service
@@ -561,8 +572,10 @@ require_legacy_converted() {
   grep -Fq -- "--config ${legacy_copy} " "${MIGRATION_UNIT}" || fail "KixDNS 的 unit 没有改指副本"
   grep -Fxq 'ReadWritePaths=/etc/kixdns-panel/kixdns /var/lib/kixdns-panel' /etc/systemd/system/kixdns-panel.service ||
     fail "面板 unit 还能写原配置的目录"
-  grep -Fxq "KIXDNS_MANAGED_CONFIG=${legacy_copy}" /var/lib/kixdns-panel/external-backup/install.env || fail "备份没有记下副本"
-  grep -Fxq 'KIXDNS_LEGACY_IN_PLACE=true' /var/lib/kixdns-panel/external-backup/install.env || fail "备份没有记下这是旧版原地迁移"
+  grep -Fxq "KIXDNS_MANAGED_CONFIG=${legacy_copy}" "${EXTERNAL_BACKUP}/install.env" || fail "备份没有记下副本"
+  grep -Fxq 'KIXDNS_LEGACY_IN_PLACE=true' "${EXTERNAL_BACKUP}/install.env" || fail "备份没有记下这是旧版原地迁移"
+  [[ ! -e /var/lib/kixdns-panel/external-backup ]] || fail "旧版放在面板状态目录里的备份没有挪进只有 root 能进的目录"
+  [[ $(stat -c '%U:%G:%a' -- "${ROOT_RECORDS}") == root:root:700 ]] || fail "备份所在的目录不是只有 root 能进"
   grep -Fxq 'KIXDNS_TRUSTED_PROXIES=127.0.0.1/32,::1/128' "${PANEL_ENV}" || fail "升级改掉了用户的可信代理"
   ! grep -Fxq '# 仅这些代理 CIDR 可以提供 X-Forwarded-For；多个网段用逗号分隔。' "${PANEL_ENV}" || fail "旧的可信代理说明没有换掉"
   # 面板账号不能再在原配置的目录里建文件 / The panel account can no longer create files in the original's directory
