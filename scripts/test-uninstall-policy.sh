@@ -103,7 +103,8 @@ help="$(bash "${UNINSTALLER}" --help)"
 
 source "${UNINSTALLER}"
 # 停面板账号的进程（R2）在临时主机上一律当作已经没有进程 / On scratch hosts no panel-account process is left (R2)
-account_signal() { [[ $3 != 0 ]]; }
+account_signal() { :; }
+account_live_processes() { return 1; }
 # 直接放在 /tmp 里的夹具（/tmp 谁都能写）当作 root 的 panel.env；临时主机（uninstall_scratch_host）里照真的查（R4）
 # Fixtures right in /tmp (writable by anyone) count as root's panel.env; scratch hosts (uninstall_scratch_host) check for
 # real (R4)
@@ -610,7 +611,8 @@ INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 for shared_function in wait_for_service_stable port_accepts_connection owner_and_mode hand_back_directory \
   unit_service_setting original_config_access hand_back_original_config panel_written_config_file \
   ensure_root_records root_only_path record_problem same_filesystem quarantine_record refuse_record trusted_record \
-  old_records_present adopt_old_records secure_root_records panel_process_uids account_signal quiesce_panel_account \
+  old_records_present adopt_old_records secure_root_records panel_process_uids account_signal account_live_processes \
+  quiesce_panel_account \
   panel_env_trusted managed_unit_config original_unit_files panel_owned; do
   installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"

@@ -816,15 +816,30 @@ panel_process_uids() {
   printf '%s\n' "${!uids[@]}"
 }
 
-# R2：以这个 UID 的身份给它的进程发信号：kill -1 由内核一次发给它所有的进程，换 PID、改成不可转储都躲不掉；信号 0 只看还有没有。
-# 参数：UID，GID，信号。
+# R2：以这个 UID 的身份给它的进程发信号：kill -1 由内核一次发给它所有的进程，换 PID、改成不可转储都躲不掉，发信号的那一刻
+# 正在 fork 的也一样。参数：UID，GID，信号。
 # R2: signal a UID's processes as that UID: kill -1 has the kernel send it to all of them at once, so changing PIDs or
-# turning non-dumpable does not escape it; signal 0 only asks whether any is left. Arguments: UID, GID, signal.
+# turning non-dumpable does not escape it, nor does a fork under way at that moment. Arguments: UID, GID, signal.
 account_signal() {
   setpriv --reuid="$1" --regid="$2" --clear-groups -- bash -c "kill -$3 -1" 2>/dev/null
 }
 
-# R2：面板停了以后，把面板账号（和旧面板账号留下的 UID）的进程一个不留地停掉，停光才返回。停不掉就用第一个参数（fail 或
+# R2：这个 UID 还有没死的进程：/proc 里任何一个进程的真实、有效或保存的 UID 是它，又不是僵尸。看的是 status 里的 Uid 行，不是
+# /proc/<pid> 的属主（不可转储的进程那里写的是 root）。kill -0 -1 问不出来：Linux 上只要还有别的进程，它就算成功。参数：UID。
+# R2: this UID still has a live process: any process in /proc whose real, effective or saved UID it is, and that is no
+# zombie. The Uid line of status is read, not the owner of /proc/<pid> (root for a non-dumpable process). kill -0 -1
+# cannot tell: on Linux it succeeds whenever any other process exists. Argument: the UID.
+account_live_processes() {
+  cat /proc/[0-9]*/status 2>/dev/null | awk -v uid="$1" '
+    $1 == "Name:" { if (live && !dead) found = 1; live = 0; dead = 0 }
+    $1 == "State:" && ($2 == "Z" || $2 == "X") { dead = 1 }
+    $1 == "Uid:" && ($2 == uid || $3 == uid || $4 == uid) { live = 1 }
+    END { if (live && !dead) found = 1; exit !found }
+  '
+}
+
+# R2：面板停了以后，把面板账号（和旧面板账号留下的 UID）的进程一个不留地停掉（以它的身份 kill -KILL -1，直到 /proc 里没有它活着的
+# 进程），停光才返回。停不掉就用第一个参数（fail 或
 # abort_install）停下：那些进程还能改面板目录里的文件，root 这时不碰它们。参数：怎么停下，面板能写的路径。
 # R2: once the panel has stopped, stop every process of the panel account (and of UIDs an old panel account left), and
 # return only when none is left. When they cannot be stopped, stop with the first argument (fail or abort_install): those
@@ -840,8 +855,12 @@ quiesce_panel_account() {
   gid="$(getent group kixdns 2>/dev/null | cut -d: -f3 || true)"
   for uid in $(panel_process_uids "$@"); do
     for ((attempt = 0; attempt < 50; attempt++)); do
-      account_signal "${uid}" "${gid:-65534}" 0 || continue 2
       account_signal "${uid}" "${gid:-65534}" KILL || true
+      if ! account_live_processes "${uid}"; then
+        # 看完以后再发一次，查的时候才冒出来的也停掉 / Once more after the look, for one that appeared meanwhile
+        account_signal "${uid}" "${gid:-65534}" KILL || true
+        continue 2
+      fi
       sleep 0.1
     done
     "${refuse}" "面板账号（UID ${uid}）还有停不掉的进程；它们还能改面板目录里的文件，这时不动这些目录" || status=1

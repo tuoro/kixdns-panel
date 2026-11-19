@@ -234,7 +234,8 @@ ROOT_CHAIN_TOP=${WORK}
 # 停面板账号的进程（R2）只在专门的用例里真的去发信号，别处一律当作已经没有进程 / Stopping the panel account's processes
 # (R2) really sends signals only in its own case; everywhere else no process is left
 ! declare -F account_signal > /dev/null || eval "real_account_signal() $(declare -f account_signal | tail -n +2)"
-account_signal() { [[ $3 != 0 ]]; }
+account_signal() { :; }
+account_live_processes() { return 1; }
 # 交还原配置时会按名字在 systemd 的搜索路径上找原来的 unit；指向不存在的目录，免得读到开发机上真实安装的 KixDNS。
 # Handing back the original config looks the original unit up by name on the systemd search path; point it nowhere so a
 # real KixDNS on the dev host cannot leak in.
@@ -2345,10 +2346,10 @@ for rollback_step in stop_panel_processes restore_panel_database restore_owners 
 done
 
 # 回归（S-C，R2）：换 PID 的、不可转储的面板账号进程躲得过 /proc 扫描。现在以面板账号的身份 kill -KILL -1（内核一次发给它所有的
-# 进程），一直到 kill -0 -1 说一个都不剩。
+# 进程），一直到 /proc 的 status 里没有它活着的进程。
 # Regression (S-C, R2): a panel-account process that changes PID, or turns non-dumpable, escaped the /proc scan. Now
-# kill -KILL -1 runs as the panel account (the kernel sends it to all its processes at once) until kill -0 -1 says none is
-# left.
+# kill -KILL -1 runs as the panel account (the kernel sends it to all its processes at once) until no status in /proc shows
+# a live process of it.
 quiesce_run() {
   (
     signals="${WORK}/quiesce-signals"
@@ -2357,12 +2358,10 @@ quiesce_run() {
     account_signal() { real_account_signal "$@"; }
     id() { [[ $1 == -u && $2 == kixdns-panel ]] && printf '4242\n'; }
     getent() { [[ $1 == group ]] && printf 'kixdns:x:990:\n'; }
-    setpriv() {
-      printf '%s\n' "$*" >> "${signals}"
-      [[ $* == *'kill -0 -1'* ]] || return 0
-      [[ ${SURVIVOR:-} == true ]] && return 0
-      ! grep -q 'kill -KILL -1' "${signals}"
-    }
+    setpriv() { printf '%s\n' "$*" >> "${signals}"; }
+    # 发过 SIGKILL 以后就没有活着的进程了；SURVIVOR=true 时一直有 / No live process is left once SIGKILL went out; with
+    # SURVIVOR=true one always is
+    account_live_processes() { [[ ${SURVIVOR:-} == true ]] || ! grep -q 'kill -KILL -1' "${signals}"; }
     sleep() { :; }
     abort_install() { printf 'ABORTED %s\n' "$*"; return 1; }
     stop_panel_processes && printf 'STOPPED\n'
