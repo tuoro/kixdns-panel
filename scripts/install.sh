@@ -433,8 +433,23 @@ ask_yes_no() {
   return 1
 }
 
+# 主机上已有的 KixDNS 是上次卸载时保留下来的面板自带的那个：它跑的是面板状态目录里的程序。这不是外部安装，没有要迁移的。
+# The KixDNS already on the host is the panel's own, kept by an earlier uninstall: it runs the program in the panel's state
+# directory. That is no external install and there is nothing to migrate.
+existing_kixdns_is_panels_own() {
+  [[ ${EXISTING_KIXDNS} == true && ${KIXDNS_BINARY_PATH} == "${MANAGED_KIXDNS_BINARY}" ]]
+}
+
+# 迁移前原来的 KixDNS 的备份；和 uninstall.sh 的同名函数一样，以前重装时备份的面板自带 KixDNS 不算。
+# The backup of the KixDNS from before migration; as in uninstall.sh's function of the same name, one an older reinstall made
+# of the panel's own KixDNS does not count.
+external_backup_present() {
+  [[ -f ${EXTERNAL_BACKUP}/install.env ]] || return 1
+  [[ $(state_file_value "${EXTERNAL_BACKUP}/install.env" KIXDNS_BINARY || true) != "${MANAGED_KIXDNS_BINARY}" ]]
+}
+
 choose_install_mode() {
-  if [[ ${INSTALL_MODE} == "auto" && ${EXISTING_KIXDNS} == false ]]; then
+  if [[ ${INSTALL_MODE} == "auto" ]] && { [[ ${EXISTING_KIXDNS} == false ]] || existing_kixdns_is_panels_own; }; then
     INSTALL_MODE="managed"
     return 0
   fi
@@ -459,13 +474,36 @@ determine_install_kind() {
     INSTALL_KIND=panel-only
   elif [[ ${EXISTING_PANEL} == true ]]; then
     INSTALL_KIND=upgrade
+  elif existing_kixdns_is_panels_own; then
+    # 接回上次卸载时保留的面板自带 KixDNS：不备份、不复制配置，接着原地管理 / Taking back the panel's own KixDNS kept by
+    # an earlier uninstall: no backup, no config copy, managed in place as before
+    INSTALL_KIND=reclaim
   elif [[ ${EXISTING_KIXDNS} == true ]]; then
     INSTALL_KIND=migrate
   else
     INSTALL_KIND=fresh
   fi
-  if [[ ${INSTALL_KIND} == upgrade || ${INSTALL_KIND} == migrate ]]; then
+  if [[ ${INSTALL_KIND} == upgrade || ${INSTALL_KIND} == migrate || ${INSTALL_KIND} == reclaim ]]; then
     PRESERVE_KIXDNS_STATE=true
+  fi
+}
+
+# 接回面板自带的 KixDNS 前说明会怎样：不用问，它本来就是面板的。/ Before taking back the panel's own KixDNS, say what happens:
+# there is nothing to ask, it was the panel's all along.
+print_reclaim_plan() {
+  if [[ ${EXISTING_KIXDNS_UNIT} == true ]]; then
+    printf '检测到上次卸载时保留的 KixDNS（%s，%s），接着由面板管理。\n' "${KIXDNS_SERVICE_UNIT}" "$(running_state_text "${KIXDNS_WAS_ACTIVE}")"
+  else
+    printf '检测到上次卸载时保留的 KixDNS 程序，接着由面板管理。\n'
+  fi
+  print_reclaim_backup_note
+}
+
+print_reclaim_backup_note() {
+  if external_backup_present; then
+    printf '迁移前原来的 KixDNS 的备份还在 %s，以后卸载时选择移除增强版即可恢复。\n' "${EXTERNAL_BACKUP}"
+  else
+    printf '它是面板自己装的，这次不另做备份；以后卸载时选择移除 KixDNS，会把它删掉。\n'
   fi
 }
 
@@ -1674,6 +1712,10 @@ print_summary() {
         printf '让 kixdns-panel 账号能读到它们，刷新面板页面就有了。\n'
       fi
       ;;
+    reclaim)
+      printf 'KixDNS：已接回上次卸载时保留的 KixDNS，保持原来的运行状态（%s）\n' "$(running_state_text "${KIXDNS_WAS_ACTIVE}")"
+      print_reclaim_backup_note
+      ;;
     upgrade)
       if [[ ${PREVIOUS_PANEL_LABEL} == "${package_label}" ]]; then
         printf '面板：已重新安装 %s\n' "${package_label}"
@@ -1759,6 +1801,7 @@ main() {
   require_dedicated_config_directory
   plan_kixdns_changes
   plan_port53
+  [[ ${INSTALL_KIND} != reclaim ]] || print_reclaim_plan
 
   printf '正在安装文件与服务…\n'
   create_accounts

@@ -147,6 +147,37 @@ assert_not_contains "${output}" "MODE=managed" "无人值守安装不能默认�
 assert_contains "${output}" "sudo bash ./scripts/install.sh --replace-existing" "无人值守提示应给出安装包命令"
 assert_contains "${output}" "| sudo bash -s -- --replace-existing" "无人值守提示应给出一键安装命令"
 
+# 上次卸载时保留下来的面板自带 KixDNS（unit 跑的是面板状态目录里的程序）不是外部安装：重装接着管它，不用 --replace-existing，
+# 也不问要不要迁移。回归：以前当成外部的，无人值守安装要 --replace-existing，还说会备份、卸载时恢复，其实 #279 以后不备份它。
+# The panel's own KixDNS kept by an earlier uninstall (its unit runs the program in the panel's state directory) is not an
+# external install: a reinstall takes it back without --replace-existing and without asking. Regression: it used to count as
+# external, an unattended install demanded --replace-existing, and the text promised a backup and a restore that #279 removed.
+kept_kixdns_fixture="
+  source '${INSTALLER}'
+  systemctl() {
+    case \$1 in
+      show) printf '{ path=%s ; argv[]=%s run --config /etc/kixdns/pipeline.json ; }\n' \"\${MANAGED_KIXDNS_BINARY}\" \"\${MANAGED_KIXDNS_BINARY}\" ;;
+      cat | is-active | is-enabled) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  INSTALL_MODE=auto
+  detect_existing_kixdns
+"
+output="$(run_without_tty "${kept_kixdns_fixture}
+  choose_install_mode
+  determine_install_kind
+  printf 'MODE=%s KIND=%s PRESERVE=%s\n' \"\${INSTALL_MODE}\" \"\${INSTALL_KIND}\" \"\${PRESERVE_KIXDNS_STATE}\"
+")"
+assert_contains "${output}" "MODE=managed KIND=reclaim PRESERVE=true" "面板自己留下的 KixDNS 无人值守重装也应接着管理、保持运行状态"
+assert_not_contains "${output}" "--replace-existing" "面板自己留下的 KixDNS 不用 --replace-existing"
+output="$(run_in_pty "${kept_kixdns_fixture}
+  choose_install_mode
+  printf 'MODE=%s\n' \"\${INSTALL_MODE}\"
+")"
+assert_contains "${output}" "MODE=managed" "终端里重装面板自己留下的 KixDNS 也不用问"
+assert_not_contains "${output}" "迁移为增强版？" "面板自己留下的 KixDNS 不是迁移，不该问"
+
 # ---------------------------------------------------------------------------
 # 中断回滚 / Interrupt rollback
 # ---------------------------------------------------------------------------
@@ -373,11 +404,14 @@ assert_contains "${output}" "CONTINUED" "开发构建提交不同应继续安装
 # 安装类型与 KixDNS 变更计划 / Install kind and KixDNS change plan
 # ---------------------------------------------------------------------------
 
+# 第 4 个参数是主机上已有 KixDNS 的程序，默认是外部装的那种。/ The fourth argument is the existing KixDNS program, an
+# external one by default.
 install_kind_of() {
   (
     PANEL_ONLY_UPDATE=$1
     EXISTING_PANEL=$2
     EXISTING_KIXDNS=$3
+    KIXDNS_BINARY_PATH=${4:-/usr/local/bin/kixdns}
     PRESERVE_KIXDNS_STATE=false
     determine_install_kind
     printf '%s %s\n' "${INSTALL_KIND}" "${PRESERVE_KIXDNS_STATE}"
@@ -385,6 +419,8 @@ install_kind_of() {
 }
 assert_equals "$(install_kind_of false false false)" "fresh false" "新主机是首次安装"
 assert_equals "$(install_kind_of false false true)" "migrate true" "已有非面板 KixDNS 是迁移并保持状态"
+assert_equals "$(install_kind_of false false true "${MANAGED_KIXDNS_BINARY}")" "reclaim true" \
+  "上次卸载时保留的面板自带 KixDNS 是接回来，保持状态"
 assert_equals "$(install_kind_of false true true)" "upgrade true" "已有面板是升级并保持状态"
 assert_equals "$(install_kind_of true true true)" "panel-only false" "仅更新面板不碰 KixDNS 状态"
 
@@ -1430,12 +1466,17 @@ output="$(config_directory_run)"
 assert_contains "${output}" "PLANNED upgrade ${root}/etc/foo.json" "升级应沿用 panel.env 记下的配置路径"
 assert_contains "${output}" "ReadWritePaths=${root}/etc /var/lib/kixdns-panel" "升级时旧主机的面板 unit 照旧"
 
-# 上次卸载保留下来的面板自带 KixDNS：配置按它的 unit 记下的路径原地管理，照旧。
-# The panel's own KixDNS kept by an earlier uninstall: its config stays managed in place where its unit says, as before.
-config_directory_tree
-printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
-output="$(CONFIG_DIRECTORY_UNIT="${root}/etc/foo.json" config_directory_run --replace-existing)"
-assert_contains "${output}" "PLANNED migrate ${root}/etc/foo.json" "面板自带 KixDNS 的配置应按它的 unit 原地管理"
+# 上次卸载保留下来的面板自带 KixDNS：接回来（不是迁移，以前这里断言的 migrate 正是 I5 的错），配置按它的 unit 记下的路径
+# 原地管理，照旧；带不带 --replace-existing 都一样。
+# The panel's own KixDNS kept by an earlier uninstall: taken back (not migrated; the migrate asserted here before was the
+# bug), its config managed in place where its unit says, as before; with or without --replace-existing alike.
+for reclaim_arguments in --replace-existing ""; do
+  config_directory_tree
+  printf '#!/bin/sh\n' > "${root}/state/bin/kixdns"
+  # shellcheck disable=SC2086 # 空参数就是不带参数 / An empty argument means none
+  output="$(CONFIG_DIRECTORY_UNIT="${root}/etc/foo.json" config_directory_run ${reclaim_arguments})"
+  assert_contains "${output}" "PLANNED reclaim ${root}/etc/foo.json" "面板自带 KixDNS 的配置应按它的 unit 原地管理（${reclaim_arguments:-无参数}）"
+done
 
 # 迁移外部 KixDNS：检查的是副本的目录，不是原配置所在的已有目录；副本的目录已经在（上次卸载保留增强版时留下的）也照旧可用。
 # Migrating an external KixDNS: the copy's directory is checked, not the existing one of the original config; the copy's
@@ -1928,6 +1969,37 @@ assert_contains "${output}" "配置：${WORK}/no-such-config.json 不存在，�
   "原配置不存在时迁移结果应说明写入了默认配置"
 assert_not_contains "${output}" "下一步" "迁移不应给出首次安装的下一步"
 assert_not_contains "${output}" "端口 53" "端口无冲突时不提示"
+# 接回上次卸载时保留的面板自带 KixDNS：没有另做备份，以后移除会删掉它；迁移来的主机上迁移前的备份还在时，说那份备份。
+# Taking back the panel's own KixDNS kept by an earlier uninstall: no backup is made and a later removal deletes it; on a
+# migrated host whose pre-migration backup is still there, that backup is named instead.
+reclaim_backup="${WORK}/reclaim-backup"
+rm -rf -- "${reclaim_backup}"
+for reclaim_view in plan summary; do
+  if [[ ${reclaim_view} == plan ]]; then
+    output="$(EXTERNAL_BACKUP=${reclaim_backup} EXISTING_KIXDNS_UNIT=true KIXDNS_WAS_ACTIVE=true print_reclaim_plan)"
+  else
+    output="$(EXTERNAL_BACKUP=${reclaim_backup} summary_of reclaim true true true none false '')"
+  fi
+  assert_contains "${output}" "它是面板自己装的，这次不另做备份；以后卸载时选择移除 KixDNS，会把它删掉" "接回时应说明不备份、移除会删掉（${reclaim_view}）"
+  assert_not_contains "${output}" "原 unit 备份在" "接回时不能说备份了原 unit（${reclaim_view}）"
+  assert_not_contains "${output}" "迁移为增强版" "接回不是迁移（${reclaim_view}）"
+done
+assert_contains "${output}" "KixDNS：已接回上次卸载时保留的 KixDNS，保持原来的运行状态（运行中）" "接回的结果应说明保持运行状态"
+assert_contains "$(EXTERNAL_BACKUP=${reclaim_backup} EXISTING_KIXDNS_UNIT=true KIXDNS_WAS_ACTIVE=true print_reclaim_plan)" \
+  "检测到上次卸载时保留的 KixDNS（kixdns.service，运行中），接着由面板管理" "接回前应说明检测到了什么"
+mkdir -p "${reclaim_backup}"
+printf 'KIXDNS_BINARY=/usr/local/bin/kixdns\n' > "${reclaim_backup}/install.env"
+for reclaim_view in plan summary; do
+  if [[ ${reclaim_view} == plan ]]; then
+    output="$(EXTERNAL_BACKUP=${reclaim_backup} EXISTING_KIXDNS_UNIT=true KIXDNS_WAS_ACTIVE=true print_reclaim_plan)"
+  else
+    output="$(EXTERNAL_BACKUP=${reclaim_backup} summary_of reclaim true true true none false '')"
+  fi
+  assert_contains "${output}" "迁移前原来的 KixDNS 的备份还在 ${reclaim_backup}，以后卸载时选择移除增强版即可恢复" \
+    "迁移前的备份还在时应说明能恢复（${reclaim_view}）"
+  assert_not_contains "${output}" "会把它删掉" "迁移前的备份还在时移除不会删掉了事（${reclaim_view}）"
+done
+
 output="$(summary_of upgrade true false false none false 'v3.1.0')"
 assert_contains "${output}" "面板：已升级 v3.1.0 → v3.1.1" "升级应说明版本变化"
 assert_contains "${output}" "KixDNS：未变（运行中）" "KixDNS 未变时应明确说明"
