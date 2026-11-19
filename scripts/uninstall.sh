@@ -791,7 +791,8 @@ root_lock_holder() {
   pid="$(AWK_DEVICE=${device} awk '$2 != "->" && $6 == ENVIRON["AWK_DEVICE"] { print $5; exit }' "${PROC_ROOT}/locks" 2>/dev/null)"
   [[ ${pid} =~ ^[1-9][0-9]*$ ]] || return 0
   name="$(tr -cd 'A-Za-z0-9._-' < "${PROC_ROOT}/${pid}/comm" 2>/dev/null)"
-  unit="$(sed -n 's|^0::.*/\([A-Za-z0-9@._-]*\.\(service\|scope\)\)$|\1|p' "${PROC_ROOT}/${pid}/cgroup" 2>/dev/null | head -n 1)"
+  # 分隔符不能用 |：那样 \| 成了字面的竖线，不再是「或」/ The delimiter cannot be |: \| would then be a literal bar, not "or"
+  unit="$(sed -n 's#^0::.*/\([A-Za-z0-9@._-]*\.\(service\|scope\)\)$#\1#p' "${PROC_ROOT}/${pid}/cgroup" 2>/dev/null | head -n 1)"
   printf '：拿着锁的是 PID %s' "${pid}"
   [[ -z ${name} ]] || printf '，程序 %s' "${name}"
   [[ -z ${unit} ]] || printf '，unit %s' "${unit}"

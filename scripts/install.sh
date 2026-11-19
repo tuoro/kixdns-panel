@@ -1026,7 +1026,8 @@ root_lock_holder() {
   pid="$(AWK_DEVICE=${device} awk '$2 != "->" && $6 == ENVIRON["AWK_DEVICE"] { print $5; exit }' "${PROC_ROOT}/locks" 2>/dev/null)"
   [[ ${pid} =~ ^[1-9][0-9]*$ ]] || return 0
   name="$(tr -cd 'A-Za-z0-9._-' < "${PROC_ROOT}/${pid}/comm" 2>/dev/null)"
-  unit="$(sed -n 's|^0::.*/\([A-Za-z0-9@._-]*\.\(service\|scope\)\)$|\1|p' "${PROC_ROOT}/${pid}/cgroup" 2>/dev/null | head -n 1)"
+  # 分隔符不能用 |：那样 \| 成了字面的竖线，不再是「或」/ The delimiter cannot be |: \| would then be a literal bar, not "or"
+  unit="$(sed -n 's#^0::.*/\([A-Za-z0-9@._-]*\.\(service\|scope\)\)$#\1#p' "${PROC_ROOT}/${pid}/cgroup" 2>/dev/null | head -n 1)"
   printf '：拿着锁的是 PID %s' "${pid}"
   [[ -z ${name} ]] || printf '，程序 %s' "${name}"
   [[ -z ${unit} ]] || printf '，unit %s' "${unit}"
@@ -3406,7 +3407,9 @@ print_summary() {
   # 下一步放在端口 53 的提醒后面：那条要在启动 KixDNS 之前先做 / The next step comes after the port-53 notice, which has to happen before KixDNS starts
   [[ ${INSTALL_KIND} == fresh ]] && printf '下一步：打开面板地址，创建管理员，然后在概览页点「启动 KixDNS」\n'
   printf '只在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。\n'
-  printf '构建：面板 %.12s · KixDNS %.12s\n' "${PANEL_BUILD_COMMIT}" "${KIXDNS_BUILD_COMMIT}"
+  # panel.env 不能信、内核又和包里的不一样时不知道内核的提交 / The kernel commit is unknown when panel.env cannot be trusted and
+  # the kernel differs from the package's
+  printf '构建：面板 %.12s · KixDNS %.12s\n' "${PANEL_BUILD_COMMIT}" "${KIXDNS_BUILD_COMMIT:-未知}"
 }
 
 main() {

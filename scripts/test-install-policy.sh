@@ -2485,6 +2485,20 @@ untrusted_account_record="$(
   kixdns_account_created user
 )"
 assert_equals "${untrusted_account_record}" "false" "不能信的 panel.env 里记的账号归属不能认"
+# MUST 1：不能信的 panel.env 只给照 unit 对上的配置和 unit 名，显示用的几项也不给 / MUST 1: an untrusted panel.env gives only the
+# config and unit name matched against the unit, not even the values shown
+untrusted_display="$(
+  PANEL_ENV="${WORK}/untrusted-display.env"
+  printf 'KIXDNS_PANEL_BIND=0.0.0.0:1\nKIXDNS_PANEL_INSTALLED_RELEASE=v9\nKIXDNS_INSTALLED_COMMIT=%s\n' \
+    4444444444444444444444444444444444444444 > "${PANEL_ENV}"
+  PANEL_ENV_TRUSTED=false
+  PANEL_ENV_VERIFIED=true
+  for key in KIXDNS_PANEL_BIND KIXDNS_PANEL_INSTALLED_RELEASE KIXDNS_INSTALLED_COMMIT; do
+    environment_value "${key}" || printf 'NONE %s\n' "${key}"
+  done
+)"
+assert_equals "${untrusted_display}" $'NONE KIXDNS_PANEL_BIND\nNONE KIXDNS_PANEL_INSTALLED_RELEASE\nNONE KIXDNS_INSTALLED_COMMIT' \
+  "不能信的 panel.env 里显示用的几项也不能给"
 
 # 回归（S-G）：账号已经删掉的路径，属主以前写成 UNKNOWN。现在写成「已删除的面板账号（UID n）」。
 # Regression (S-G): a path whose account is gone used to show UNKNOWN as its owner. Now it reads 「已删除的面板账号（UID n）」.
@@ -2784,6 +2798,28 @@ assert_not_contains "${lock_output}" "LOCKED" "锁在别人手里时不能接着
 # /proc/locks by inode)
 [[ ${lock_output} =~ 拿着锁的是\ PID\ [1-9][0-9]* ]] ||
   { printf '断言失败：锁在别人手里时应说出拿着它的进程（%s）\n' "${lock_output}" >&2; exit 1; }
+# 照锁文件的设备号（十六进制的主:次）和 inode 在 /proc/locks 里找，别的锁和排队等着的不算 / Looked up in /proc/locks by the lock
+# file's device (major:minor in hex) and inode; other locks and waiters do not count
+holder_output="$(
+  fake_proc="${WORK}/fake-proc"
+  rm -rf -- "${fake_proc}"
+  mkdir -p "${fake_proc}/4242"
+  lock_id="$(printf '%02x:%02x:%s' "$(stat -c '%Hd' -- "${lock_file}")" "$(stat -c '%Ld' -- "${lock_file}")" \
+    "$(stat -c '%i' -- "${lock_file}")")"
+  printf '1: FLOCK  ADVISORY  WRITE 1111 00:00:1 0 EOF\n2: FLOCK  ADVISORY  WRITE 4242 %s 0 EOF\n2: -> FLOCK  ADVISORY  WRITE 3333 %s 0 EOF\n' \
+    "${lock_id}" "${lock_id}" > "${fake_proc}/locks"
+  printf 'kixdns-panel-se\n' > "${fake_proc}/4242/comm"
+  printf '0::/system.slice/kixdns-panel.service\n' > "${fake_proc}/4242/cgroup"
+  ROOT_LOCK=${lock_file}
+  PROC_ROOT=${fake_proc}
+  root_lock_holder
+)"
+assert_equals "${holder_output}" "：拿着锁的是 PID 4242，程序 kixdns-panel-se，unit kixdns-panel.service" \
+  "应照锁文件的设备号和 inode 找出拿着锁的进程"
+for script_name in install uninstall panel-online-update; do
+  grep -qE '^ROOT_LOCK="?/run/kixdns-panel-root/lock"?$' "${PACKAGE_ROOT}/scripts/${script_name}.sh" ||
+    { printf '断言失败：%s.sh 的锁应放在只有 root 能进的 /run/kixdns-panel-root/ 里\n' "${script_name}" >&2; exit 1; }
+done
 # 放锁的目录不是只有 root 能进（别人能进、是符号链接）就不用它 / A lock directory others can enter, or a symlink, is not used
 for lock_case in mode symlink; do
   lock_output="$(
@@ -2810,7 +2846,13 @@ lock_output="$(
   mkdir -p "${base}"
   ROOT_LOCK="${base}/locks/lock"
   unset KIXDNS_PANEL_ROOT_LOCK_FD
-  install() { mkdir -p "${@: -1}"; chmod 0700 "${@: -1}"; }
+  install() {
+    local mode=""
+    local argument
+    for argument in "$@"; do [[ ${argument} != [0-7][0-7][0-7][0-7] ]] || mode=${argument}; done
+    mkdir -p "${@: -1}"
+    [[ -z ${mode} ]] || chmod "${mode}" "${@: -1}"
+  }
   take_root_lock
   stat -c '%a' "${base}/locks"
 )" || true
@@ -2937,9 +2979,26 @@ labels_output="$(
 )"
 assert_contains "${labels_output}" "4444444444444444444444444444444444444444 77 fork" "能信的 panel.env 里合格式的内核记录照旧写回"
 assert_contains "${labels_output}" "[  ]" "不能信、内核也对不上时写成空"
+labels_output="$(
+  base="${WORK}/labels-kernel"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/package"
+  printf 'other kernel\n' > "${base}/kixdns"
+  printf '%064d\n' 0 > "${base}/package/KIXDNS_BINARY_SHA256"
+  PACKAGE_ROOT="${base}/package"
+  MANAGED_KIXDNS_BINARY="${base}/kixdns"
+  PANEL_ENV_TRUSTED=false
+  KIXDNS_BUILD_COMMIT=6666666666666666666666666666666666666666
+  KIXDNS_SOURCE_ID=88
+  KIXDNS_SOURCE=fork
+  installed_kixdns_labels
+  printf '[%s %s %s]\n' "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
+)"
+assert_equals "${labels_output}" "[  ]" "面板目录里的内核和包里的不一样时不能照包里的记"
 # 每一项照格式验：不对就停下，不写 / Every value passes its format, or the run stops without writing
 for bad_value in 'KIXDNS_INSTALLED_COMMIT=x\nKIXDNS_CONFIG=/x' 'KIXDNS_INSTALLED_SOURCE_ID=1\n2' 'KIXDNS_INSTALLED_SOURCE=release' \
-  'KIXDNS_PANEL_INSTALLED_RELEASE=v1\n' 'KIXDNS_CONFIG=/etc/a\b.json' 'KIXDNS_SERVICE_UNIT=x.service\n'; do
+  'KIXDNS_PANEL_INSTALLED_RELEASE=v1\n' 'KIXDNS_CONFIG=/etc/a\b.json' 'KIXDNS_SERVICE_UNIT=x.service\n' \
+  'KIXDNS_PANEL_BIND=0.0.0.0:1'; do
   panel_env_value_valid "${bad_value%%=*}" "${bad_value#*=}" &&
     { printf '断言失败：%s 不能算合格式\n' "${bad_value}" >&2; exit 1; }
 done
@@ -3037,6 +3096,16 @@ exit_output="$(
   )
 )"
 assert_equals "${exit_output}" "" "回滚开始以后退出时什么也不做"
+started_output="$(
+  systemctl() { printf 'systemctl %s\n' "$*"; }
+  PANEL_STOPPED_EARLY=true
+  PANEL_WAS_ACTIVE=true
+  ROLLBACK_STARTED=true
+  restart_panel_after_early_stop
+  panel_held_for_records && printf 'HELD\n'
+  true
+)"
+assert_equals "${started_output}" "" "回滚开始以后由回滚重启，也不再算为记录停着"
 
 # 回归（NIT 4）：quarantine_record 在命令替换里调用，它照记录停下（ensure_root_records）时记下的「面板不重启」丢在子 shell 里，父 shell
 # 接着把 helper 和面板都重启了，消息却说它们停着。现在它不在命令替换里调用，结果放在 QUARANTINED_TO 里。
@@ -3048,6 +3117,24 @@ for script_name in install uninstall; do
   [[ $(grep -c '\$(quarantine_record' "${PACKAGE_ROOT}/scripts/${script_name}.sh" || true) == 0 ]] ||
     { printf '断言失败：%s.sh 里还在命令替换里调用 quarantine_record\n' "${script_name}" >&2; exit 1; }
 done
+quarantine_output="$(
+  umask 022
+  base="${WORK}/quarantine-reset"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/records" "${base}/old/thing"
+  chmod 0700 "${base}/records"
+  ROOT_RECORDS="${base}/records"
+  ROOT_CHAIN_TOP=${base}
+  ROOT_UID="$(id -u)"
+  ROOT_GID="$(id -g)"
+  install() { mkdir -p "${@: -1}"; chmod 0700 "${@: -1}"; }
+  same_filesystem() { return 1; }
+  QUARANTINED_TO=/stale/place
+  quarantine_record "${base}/old/thing" thing
+  printf 'TO=[%s]\n' "${QUARANTINED_TO}"
+  [[ ! -e ${base}/old/thing ]] || printf 'LEFT\n'
+)"
+assert_equals "${quarantine_output}" "TO=[]" "删掉而不是挪走时 QUARANTINED_TO 应为空，不留上一次的去处"
 legacy_host_tree 'User=kxu\n'
 mkdir -p "${root}/records"
 chmod 0755 "${root}/records"
@@ -3080,6 +3167,37 @@ assert_contains "${output}" "的记录已验过，挪到只有 root 能进的 ${
   { printf '断言失败：接手以后记录里应是普通文件\n' >&2; exit 1; }
 cmp -s -- "${root}/linked-units/kixdns.service" "${root}/records/external-backup/kixdns.service" ||
   { printf '断言失败：接手以后应是指着的文件的内容\n' >&2; exit 1; }
+[[ $(stat -c '%a' -- "${root}/records/external-backup/kixdns.service") == 600 ]] ||
+  { printf '断言失败：接手以后的文件应只有 root 能读写\n' >&2; exit 1; }
+# 链接本身要归 root，指着的要是只有一个链接的普通文件 / The link itself must be root's, and what it points at a regular file
+# with one link
+link_verdicts="$(
+  umask 022
+  base="${WORK}/record-links"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/units/dir.service" "${base}/record"
+  printf 'unit\n' > "${base}/units/one.service"
+  printf 'unit\n' > "${base}/units/two.service"
+  ln -- "${base}/units/two.service" "${base}/units/two-again.service"
+  ln -s -- "${base}/units/one.service" "${base}/record/plain"
+  ln -s -- "${base}/units/two.service" "${base}/record/hardlinked"
+  ln -s -- "${base}/units/dir.service" "${base}/record/directory"
+  ln -s -- "${base}/units/one.service" "${base}/record/foreign"
+  ROOT_CHAIN_TOP=${base}
+  ROOT_UID="$(id -u)"
+  stat() {
+    if [[ $1 == -c && $2 == %u && ${4:-} == "${base}/record/foreign" ]]; then
+      printf '12345\n'
+    else
+      command stat "$@"
+    fi
+  }
+  for link in plain hardlinked directory foreign; do
+    if trusted_record_link "${base}/record/${link}"; then printf '%s trusted\n' "${link}"; else printf '%s not\n' "${link}"; fi
+  done
+)"
+assert_equals "${link_verdicts}" $'plain trusted\nhardlinked not\ndirectory not\nforeign not' \
+  "只有归 root、指着只有一个链接的普通文件的符号链接才能照它指着的算"
 legacy_host_tree 'User=kxu\n'
 mkdir -p "${root}/linked-units"
 chmod 0777 "${root}/linked-units"
@@ -3834,6 +3952,9 @@ assert_contains "${output}" "端口 53：被 systemd-resolved 占用" "端口未
 assert_contains "${output}" "sudo ln -sfn /run/systemd/resolve/resolv.conf ${WORK}/summary-resolv.conf" "应给出改指向 resolv.conf 的命令"
 assert_equals "$(tail -n 2 <<< "${output}" | head -n 1)" "只在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。" "安全提醒应在构建信息之前"
 assert_equals "$(tail -n 1 <<< "${output}")" "构建：面板 aaaaaaaaaaaa · KixDNS bbbbbbbbbbbb" "构建身份应在最后一行"
+# MUST 1：不知道装的是哪个内核时不留半截的标签 / MUST 1: an unknown kernel build does not leave a dangling label
+output="$(commit_b='' summary_of panel-only true false false none false '')"
+assert_equals "$(tail -n 1 <<< "${output}")" "构建：面板 aaaaaaaaaaaa · KixDNS 未知" "不知道内核的提交时应写未知"
 output="$(summary_of migrate true true true none false '')"
 assert_contains "${output}" "KixDNS：已迁移为增强版，保持原来的运行状态（运行中）；原 unit 备份在 /var/lib/kixdns-panel-backup/external-backup，卸载面板时可恢复" "迁移结果应说明状态与备份"
 output="$(ORIGINAL_KIXDNS_CONFIG_PATH=${INSTALLER} KIXDNS_CONFIG_PATH=/etc/kixdns-panel/kixdns/pipeline.json \
@@ -3971,6 +4092,13 @@ assert_equals "$(jq -r '.message | length' "${online_update_root}/status/status.
 
 output="$(online_update_status "exit 0" "${latest_release}")"
 assert_equals "${output}" "complete 面板已更新到 v3.1.2" "安装器成功时状态应为完成"
+
+# SHOULD 2：在线更新放锁的目录不是只有 root 能进时不用它 / SHOULD 2: the online update does not use a lock directory others
+# can enter
+chmod 0755 "${online_update_root}/locks"
+output="$(online_update_status "exit 0" "${latest_release}")"
+chmod 0700 "${online_update_root}/locks"
+assert_contains "${output}" "不是只有 root 能进的目录，锁不能放在那里" "在线更新放锁的目录不对时应停下"
 
 # 结构 3：安装器或卸载器拿着锁时，在线更新停下并说明，不查新版、不调安装器；拿到锁的更新把它传给安装器。
 # Structural change 3: with the installer or uninstaller holding the lock, the online update stops and says so, neither
