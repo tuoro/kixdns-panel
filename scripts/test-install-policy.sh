@@ -2967,7 +2967,9 @@ assert_contains "${output}" "OLD-QUARANTINED" "不能信的 panel.env 应挪进 
 # duplicate: it is remembered and the rollback removes it (interrupting just after the rewrite left one more in quarantine
 # in the container)
 assert_contains "${output}" "REMEMBERED-QUARANTINE" "挪进 quarantine 的 panel.env 应记下来，回滚时删掉"
+# shellcheck disable=SC2016 # 找的就是没展开的写法 / The unexpanded text is what is looked for
 restore_env_line="$(grep -n 'restore_path "${PANEL_ENV}" panel-env' <<< "$(declare -f rollback_install)" | head -n 1 | cut -d: -f1 || true)"
+# shellcheck disable=SC2016 # 同上 / As above
 drop_env_line="$(grep -n 'rm -f -- "${PANEL_ENV_QUARANTINED}"' <<< "$(declare -f rollback_install)" | head -n 1 | cut -d: -f1 || true)"
 [[ -n ${restore_env_line} && -n ${drop_env_line} && ${drop_env_line} -eq $((restore_env_line + 1)) ]] ||
   { printf '断言失败：回滚放回 panel.env 以后应删掉这次挪进 quarantine 的那份（restore=%s drop=%s）\n' "${restore_env_line}" "${drop_env_line}" >&2; exit 1; }
