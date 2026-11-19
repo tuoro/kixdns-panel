@@ -4,6 +4,8 @@ set -Eeuo pipefail
 PANEL_CONFIG_DIRECTORY=/etc/kixdns-panel
 PANEL_STATE_DIRECTORY=/var/lib/kixdns-panel
 SYSTEMD_UNIT_DIRECTORY=/etc/systemd/system
+# systemd 在 /etc/systemd/system 之后找 unit 的目录 / Where systemd looks for units after /etc/systemd/system
+SYSTEMD_VENDOR_DIRECTORIES=(/run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system)
 PANEL_ENV=/etc/kixdns-panel/panel.env
 # 本地的卸载命令随面板一起删掉以后，接着卸载用的是这一份（docs/deployment.md 的「卸载」）。
 # Once the local uninstall command is removed with the panel, this copy carries on (「卸载」 in docs/deployment.md).
@@ -757,6 +759,51 @@ original_config_access() {
   fi
 }
 
+# 原来的 KixDNS 的 unit 文件（主文件和 drop-in，按 systemd 用它们的顺序），给 original_config_access 定交还的组和权限。迁移时
+# 备份的（unit-fragment 和 unit-dropin-N.conf，新的迁移都备份）最准；旧版的备份只有 /etc/systemd/system 里的主文件，unit 在别处时
+# 连它也没有（service-file-missing），这时按名字在 systemd 的搜索路径上找：主文件跳过 /etc/systemd/system（那里现在是面板的
+# unit），drop-in 各目录里同名的只算排在前面的那个，按文件名排序。参数：备份目录，unit 名。
+# The original KixDNS's unit files (the main file and the drop-ins, in the order systemd applies them), which decide the
+# group and mode handed back through original_config_access. What migration backed up (unit-fragment and
+# unit-dropin-N.conf, backed up by every new migration) is exact; older backups hold only the main file from
+# /etc/systemd/system, or not even that when the unit lived elsewhere (service-file-missing), and then the files are
+# found by name on the systemd search path: the main file skipping /etc/systemd/system (the panel's unit is there now),
+# and of drop-ins of the same name only the one in the earlier directory counts, ordered by file name. Arguments: the
+# backup directory, the unit name.
+original_unit_files() {
+  local backup=$1
+  local unit=$2
+  local directory
+  local file
+  local name
+  local -A dropins=()
+  if [[ -f ${backup}/unit-fragment ]]; then
+    printf '%s\n' "${backup}/unit-fragment"
+    find "${backup}" -maxdepth 1 -name 'unit-dropin-*.conf' -printf '%f\n' | sort -t- -k3 -n | sed "s|^|${backup}/|"
+    return 0
+  fi
+  if [[ -f ${backup}/kixdns.service ]]; then
+    printf '%s\n' "${backup}/kixdns.service"
+  else
+    for directory in "${SYSTEMD_VENDOR_DIRECTORIES[@]}"; do
+      if [[ -f ${directory}/${unit} ]]; then
+        printf '%s\n' "${directory}/${unit}"
+        break
+      fi
+    done
+  fi
+  for directory in "${SYSTEMD_UNIT_DIRECTORY}" "${SYSTEMD_VENDOR_DIRECTORIES[@]}"; do
+    for file in "${directory}/${unit}.d"/*.conf; do
+      [[ -f ${file} ]] || continue
+      name=${file##*/}
+      [[ -n ${dropins[${name}]:-} ]] || dropins[${name}]=${file}
+    done
+  done
+  for name in "${!dropins[@]}"; do
+    printf '%s\t%s\n' "${name}" "${dropins[${name}]}"
+  done | sort | cut -f2-
+}
+
 # 把旧版原地迁移交给面板的原配置和它所在的目录交还给原来的 KixDNS：目录 root:root 0755，文件按 original_config_access。旧版的
 # 备份没记下原来的属主和权限，只能这样定。参数：原配置，原来的 unit 的文件（主文件和 drop-in）。
 # Hands the original config an older in-place migration gave the panel, and its directory, back to the original KixDNS: the
@@ -1150,6 +1197,7 @@ wait_for_service_stable() {
 # out of reach of an original KixDNS running as a non-root account). Before the original KixDNS starts, hand them back to it
 # as an upgrade does (hand_back_original_config) and record what changed. Nothing in the panel's own directory is touched.
 hand_back_in_place_config() {
+  local unit_files=()
   local directory
   local path
   local before
@@ -1166,8 +1214,8 @@ hand_back_in_place_config() {
     paths+=("${path}")
     befores+=("$(owner_and_mode "${path}")")
   done
-  hand_back_original_config "${ORIGINAL_CONFIG}" "${EXTERNAL_BACKUP}/kixdns.service" \
-    "${SYSTEMD_UNIT_DIRECTORY}/${ORIGINAL_UNIT}.d"/*.conf
+  mapfile -t unit_files < <(original_unit_files "${EXTERNAL_BACKUP}" "${ORIGINAL_UNIT}")
+  hand_back_original_config "${ORIGINAL_CONFIG}" "${unit_files[@]}"
   for path in "${!paths[@]}"; do
     before=${befores[${path}]}
     [[ ${before} != "$(owner_and_mode "${paths[${path}]}")" ]] || continue

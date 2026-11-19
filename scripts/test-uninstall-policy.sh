@@ -145,6 +145,7 @@ EXTERNAL_BACKUP="${PACKAGE_ROOT}/.missing-external-backup"
 # 没有 panel.env 时卸载器会扫描 unit 目录；指向不存在的目录，免得读到开发机上真实安装的 KixDNS。
 # Without panel.env the uninstaller scans the unit directory; point it nowhere so a real KixDNS on the dev host cannot leak in.
 SYSTEMD_UNIT_DIRECTORY="${PACKAGE_ROOT}/.missing-systemd-units"
+SYSTEMD_VENDOR_DIRECTORIES=("${PACKAGE_ROOT}/.missing-vendor-units")
 KIXDNS_MANAGED=false
 KIXDNS_SERVICE_UNIT=kixdns.service
 HAS_EXTERNAL_BACKUP=false
@@ -556,7 +557,8 @@ INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 # exactly: when one side changes without the other, this fails.
 for shared_function in wait_for_service_stable port_accepts_connection owner_and_mode hand_back_directory \
   unit_service_setting original_config_access hand_back_original_config panel_written_config_file \
-  ensure_root_records genuine_root_record secure_root_records put_back_root_records account_has_processes; do
+  ensure_root_records genuine_root_record secure_root_records put_back_root_records account_has_processes \
+  original_unit_files; do
   installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}")"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   [[ -n ${installer_copy} && ${installer_copy} == "${uninstaller_copy}" ]] || {
@@ -610,6 +612,7 @@ migrate_scratch_host() {
     MIGRATED_KIXDNS_CONFIG=\"\${root}/panel-etc/kixdns/pipeline.json\"
     PANEL_ENV=\"\${root}/panel-etc/panel.env\"
     SYSTEMD_UNIT_DIRECTORY=\"\${root}/units\"
+    SYSTEMD_VENDOR_DIRECTORIES=(\"\${root}/vendor-units\")
     ROOT_RECORDS=\"\${root}/records\"
     EXTERNAL_BACKUP=\"\${ROOT_RECORDS}/external-backup\"
     ROOT_UID=\"\$(id -u)\"
@@ -673,6 +676,7 @@ uninstall_scratch_host() {
     PANEL_CONFIG_DIRECTORY="${root}/panel-etc"
     PANEL_STATE_DIRECTORY="${root}/state"
     SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    SYSTEMD_VENDOR_DIRECTORIES=("${root}/vendor-units")
     PANEL_ENV="${PANEL_CONFIG_DIRECTORY}/panel.env"
     ROOT_RECORDS="${root}/records"
     EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
@@ -1088,6 +1092,24 @@ assert_equals "$(stat -c '%a' "${host}/etc/kixdns.json")" "600" "原来的 KixDN
 assert_contains "${output}" "旧版迁移时把原配置交给了面板，没有记下它原来的属主和权限，交还给原来的 KixDNS 时改成：" "恢复时应说明为什么改属主"
 assert_contains "${output}" "  ${host}/etc：" "恢复时应列出改了的目录"
 assert_contains "${output}" "  ${host}/etc/kixdns.json：" "恢复时应列出改了的文件"
+# 回归（S2）：旧版的 unit 不在 /etc/systemd/system 时备份里没有它（service-file-missing）。以前这时看不出原来的 KixDNS 以谁运行，
+# 0700 目录里的私有配置交还成谁都能读的 0644；现在按名字在 systemd 的搜索路径上找到它，照它的 User= 交还。
+# Regression (S2): when the older version's unit lived outside /etc/systemd/system the backup lacks it
+# (service-file-missing). Who the original KixDNS ran as could not be told then, and a private config in a 0700 directory
+# came back world-readable 0644; now the unit is found by name on the systemd search path and its User= decides.
+inplace_host "${host}"
+rm -f -- "${host}/state/external-backup/kixdns.service"
+: > "${host}/state/external-backup/service-file-missing"
+chmod 0600 "${host}/state/external-backup/service-file-missing"
+mkdir -p "${host}/vendor-units"
+printf '[Service]\nUser=kxu\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${host}/etc/kixdns.json" \
+  > "${host}/vendor-units/kixdns.service"
+: > "${chown_log}"
+output="$(OTHER_UNIT_DIRECTORY=${host}/vendor-units CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true \
+  uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "unit 不在备份里的原地迁移主机卸载不应失败"
+assert_equals "$(kept_owner_of root:990 "${host}/etc/kixdns.json")" "root:990 640" \
+  "unit 不在备份里时应按名字找到它，按它运行用的账号交还，不能交还成谁都能读"
 # 升级时已经改管副本的旧版原地迁移主机：恢复时删副本、放回原 unit，原配置里是升级那时面板保存的内容，要照实说。
 # A host an older version migrated in place and an upgrade moved onto a copy: the restore removes the copy and puts the
 # original unit back, and the original holds what the panel had saved at that upgrade, which is said as it is.

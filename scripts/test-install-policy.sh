@@ -223,6 +223,10 @@ assert_contains "${output}" "--replace-existing" "旧参数应指向迁移参数
 assert_contains "${output}" "恢复原来的 KixDNS" "旧参数应说明迁移可以撤销"
 
 source "${INSTALLER}"
+# 交还原配置时会按名字在 systemd 的搜索路径上找原来的 unit；指向不存在的目录，免得读到开发机上真实安装的 KixDNS。
+# Handing back the original config looks the original unit up by name on the systemd search path; point it nowhere so a
+# real KixDNS on the dev host cannot leak in.
+SYSTEMD_VENDOR_DIRECTORIES=("${PACKAGE_ROOT}/.missing-vendor-units")
 # 在线更新器声明了只读的 PANEL_ENV，放进子 shell 以免锁住下面测试要改的同名变量。
 # The online updater declares PANEL_ENV readonly; source it in a subshell so tests below can still change it.
 (source "${PACKAGE_ROOT}/scripts/panel-online-update.sh")
@@ -624,6 +628,38 @@ assert_not_contains "${output}" "LEFT" "恢复后不应残留 drop-in、目录�
 output="$(resolved_round_trip file)"
 assert_contains "${output}" "RESTORED=file:# 手写 nameserver 127.0.0.53 " "恢复时应还原原来的普通文件内容"
 assert_not_contains "${output}" "LEFT" "恢复普通文件后不应残留"
+# 回归（S1）：drop-in 目录已经在时，关掉监听不能改它的权限（install -d 会把已有目录改成 0755）。
+# Regression (S1): with the drop-in directory already there, turning the stub off must not change its mode (install -d
+# resets an existing directory to 0755).
+(
+  RESOLVED_DROPIN="${WORK}/existing-dropin/resolved.conf.d/kixdns-panel.conf"
+  RESOLV_CONF="${WORK}/existing-dropin/resolv.conf"
+  RESOLVED_UPLINK_RESOLV_CONF="${resolv_fixture}/run/resolv.conf"
+  RESOLVED_STATE="${WORK}/existing-dropin/records/resolved-stub"
+  ROOT_RECORDS="${WORK}/existing-dropin/records"
+  ROOT_UID="$(id -u)"
+  mkdir -p "$(dirname -- "${RESOLVED_DROPIN}")"
+  chmod 0700 "$(dirname -- "${RESOLVED_DROPIN}")"
+  printf 'nameserver 192.0.2.1\n' > "${RESOLV_CONF}"
+  systemctl() { :; }
+  ss() { :; }
+  name_resolution_works() { return 0; }
+  install() {
+    local arguments=()
+    while [[ $# -gt 0 ]]; do
+      case $1 in -o | -g) shift ;; *) arguments+=("$1") ;; esac
+      shift
+    done
+    command install "${arguments[@]}"
+  }
+  KIXDNS_CONFIG_PATH=${config_fixture}
+  PORT_CONFLICT=resolved
+  PORT_CONFLICT_PORT=53
+  RESOLVED_ACTION=disable-stub
+  disable_resolved_stub
+) > /dev/null 2>&1 || true
+assert_equals "$(stat -c '%a' "${WORK}/existing-dropin/resolved.conf.d")" "700" "已有的 drop-in 目录权限不能被改"
+
 # 假的 getent：记下调用次数，前 GETENT_FAILURES 次失败；GETENT_BROKEN_WHEN 指向的文件存在时一直失败。
 # A fake getent: counts calls and fails the first GETENT_FAILURES; always fails while GETENT_BROKEN_WHEN exists.
 getent_stub="${WORK}/getent-stub"
@@ -1624,6 +1660,7 @@ config_directory_run() {
     KIXDNS_BINARY_PATH=${MANAGED_KIXDNS_BINARY}
     PANEL_SERVER_BINARY="${root}/panel-server"
     SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    SYSTEMD_VENDOR_DIRECTORIES=("${root}/vendor-units")
     ROOT_RECORDS="${root}/records"
     EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
     RESOLVED_STATE="${ROOT_RECORDS}/resolved-stub"
@@ -1852,6 +1889,67 @@ for legacy_case in "|0600|root:root" 'DynamicUser=yes\n|0644|root:root' 'User=kx
   assert_contains "${output}" "chown -h ${legacy_owner} -- ${root}/etc/foo.json" "原配置的属主应按原来的 unit 定（${legacy_lines:-root}）"
   assert_contains "${output}" "chmod ${legacy_mode} -- ${root}/etc/foo.json" "原配置的权限应按原来的 unit 定（${legacy_lines:-root}）"
 done
+# 回归（S2、I4）：交还原配置时的组按原来的 unit 运行用的账号定，这个账号可能写在别处：v4.3.4 的 unit 不在 /etc/systemd/system
+# 时备份里没有它（service-file-missing），要按名字在 systemd 的搜索路径上找；User= 也可能写在 drop-in 里。以前找不到 unit 就当
+# 看不出来，0700 目录里 0600 的私有配置交还成谁都能读的 0644；drop-in 里的 User= 一旦漏看也一样。
+# Regression (S2, I4): the group the original config goes back to follows the account the original unit runs as, which
+# may be written elsewhere: when the v4.3.4 unit lived outside /etc/systemd/system the backup lacks it
+# (service-file-missing) and it is found by name on the systemd search path; User= may also sit in a drop-in. Not finding
+# the unit used to count as not knowing, and a private 0600 config in a 0700 directory came back world-readable 0644; a
+# User= in a drop-in, once missed, does the same.
+legacy_host_tree ''
+rm -f -- "${root}/state/external-backup/kixdns.service"
+: > "${root}/state/external-backup/service-file-missing"
+chmod 0600 "${root}/state/external-backup/service-file-missing"
+mkdir -p "${root}/vendor-units"
+printf '[Service]\nUser=kxu\nExecStart=/usr/local/bin/kixdns run --config %s\n' "${root}/etc/foo.json" > "${root}/vendor-units/kixdns.service"
+output="$(config_directory_run)"
+assert_contains "${output}" "chown -h root:1001 -- ${root}/etc/foo.json" "unit 不在备份里时应按名字找到它，按它运行用的账号交还"
+assert_contains "${output}" "chmod 0640 -- ${root}/etc/foo.json" "找到原来的 unit 时不能交还成谁都能读"
+legacy_host_tree ''
+mkdir -p "${root}/units/kixdns.service.d"
+printf '[Service]\nUser=kxu\n' > "${root}/units/kixdns.service.d/override.conf"
+output="$(config_directory_run)"
+assert_contains "${output}" "chown -h root:1001 -- ${root}/etc/foo.json" "drop-in 里写的 User= 也要算"
+
+# 迁移时把原来的 unit（不管放在哪）和它的 drop-in 一起备份，以后交还配置时照它们定组和权限。
+# Migration backs up the original unit (wherever it lives) with its drop-ins, which later decide the group and mode of
+# the config handed back.
+unit_backup_of() {
+  local root="${WORK}/unit-backup"
+  rm -rf -- "${root}"
+  mkdir -p "${root}/units" "${root}/vendor/kixdns.service.d" "${root}/units/kixdns.service.d" "${root}/records"
+  chmod 0700 "${root}/records"
+  printf '[Service]\nExecStart=/usr/local/bin/kixdns run\n' > "${root}/vendor/kixdns.service"
+  printf '[Service]\nUser=kxu\n' > "${root}/vendor/kixdns.service.d/10-user.conf"
+  printf '[Service]\nGroup=staff\n' > "${root}/units/kixdns.service.d/20-group.conf"
+  (
+    SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    ROOT_RECORDS="${root}/records"
+    EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+    ROOT_UID="$(id -u)"
+    install() { mkdir -p "${@: -1}"; }
+    chmod() { :; }
+    systemctl() {
+      case $2 in
+        --property=FragmentPath) printf '%s\n' "${root}/vendor/kixdns.service" ;;
+        --property=DropInPaths) printf '%s %s\n' "${root}/vendor/kixdns.service.d/10-user.conf" "${root}/units/kixdns.service.d/20-group.conf" ;;
+      esac
+    }
+    INSTALL_KIND=migrate
+    EXISTING_KIXDNS_BINARY_PATH=/usr/local/bin/kixdns
+    preserve_external_install
+    mapfile -t files < <(original_unit_files "${EXTERNAL_BACKUP}" kixdns.service)
+    printf 'FILES=%s\n' "${files[*]##*/}"
+    printf 'ACCESS=%s\n' "$(getent() { [[ $1 == group && $2 == staff ]] && printf 'staff:x:50:\n'; }; original_config_access "${files[@]}")"
+    grep '^KIXDNS_UNIT_FRAGMENT=' "${EXTERNAL_BACKUP}/install.env"
+  ) 2>&1 || true
+}
+output="$(unit_backup_of)"
+assert_contains "${output}" "FILES=unit-fragment unit-dropin-1.conf unit-dropin-2.conf" "迁移应备份原来的 unit 和它的 drop-in"
+assert_contains "${output}" "ACCESS=staff 0640" "备份的 unit 和 drop-in 应一起定组和权限"
+assert_contains "${output}" "KIXDNS_UNIT_FRAGMENT=${WORK}/unit-backup/vendor/kixdns.service" "备份应记下原来的 unit 放在哪"
+
 # 回归（P2）：备份不是 root 建的（面板账号能在它的状态目录里放一份），安装器不照它改管副本、交还文件，在改动主机之前停下。
 # Regression (P2): a backup root did not make (the panel account can put one in its state directory) is not acted on: no
 # copy, no hand-back, the installer stops before touching the host.

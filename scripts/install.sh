@@ -73,6 +73,8 @@ GITHUB_TOKEN_FILE=/var/lib/kixdns-panel/github-token
 # The same fixed location uninstall.sh uses: the panel unit may only write /var/lib/kixdns-panel.
 PANEL_DATABASE=/var/lib/kixdns-panel/panel.db
 SYSTEMD_UNIT_DIRECTORY=/etc/systemd/system
+# systemd 在 /etc/systemd/system 之后找 unit 的目录 / Where systemd looks for units after /etc/systemd/system
+SYSTEMD_VENDOR_DIRECTORIES=(/run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system)
 EXISTING_PANEL=false
 EXISTING_KIXDNS=false
 EXISTING_KIXDNS_UNIT=false
@@ -824,6 +826,51 @@ original_config_access() {
   fi
 }
 
+# 原来的 KixDNS 的 unit 文件（主文件和 drop-in，按 systemd 用它们的顺序），给 original_config_access 定交还的组和权限。迁移时
+# 备份的（unit-fragment 和 unit-dropin-N.conf，新的迁移都备份）最准；旧版的备份只有 /etc/systemd/system 里的主文件，unit 在别处时
+# 连它也没有（service-file-missing），这时按名字在 systemd 的搜索路径上找：主文件跳过 /etc/systemd/system（那里现在是面板的
+# unit），drop-in 各目录里同名的只算排在前面的那个，按文件名排序。参数：备份目录，unit 名。
+# The original KixDNS's unit files (the main file and the drop-ins, in the order systemd applies them), which decide the
+# group and mode handed back through original_config_access. What migration backed up (unit-fragment and
+# unit-dropin-N.conf, backed up by every new migration) is exact; older backups hold only the main file from
+# /etc/systemd/system, or not even that when the unit lived elsewhere (service-file-missing), and then the files are
+# found by name on the systemd search path: the main file skipping /etc/systemd/system (the panel's unit is there now),
+# and of drop-ins of the same name only the one in the earlier directory counts, ordered by file name. Arguments: the
+# backup directory, the unit name.
+original_unit_files() {
+  local backup=$1
+  local unit=$2
+  local directory
+  local file
+  local name
+  local -A dropins=()
+  if [[ -f ${backup}/unit-fragment ]]; then
+    printf '%s\n' "${backup}/unit-fragment"
+    find "${backup}" -maxdepth 1 -name 'unit-dropin-*.conf' -printf '%f\n' | sort -t- -k3 -n | sed "s|^|${backup}/|"
+    return 0
+  fi
+  if [[ -f ${backup}/kixdns.service ]]; then
+    printf '%s\n' "${backup}/kixdns.service"
+  else
+    for directory in "${SYSTEMD_VENDOR_DIRECTORIES[@]}"; do
+      if [[ -f ${directory}/${unit} ]]; then
+        printf '%s\n' "${directory}/${unit}"
+        break
+      fi
+    done
+  fi
+  for directory in "${SYSTEMD_UNIT_DIRECTORY}" "${SYSTEMD_VENDOR_DIRECTORIES[@]}"; do
+    for file in "${directory}/${unit}.d"/*.conf; do
+      [[ -f ${file} ]] || continue
+      name=${file##*/}
+      [[ -n ${dropins[${name}]:-} ]] || dropins[${name}]=${file}
+    done
+  done
+  for name in "${!dropins[@]}"; do
+    printf '%s\t%s\n' "${name}" "${dropins[${name}]}"
+  done | sort | cut -f2-
+}
+
 # 把旧版原地迁移交给面板的原配置和它所在的目录交还给原来的 KixDNS：目录 root:root 0755，文件按 original_config_access。旧版的
 # 备份没记下原来的属主和权限，只能这样定。参数：原配置，原来的 unit 的文件（主文件和 drop-in）。
 # Hands the original config an older in-place migration gave the panel, and its directory, back to the original KixDNS: the
@@ -1250,7 +1297,8 @@ disable_resolved_stub() {
   } > "${RESOLVED_STATE}/install.env"
   chmod 0600 "${RESOLVED_STATE}/install.env"
   RESOLVED_CHANGED=true
-  install -d -o root -g root -m 0755 "${dropin_directory}"
+  # 已有的目录不改权限（install -d 会改成 0755）/ An existing directory keeps its mode (install -d would make it 0755)
+  [[ -d ${dropin_directory} ]] || install -d -o root -g root -m 0755 "${dropin_directory}"
   printf '[Resolve]\nDNSStubListener=no\n' > "${RESOLVED_DROPIN}"
   chmod 0644 "${RESOLVED_DROPIN}"
   if [[ $(state_file_value "${RESOLVED_STATE}/install.env" RESOLV_CONF_KIND) != unchanged ]]; then
@@ -1738,6 +1786,10 @@ restore_original_config() {
 }
 
 preserve_external_install() {
+  local fragment
+  local dropin
+  local dropins=()
+  local dropin_count=0
   [[ ${INSTALL_KIND} == migrate ]] || return 0
   # 卸载时选了保留、留下来的面板自带 KixDNS（跑的是面板状态目录里的程序）不是外部安装：重装后接着管它，不备份成
   # 「原来的 KixDNS」。否则卸载时会把这个 unit 当原来的放回去并启动，而它的程序已随面板状态目录删掉
@@ -1762,6 +1814,21 @@ preserve_external_install() {
   else
     : > "${EXTERNAL_BACKUP}/service-file-missing"
   fi
+  # 原来的 unit 不管放在哪，连同它的 drop-in 都存一份内容：以后交还配置时照它们定组和权限（original_unit_files）。恢复只放回
+  # /etc/systemd/system 里那份（上面的 kixdns.service），别处的本来就没动过。
+  # Whatever its place, the original unit's content is saved with its drop-ins: they later decide the group and mode of
+  # the config handed back (original_unit_files). A restore puts back only the copy from /etc/systemd/system
+  # (kixdns.service above); one elsewhere was never touched.
+  fragment="$(systemctl show --property=FragmentPath --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
+  if [[ -n ${fragment} && -f ${fragment} ]]; then
+    cat -- "${fragment}" > "${EXTERNAL_BACKUP}/unit-fragment"
+  fi
+  read -ra dropins <<< "$(systemctl show --property=DropInPaths --value "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true)"
+  for dropin in "${dropins[@]}"; do
+    [[ -f ${dropin} ]] || continue
+    dropin_count=$((dropin_count + 1))
+    cat -- "${dropin}" > "${EXTERNAL_BACKUP}/unit-dropin-${dropin_count}.conf"
+  done
   {
     printf 'KIXDNS_SERVICE_UNIT=%s\n' "${KIXDNS_SERVICE_UNIT}"
     # 原来的 KixDNS 的配置，和面板管理的那一份分开记：迁移时后者是前者的副本，旧版原地迁移时两者相同。
@@ -1770,6 +1837,7 @@ preserve_external_install() {
     printf 'KIXDNS_CONFIG=%s\n' "${ORIGINAL_KIXDNS_CONFIG_PATH:-${KIXDNS_CONFIG_PATH}}"
     printf 'KIXDNS_MANAGED_CONFIG=%s\n' "${KIXDNS_CONFIG_PATH}"
     printf 'KIXDNS_BINARY=%s\n' "${EXISTING_KIXDNS_BINARY_PATH}"
+    [[ -z ${fragment} ]] || printf 'KIXDNS_UNIT_FRAGMENT=%s\n' "${fragment}"
     printf 'KIXDNS_WAS_ACTIVE=%s\n' "${KIXDNS_WAS_ACTIVE}"
     printf 'KIXDNS_WAS_ENABLED=%s\n' "${KIXDNS_WAS_ENABLED}"
     # 卸载恢复、删除面板数据时，只删迁移建的 kixdns 账号和组 / Uninstalling with a restore and the panel data removed deletes
@@ -1777,7 +1845,9 @@ preserve_external_install() {
     printf 'KIXDNS_USER_CREATED=%s\n' "$(kixdns_account_created user)"
     printf 'KIXDNS_GROUP_CREATED=%s\n' "$(kixdns_account_created group)"
   } > "${EXTERNAL_BACKUP}/install.env"
-  chmod 0600 "${EXTERNAL_BACKUP}/install.env"
+  # kixdns.service 是 cp -a 来的，留着原来的权限，恢复时照样放回 / kixdns.service came by cp -a with its own mode, which a
+  # restore puts back as it was
+  find "${EXTERNAL_BACKUP}" -maxdepth 1 \( -name install.env -o -name 'unit-*' \) -exec chmod 0600 -- {} +
 }
 
 # kixdns 账号（user）或组（group）是不是面板建的：这次运行开始时还没有，或者以前的面板建的、卸载时留下并记在保留的
@@ -2166,10 +2236,11 @@ install_configuration() {
 # in a shared directory has been copied to /etc/kixdns, and the old one goes.
 hand_back_config_directory() {
   local temporary
+  local unit_files=()
   case ${CONFIG_CONVERSION} in
     legacy)
-      hand_back_original_config "${ORIGINAL_KIXDNS_CONFIG_PATH}" "${EXTERNAL_BACKUP}/kixdns.service" \
-        "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}.d"/*.conf
+      mapfile -t unit_files < <(original_unit_files "${EXTERNAL_BACKUP}" "${KIXDNS_SERVICE_UNIT}")
+      hand_back_original_config "${ORIGINAL_KIXDNS_CONFIG_PATH}" "${unit_files[@]}"
       temporary="$(mktemp "${EXTERNAL_BACKUP}/.install.env.XXXXXX")"
       {
         grep -v -E '^KIXDNS_(MANAGED_CONFIG|LEGACY_IN_PLACE)=' -- "${EXTERNAL_BACKUP}/install.env" || true
