@@ -929,10 +929,21 @@ test.describe('前一天的快照', () => {
         const parts = [...title.children].map((part) => part.getBoundingClientRect())
         const box = (element: Element) => element.getBoundingClientRect()
         const inner = box(card).right - parseFloat(getComputedStyle(card).paddingRight)
+        const head = title.parentElement!
+        const headInner = box(head).right - parseFloat(getComputedStyle(head).paddingRight)
+        // 说明文字本身的宽度，不量它的盒子：盒子被拉满一行时也不会让下面的判断恒等 / The note text's own width, not its box's:
+        // a box stretched across the line cannot make the check below hold trivially
+        const noteText = document.createRange()
+        noteText.selectNodeContents(note)
         return {
           // 标题的两项在同一行 / The title's two items share one line
           titleLines: new Set(parts.map((part) => Math.round(part.top))).size,
           noteBelow: box(note).top >= box(title).bottom - 1,
+          // 说明接在标题后面放不放得下：标题右边、行内间距、说明自身一行的宽度加起来超没超出卡片头 / Whether the note fits after the
+          // title: the title's right edge, the row gap and the note's own one-line width against the card head's inner edge
+          // 量标题文字的右端（最后一项），不量 h2 的盒子，免得它被拉宽后这项判断变成恒等 / Measured at the title text's right end
+          // (its last item), not the h2 box, so a stretched box cannot make this check hold trivially
+          noteFitsBeside: Math.max(...parts.map((part) => part.right)) + parseFloat(getComputedStyle(head).columnGap || '0') + noteText.getBoundingClientRect().width <= headInner + 1,
           noteInside: box(note).right <= inner + 1,
           noteLines: note.getClientRects().length && Math.round(box(note).height / parseFloat(getComputedStyle(note).lineHeight)),
           scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -946,9 +957,13 @@ test.describe('前一天的快照', () => {
       const ticks = await page.locator('.overview-bars-axis > span').evaluateAll((spans) => spans.map((span) => span.getBoundingClientRect()).sort((a, b) => a.left - b.left).map((box) => ({ left: box.left, right: box.right })))
       for (let i = 1; i < ticks.length; i++) expect(ticks[i]!.left, `${width}px`).toBeGreaterThan(ticks[i - 1]!.right + 2)
       expect(layout.scroll, `${width}px`).toBeLessThanOrEqual(0)
-      // 窄手机上放不下就整句换到下一行（640 宽的卡片放得下，照旧同一行），宽屏上和标题同一行 / On narrow phones the note moves whole
-      // to the next line (a 640 card has room and keeps one line), on wide screens it shares the title's
-      if (width !== 640) expect(layout.noteBelow, `${width}px`).toBe(width <= 414)
+      // 放得下就和标题同一行，放不下才整句换到下一行。哪个宽度放得下取决于字体，所以按量出来的宽度判断，不按屏宽写死；
+      // 最窄的手机上一定放不下，宽屏上一定放得下 / The note shares the title's line when it fits and moves whole to the next line
+      // only when it does not. Which widths fit depends on the font, so this goes by measured widths, not hard-coded screen
+      // widths; on the narrowest phones it never fits, on wide screens it always does
+      expect(layout.noteBelow, `${width}px`).toBe(!layout.noteFitsBeside)
+      if (width <= 360) expect(layout.noteBelow, `${width}px`).toBe(true)
+      if (width >= 1280) expect(layout.noteBelow, `${width}px`).toBe(false)
       expect(layout.noteLines, `${width}px`).toBe(1)
     }
   })
