@@ -25,7 +25,7 @@ export function validDnsName(value: string): boolean {
 
 // GeoSite 条件的值是分类名本身：内核把它原样当标签去查，写成 geosite:cn 永远匹配不上。
 // A GeoSite condition's value is the bare category: the kernel looks it up as the tag exactly as written, so geosite:cn never matches.
-const GEOSITE_MATCHERS = new Set(['geo_site', 'geo_site_not', 'response_request_domain_geosite', 'response_request_domain_geosite_not'])
+const GEOSITE_MATCHERS = new Set(['geo_site', 'geo_site_not', 'response_request_domain_geo_site', 'response_request_domain_geo_site_not'])
 export const GEOSITE_PREFIX_ERROR = '只写分类名，去掉 geosite: 前缀'
 
 export function isGeoSiteMatcher(matcher: MatcherConfig): boolean {

@@ -236,3 +236,93 @@ test('规则单独的固定子网空着，点新建时打开「更多」标出�
   await expect(more).toHaveAttribute('aria-expanded', 'true')
   await expect(editor.getByLabel('固定子网', { exact: true })).toHaveAttribute('aria-invalid', 'true')
 })
+
+// 手机上结果、回答后检查的「然后」、客户端子网各是一行，点开是弹层：写错了点「新建」，那一行标红；点底下「还有 1 处要改」打开那个弹层，光标放进
+// 标红的那一格。以前只有选的组删掉了才标那一行，子网那一行从不标，点那句话什么都不发生
+// On a phone the outcome, the answer check's 然后 and the client subnet are rows opening sheets: written wrong, 新建 marks that row, and the
+// 还有 1 处要改 line opens that sheet with the caret in the red box. Before, only a deleted group marked its row, the subnet row was never
+// marked, and tapping the line did nothing
+test('手机上：子网、回答后检查的「然后」、结果的 TTL 写错，那一行标红，点「还有 1 处要改」打开它的弹层 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '弹层只在手机上有')
+  await page.goto('/config')
+  await page.getByRole('button', { name: '新建规则', exact: true }).first().click()
+  const editor = page.locator('.editor')
+  const problem = editor.locator('.editor__problem')
+  const sheet = page.locator('dialog[open]')
+  const done = () => sheet.getByRole('button', { name: '完成', exact: true }).click()
+
+  // 客户端子网 / The client subnet
+  const ecsRow = editor.getByRole('button', { name: '修改客户端子网' })
+  await ecsRow.click()
+  await sheet.getByLabel('客户端子网', { exact: true }).selectOption({ label: '发送固定的子网' })
+  await sheet.getByLabel('固定子网', { exact: true }).fill('203.0.113.0/999')
+  await done()
+  // 点「新建」就打开那个弹层，光标在标红的框里；收起以后那一行标红，点底下那句话再打开 / 新建 opens that sheet with the caret in the red box;
+  // closed again, the row is marked, and the line at the bottom opens it once more
+  await editor.getByRole('button', { name: '新建', exact: true }).click()
+  await expect(sheet.getByLabel('固定子网', { exact: true })).toBeFocused()
+  await done()
+  await expect(problem).toContainText('固定子网写成 203.0.113.0/24 这样')
+  await expect(ecsRow).toHaveClass(/is-bad/)
+  await problem.click()
+  await expect(sheet.getByLabel('固定子网', { exact: true })).toBeFocused()
+  await expect(sheet.getByLabel('固定子网', { exact: true })).toHaveAttribute('aria-invalid', 'true')
+  await sheet.getByLabel('固定子网', { exact: true }).fill('203.0.113.0/24')
+  await done()
+  await expect(ecsRow).not.toHaveClass(/is-bad/)
+
+  // 回答后检查的「然后」：替换成太长的 TXT / The answer check's 然后: replaced with too long a TXT
+  await page.getByRole('group', { name: '回答后检查' }).getByRole('button', { name: '单独设置' }).click()
+  await editor.getByRole('button', { name: '上游出错', exact: true }).click()
+  const thenRow = editor.getByRole('button', { name: '修改满足时怎么做' })
+  await thenRow.click()
+  await sheet.getByLabel('满足时怎么做', { exact: true }).selectOption({ label: '替换 TXT 内容' })
+  await sheet.getByLabel('然后：新的 TXT 内容').fill('a'.repeat(256))
+  await done()
+  await expect(problem).toContainText('TXT 内容最长 255 字节，现在 256 字节')
+  await expect(thenRow).toHaveClass(/is-bad/)
+  await problem.click()
+  await expect(sheet.getByLabel('然后：新的 TXT 内容')).toBeFocused()
+  await sheet.getByLabel('然后：新的 TXT 内容').fill('v=spf1 -all')
+  await done()
+  await expect(thenRow).not.toHaveClass(/is-bad/)
+
+  // 结果：CNAME 的 TTL 超过 4294967295 / The outcome: a CNAME TTL beyond 4294967295
+  const outcomeRow = editor.getByRole('button', { name: '修改结果' })
+  await outcomeRow.click()
+  await sheet.getByText('自定义回答', { exact: true }).click()
+  await sheet.getByRole('group', { name: '结果：记录类型' }).getByRole('button', { name: 'CNAME', exact: true }).click()
+  await sheet.getByLabel('结果：回答内容').fill('target.example.com')
+  await sheet.getByLabel('结果：TTL').fill('99999999999')
+  await done()
+  await expect(problem).toContainText('TTL 填 0 到 4294967295 之间的整数')
+  await expect(outcomeRow).toHaveClass(/is-bad/)
+  await problem.click()
+  await expect(sheet.getByLabel('结果：TTL')).toBeFocused()
+  await expect(sheet.getByLabel('结果：TTL')).toHaveAttribute('aria-invalid', 'true')
+})
+
+// 宽屏的面板里「回答后检查」平时收着：「然后」写错了，点「还有 1 处要改」先把它展开，光标放进标红的那一格（以前只会展开「更多」）
+// In the wide-screen inspector 回答后检查 stays folded: with 然后 written wrong, the 还有 1 处要改 line unfolds it first and puts the caret in
+// the red box (it used to unfold 更多 only)
+test('面板里：回答后检查的「然后」写错了，点「还有 1 处要改」展开收着的回答后检查', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '手机上是整页编辑，没有收着的卡片')
+  await page.goto('/config')
+  await page.getByRole('button', { name: '新建规则', exact: true }).first().click()
+  const editor = page.locator('.editor')
+  const fold = editor.getByRole('button', { name: '回答后检查', exact: true })
+  await fold.click()
+  await page.getByRole('group', { name: '回答后检查' }).getByRole('button', { name: '单独设置' }).click()
+  await editor.getByRole('button', { name: '上游出错', exact: true }).click()
+  await editor.getByLabel('满足时怎么做', { exact: true }).selectOption({ label: '替换 TXT 内容' })
+  await editor.getByLabel('然后：新的 TXT 内容').fill('a'.repeat(256))
+  await fold.click()
+  await expect(fold).toHaveAttribute('aria-expanded', 'false')
+  await editor.getByRole('button', { name: '新建', exact: true }).click()
+  const problem = editor.locator('.editor__problem')
+  await expect(problem).toContainText('TXT 内容最长 255 字节，现在 256 字节')
+  await problem.click()
+  await expect(fold).toHaveAttribute('aria-expanded', 'true')
+  await expect(editor.getByLabel('然后：新的 TXT 内容')).toBeFocused()
+  await expect(editor.getByLabel('然后：新的 TXT 内容')).toHaveAttribute('aria-invalid', 'true')
+})

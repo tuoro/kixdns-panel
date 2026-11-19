@@ -82,7 +82,13 @@ const ASCII_NAME = /^(\*\.)?[a-z0-9_-]+(\.[a-z0-9_-]+)*\.?$/i
  */
 export function kernelDomain(name: string): string {
   if (!/[^\x00-\x7f]/.test(name) || /[\s/:?#@[\]\\%]/.test(name)) return name
-  try { return new URL(`http://${name}`).hostname } catch { return name }
+  try {
+    const host = new URL(`http://${name}`).hostname
+    // 地址栏的读法把全角数字这类读成 IPv4（「１２７.１」成了 127.0.0.1）：那是个地址不是域名，原样留着，isDomain 不收它
+    // The address bar's reading takes full-width digits and the like as IPv4 (「１２７.１」 became 127.0.0.1): that is an address, not a name, so
+    // it stays as written and isDomain refuses it
+    return /^\d+(\.\d+){3}$/.test(host) ? name : host
+  } catch { return name }
 }
 /** 规则和映射里的域名：中文这样的域名照收，换成 punycode 以后看写得对不对 / A name in a rule or mapping: Chinese and other Unicode names are
  * taken, checked once converted to punycode */

@@ -1,0 +1,24 @@
+[package]
+name = "kernel-config-check"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+description = "Runs the latest KixDNS kernel's (main) config::validate on the configs the panel compiles (CI only)"
+
+# 内核的源码由 CI 取最新的内核（内核仓库 main 这次运行时指到的提交）放到 .upstream/kixdns（不进仓库）；本地把 .upstream/kixdns
+# 指向内核 main 的检出。锁文件用内核自己的（CI 里先把 .upstream/kixdns/Cargo.lock 拷过来），依赖的版本和那个内核一样。
+# The kernel source is fetched by CI from the latest kernel (the commit main of the kernel repository points at for the run) into
+# .upstream/kixdns (never committed); locally, point .upstream/kixdns at a checkout of the kernel's main. The lock file is the kernel's
+# own (CI copies .upstream/kixdns/Cargo.lock here first), so the dependency versions match that kernel.
+[dependencies]
+kixdns = { path = "../../.upstream/kixdns" }
+serde_json = "1"
+
+# 只为校验配置：不要调试信息，编得快、缓存小 / For checking configs only: no debug info, so it builds fast and caches small
+[profile.dev]
+debug = 0
+
+# 自己一个工作区，不进面板的 workspace（cargo test --workspace 不编内核） / A workspace of its own, outside the panel's (cargo test --workspace
+# does not build the kernel)
+[workspace]

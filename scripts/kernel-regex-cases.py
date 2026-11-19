@@ -6,10 +6,12 @@ Regenerates testdata/kernel-regex.json: every regex is run through the kernel an
               [表 / table]
 
 对照的是最新的内核：tuoro/kixdns 的 main 现在指向的提交（用 ls-remote 去问，--repo 可以换）。内核源码目录必须正好在这个提交上
-（工作区不能有改动），对不上就不跑、说先拉下来检出：不拿本地检出的 HEAD 当最新的内核。用的提交记进表里。
+（工作区不能有改动），对不上就不跑、说先拉下来检出：不拿本地检出的 HEAD 当最新的内核。用的提交记进表里。源码目录可以就用
+tools/kernel-config-check 也用的 .upstream/kixdns。
 The reference is the latest kernel: the commit tuoro/kixdns main points at now (asked with ls-remote; --repo changes the
 repository). The kernel checkout must be at exactly that commit with a clean work tree, or nothing runs and it says to fetch
 and check it out first: a local checkout's HEAD is never taken for the latest kernel. The commit used is recorded in the table.
+The checkout may be the .upstream/kixdns that tools/kernel-config-check uses too.
 
 - patterns：kind 为 domain 的放进三份最小配置（规则的 domain_regex、入口的 domain_regex、回答条件的 request_domain_regex），
   三处的结果要一样；kind 为 txt 的放进 response_txt_content 的 regex。跑内核的 config::validate，error 是内核报的原因

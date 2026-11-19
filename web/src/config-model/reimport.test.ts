@@ -449,8 +449,8 @@ describe('重新读入的保护：只有编出来逐项一样才留上一份 / t
     expect(ruleNamed(back, '交给路由器')!.outcome.type).toBe('group')
   })
 
-  // 编出来不止一个的 Pipeline 名字：内核遇到同名的 Pipeline 整份配置都不收 / Pipeline ids compiled more than once: the kernel refuses a config
-  // holding two pipelines of one id
+  // 编出来不止一个的 Pipeline 名字：内核的校验不收（启动时照收，入口和跳转只认后一个，前一个的规则悄悄没了） / Pipeline ids compiled more than
+  // once: the kernel's validation refuses them (at startup it loads them, entries and jumps reach the later and the earlier one's rules vanish)
   const repeatedPipelines = (m: Model) => { const ids = compile(m).pipelines.map((p) => p.id); return ids.filter((id, i) => ids.indexOf(id) !== i) }
 
   it('JSON 里把上游组的 Pipeline 改成了规则列表、里面照旧转发到原来的地址：为这个转发整理出的组不和这个规则列表同名', () => {

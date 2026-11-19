@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { SETTING_SECTIONS, geoSummary, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
@@ -28,6 +28,12 @@ const props = defineProps<{
   commit?: Readonly<Record<string, (value: string) => string>>
 }>()
 const problemId = (field: SettingField) => `settings-problem-${field.key}`
+// 正在打字的那一格不说错（打到一半总是错的，「8」也会被说成写错了）：离开这一格、按回车、在框里按 Ctrl+S 时才说，和条件的出错一样。
+// 不是在这里打出来的（读进来的、JSON 里改的）照常当场说
+// The box being typed in says no mistake (half-typed text is always wrong, even 「8」 would be called one): it says so once the box is left,
+// on Enter, or on Ctrl+S inside it, as conditions do. A value not typed here (read in, edited in the JSON) is told at once as usual
+const typing = reactive(new Set<string>())
+const problemFor = (field: SettingField): string | undefined => (typing.has(field.key) ? undefined : props.problems?.[field.key])
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
 const search = ref('')
 const searchInput = ref<HTMLInputElement>()
@@ -162,14 +168,23 @@ function listValue(field: SettingField): string[] {
 }
 
 function setText(field: SettingField, event: Event): void {
+  typing.add(field.key)
   setValue(field.key, (event.currentTarget as HTMLInputElement).value)
 }
 
 // 写完一格：使用方要整理的整理一遍，整理出来不一样才换 / A box written: tidied when the caller asks, replaced only when that changes it
 function commitText(field: SettingField, event: Event): void {
+  typing.delete(field.key)
   const tidy = props.commit?.[field.key]
   const value = (event.currentTarget as HTMLInputElement).value
   if (tidy && tidy(value) !== value) setValue(field.key, tidy(value))
+}
+
+// 在框里按 Ctrl+S：保存不等这一格写完（它还没失去焦点），先当它写完了，保存的就是整理好的那样，写错了也当场说出来
+// Ctrl+S inside the box: the save does not wait for the box to be left, so it counts as written first; what is saved is the tidied text,
+// and a mistake is said at once
+function saveKey(field: SettingField, event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') commitText(field, event)
 }
 
 function setNumber(field: SettingField, event: Event): void {
@@ -254,11 +269,11 @@ function removeListItem(field: SettingField, index: number): void {
               <!-- 框和出错的说法在同一格里：说法紧跟在框下面，不被左边几行说明顶下去 / The box and its error share one cell, so the error follows the box
                    directly instead of being pushed down by a several-line note on the left -->
               <span class="ui-setrow__control settings-control"><span class="ui-input">
-                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setText(field, $event)" @change="commitText(field, $event)">
-                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setNumber(field, $event)">
-                <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problems?.[field.key]) || undefined" :aria-describedby="problems?.[field.key] ? problemId(field) : undefined" @input="setCsv(field, $event)">
+                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="problemFor(field) ? problemId(field) : undefined" @input="setText(field, $event)" @change="commitText(field, $event)" @blur="typing.delete(field.key)" @keydown="saveKey(field, $event)">
+                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="problemFor(field) ? problemId(field) : undefined" @input="setNumber(field, $event)">
+                <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="problemFor(field) ? problemId(field) : undefined" @input="setCsv(field, $event)">
                 <em v-if="field.unit" class="ui-setrow__unit">{{ field.unit }}</em>
-              </span><span v-if="problems?.[field.key]" :id="problemId(field)" class="ui-field-error">{{ problems[field.key] }}</span></span>
+              </span><span v-if="problemFor(field)" :id="problemId(field)" class="ui-field-error">{{ problemFor(field) }}</span></span>
             </label>
           </template>
           <label v-if="section.id === 'network' && versionMatches" class="ui-setrow"><span class="ui-setrow__label"><span>格式版本<i v-if="changed?.has('version')" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small>KixDNS 按它判断配置的写法</small><code v-if="query" class="settings-row__key">version</code></span><span class="ui-input ui-setrow__control"><input v-model="version" type="text" aria-label="配置格式版本" :aria-description="changed?.has('version') ? '已修改' : undefined" placeholder="1.0"></span></label>

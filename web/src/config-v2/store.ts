@@ -6,8 +6,8 @@ import { movedIds, ruleShape } from '../config-model/diff'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { isDefaultName, normalUrl, uniqueSubscriptionName } from '../config-model/blocklist'
-import { emptyBlocklists, kernelAddress, kernelRuleIndex, nextId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
-import { findKernelRule } from '../config-model/trace-names'
+import { emptyBlocklists, foreignRulePipelines, kernelRuleIndex, kernelUpstream, nextId, ruleTitle, type Model, type Outcome, type Protocol, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
+import { findRuleByText as findTitledRule } from '../config-model/trace-names'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
@@ -204,9 +204,15 @@ export function placeBack(s: Subscription): Subscription {
 // 模型里现有编号之后往上数；读进新的一份时重新对齐。已保存那份里的编号也不再发出去：删掉一个再加别的，撤销时不会撞上
 // Counts up from the model's existing ids, realigned whenever a new model is read. Ids in the saved copy are never handed out either: removing one and
 // adding another cannot collide with it on undo
+// 编号也定下规则自己那个转发的名字（rule-编号）：配置里已经有别的 Pipeline 叫 rule-n（读成上游组、规则组或原样保留的）时跳过 n，新规则以后单独设子网
+// 或回答检查也不编出两个同名的
+// An id also names the rule's own forward (rule-<id>): when another pipeline of the config is already called rule-n (read as an upstream
+// group, a rule group or kept verbatim) n is skipped, so a new rule that later sets its own subnet or answer check never compiles to two of one name
 let counter = 0
 export function newId(): number {
   counter = Math.max(counter, nextId(model), nextId(appliedModel.value))
+  const taken = foreignRulePipelines(model)
+  while (taken.has(`rule-${counter}`)) counter++
   return counter++
 }
 
@@ -250,9 +256,11 @@ export const groupHealth = ref<Map<string, GroupHealth>>(new Map())
 // left when KixDNS stopped or could not be read, so the period counts back from it as on the overview (快照前一小时)
 export function applyUpstreamStats(counts: UpstreamCount[], windowSeconds: number | null = null, snapshot = false): void {
   const map = new Map<string, GroupHealth>()
-  const key = (address: string, transport = 'udp') => normalizeAddress(address, transport)
+  // 没写端口的按 53 算，两边都是：写进内核的地址带着它，以前存下来、还在跑的配置里可能没有 / A missing port counts as 53 on both sides: addresses
+  // written to the kernel carry it, while a config stored long ago and still running may not
+  const key = (address: string, transport = 'udp') => normalizeAddress(kernelUpstream({ address, protocol: address.includes('://') ? 'auto' : transport as Protocol }), transport)
   for (const g of model.groups) {
-    const wanted = new Set(g.addresses.map((a) => key(kernelAddress(a))))
+    const wanted = new Set(g.addresses.map((a) => key(kernelUpstream(a))))
     const bases = counts.filter((c) => wanted.has(key(c.upstream, c.transport))).map(upstreamBasis)
     if (!bases.length) continue
     const tallies = bases.map((basis) => basis.tally)
@@ -282,9 +290,13 @@ export function listOf(ruleId: number): RuleList {
 // 草稿编译时的对照表：保存失败时内核报的规则名、规则说明里的名字，都按它认回草稿里的规则 / The draft's compile index: rule names in a failed
 // save's kernel error and in reasons lead back to the draft's rules through it
 const draftIndex = computed(() => kernelRuleIndex(model))
-/** 内核规则名找回草稿里的规则；不知道在哪个列表时，只认只出现在一个列表里的名字 / The draft rule behind a kernel rule name; without the list, only a name found in one list */
-export function findRuleByName(name: string, pipeline: string | null = null): Rule | undefined {
-  return findKernelRule(model, name, pipeline, draftIndex.value)
+/**
+ * 句子里「」中的名字找回草稿里的规则：先认页面上的标题，再认内核里的规则名；不知道在哪个列表，内核规则名只认只出现在一个列表里的
+ * The draft rule behind a name written in 「」 in a sentence: the page title first, then the kernel's rule name; with no list known, a kernel
+ * name only when it is found in one list
+ */
+export function findRuleByText(text: string): Rule | undefined {
+  return findTitledRule(model, text, draftIndex.value)
 }
 // 一个上游组被谁用着：规则、其余请求、别的组的备用、高级规则和入口 / Who uses an upstream group: rules, catch-alls, other groups' fallbacks, advanced rules and entries
 export function groupUsers(groupId: string): string[] {

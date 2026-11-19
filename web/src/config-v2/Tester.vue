@@ -7,7 +7,7 @@ import type { DnsDiagnostic } from '../api/types'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { coversOnly, ownBlocksFor, parseOwnRules } from '../config-model/blocklist'
-import { blocklistPipelineId, compile, isIp, type Model } from '../config-model/model'
+import { blocklistPipelineId, compile, isIp, mappingPipelineId, type Model } from '../config-model/model'
 import { findKernelRule, traceNames } from '../config-model/trace-names'
 import { asksUpstream, describeStep, detailValue, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
@@ -85,7 +85,7 @@ async function run(): Promise<void> {
     // one name: a hosts line naming several would let the others through too
     const alone = first ? parseOwnRules(tried.blocklists.custom).rules.filter((r) => r.line === first.line).length === 1 : false
     ownBlock.value = first ? { line: first.line, text: tried.blocklists.custom.split('\n')[first.line - 1]?.trim() ?? '', exact: coversOnly(first.match, tested.value), only: lines === 1 && alone && coversOnly(first.match, tested.value), more: lines - 1 } : null
-    emit('matched', rule?.id ?? null, selected(model.mappingId ?? 'domain_mapping'), byBlocklist.value)
+    emit('matched', rule?.id ?? null, selected(mappingPipelineId(model)), byBlocklist.value)
   } catch (e) {
     result.value = null
     byBlocklist.value = false

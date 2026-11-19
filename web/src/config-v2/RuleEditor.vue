@@ -15,8 +15,8 @@ import { toDnf, toTree, treeText, type CondTree } from '../config-model/condTree
 import { actionFieldErrors, matcherFieldErrors } from '../config-editor/field-validation'
 import type { ActionConfig, PipelineConfig, RuleConfig } from '../config-editor/types'
 import {
-  checkSentence, compile, conditionText, ecsProblem, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
-  ruleProblems, type Ecs, type Outcome, type Remedy, type ResponseCondition, type Rule,
+  checkSentence, compile, conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
+  ruleProblemPlaces, type Ecs, type Outcome, type ProblemPlace, type Remedy, type ResponseCondition, type Rule,
   ruleTitle,
 } from '../config-model/model'
 import CondForm from './CondForm.vue'
@@ -170,7 +170,14 @@ function capture(): EditorResume {
   return { draft: JSON.parse(JSON.stringify(draft)) as Rule, rawRules: JSON.parse(JSON.stringify(rawRules)) as unknown[], rawMode: rawMode.value, rawText: rawText.value, position: Number(position.value), base: initialSnap.value }
 }
 const showErrors = ref(false)
-const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? ['内核规则里标红的地方'] : [])])
+// 每一处要改的连同它在哪儿：标出那一行、找第一处时打开它所在的弹层或收着的卡片 / Each mistake with where it sits: its row is marked, and finding
+// the first one opens the sheet or folded card it is in
+const places = computed(() => ruleProblemPlaces(model, draft))
+const problems = computed(() => [...places.value.map((p) => p.text), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? ['内核规则里标红的地方'] : [])])
+// 保存前才说：按过「完成」以后，有错的那一处所在的行标出来（手机上结果、然后、否则、客户端子网各是一行，点开是弹层）
+// Said once saving is tried: after 完成, the row holding a mistake is marked (on a phone the outcome, 然后, 否则 and the client subnet are rows
+// opening sheets)
+const wrong = (place: ProblemPlace): boolean => showErrors.value && places.value.some((p) => p.place === place)
 // 标红的几处各算一处，不把它们算成一处 / Each red-marked field counts as one, rather than all of them as one
 const problemCount = computed(() => problems.value.length + Math.max(0, rawFieldProblems.value - 1))
 const nameInput = ref<HTMLInputElement | null>(null)
@@ -261,7 +268,7 @@ const ecsOptions = computed(() => [
 const ecsRow = computed(() => (draft.ecs === 'inherit' ? ecsOptions.value[0]!.label : ecsText(draft.ecs)))
 // 子网写错了（保存前才说）：框标红，找第一处要改的地方时把收着的「更多」打开 / A subnet written wrong (said once saving is tried): the box is marked, and
 // finding the first thing to fix opens a folded 更多
-const ecsWrong = computed(() => showErrors.value && draft.outcome.type === 'upstream' && Boolean(ecsProblem(draft.ecs)))
+const ecsWrong = computed(() => wrong('ecs'))
 const levelLabel = (level: string | null | undefined): string => levels.find((l) => l.value === level)?.label ?? ''
 function setEcs(choice: string): void {
   const next: Ecs | 'inherit' = choice === 'inherit' ? 'inherit' : choice === 'none' ? null : choice === 'clear' ? { mode: 'clear' } : choice === 'client' ? { mode: 'client', v4: 24, v6: 56 } : { mode: 'static', subnet: '' }
@@ -320,10 +327,19 @@ const kernelJson = computed(() => JSON.stringify(kernelPreview(model, draft, dra
 
 // ---------- 完成 / done ----------
 // 跳到第一处要改的地方并把光标放进去 / Jump to the first thing to fix and put the caret there
+// 第一处在结果、然后、否则或客户端子网里时，手机上先打开那个弹层（光标放进弹层里标红的那一格），面板上先展开收着的卡片
+// When the first mistake is in the outcome, 然后, 否则 or the client subnet, a phone opens that sheet first (the caret goes to the red box
+// inside it), and the inspector unfolds the folded card first
+const SHEETS: Partial<Record<ProblemPlace, NonNullable<typeof sheet.value>>> = { outcome: 'outcome', then: 'then', otherwise: 'otherwise', ecs: 'ecs' }
 function revealProblem(): void {
-  if (ecsWrong.value) open.more = true
+  const place = places.value[0]?.place
+  if (place === 'ecs') open.more = true
+  if (place === 'after' || place === 'then' || place === 'otherwise') open.after = true
+  const inSheet = phone.value && place ? SHEETS[place] ?? null : null
+  if (inSheet) sheet.value = inSheet
   void nextTick(() => {
-    const el = document.querySelector<HTMLElement>('.editor [aria-invalid="true"], .editor .is-bad, .editor .chips--bad input, .editor .ui-field-error')
+    const scope = inSheet ? 'dialog[open]' : '.editor'
+    const el = document.querySelector<HTMLElement>(['[aria-invalid="true"]', '.is-bad', '.chips--bad input', '.ui-field-error'].map((x) => `${scope} ${x}`).join(', '))
     el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     // 手机上出错的是一整行按钮，光标就放在这一行 / On phones the bad item is a whole row button, so the caret goes to that row
     const focusable = el?.matches('input, textarea, select, button') ? el : el?.closest('li, .ecard')?.querySelector<HTMLElement>('input, textarea, select')
@@ -435,7 +451,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
           <header class="ecard__head"><h2 id="ec-then" class="ecard__title">结果</h2><p v-if="!inspector" class="ecard__desc">命中这条规则的请求怎么处理。</p></header>
           <div class="ecard__body">
             <template v-if="phone">
-              <button class="crow" :class="{ 'is-bad': showErrors && outcomeNote.startsWith('这个组') }" type="button" aria-label="修改结果" @click="sheet = 'outcome'">
+              <button class="crow" :class="{ 'is-bad': wrong('outcome') }" type="button" aria-label="修改结果" @click="sheet = 'outcome'">
                 <span class="crow__text"><span class="crow__head"><b>{{ outcomeSentence(model, draft.outcome) }}</b></span><span v-if="outcomeNote" class="crow__vals">{{ outcomeNote }}</span></span>
                 <ChevronRight class="crow__chev" :size="16" aria-hidden="true" />
               </button>
@@ -478,7 +494,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
               <!-- 回答条件用同一种表单，只是不能分组：内核在这里只认一层「全部 / 任一」 / Answer conditions use the same form without groups: the kernel reads a single all / any level here -->
               <CondForm :model-value="{ match: draft.response.match, items: draft.response.conditions }" :order="RESPONSE_ORDER" :fields="RESPONSE_FIELD" :groups="false" :lead="['回答满足以下', '条件时']" empty="" :show-errors="showErrors" @update:model-value="draft.response.match = $event.match; draft.response.conditions = $event.items as ResponseCondition[]" />
               <template v-if="phone">
-                <button class="crow" type="button" aria-label="修改满足时怎么做" @click="sheet = 'then'"><span class="crow__text"><span class="crow__head"><i class="crow__join">然后</i><b>{{ remedySentence(model, draft.response.then) }}</b></span><span v-if="draft.response.thenLog" class="crow__vals">同时记一条{{ levelLabel(draft.response.thenLog) }}日志</span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" /></button>
+                <button class="crow" :class="{ 'is-bad': wrong('then') }" type="button" aria-label="修改满足时怎么做" @click="sheet = 'then'"><span class="crow__text"><span class="crow__head"><i class="crow__join">然后</i><b>{{ remedySentence(model, draft.response.then) }}</b></span><span v-if="draft.response.thenLog" class="crow__vals">同时记一条{{ levelLabel(draft.response.thenLog) }}日志</span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" /></button>
                 <PhoneSheet v-if="sheet === 'then'" title="满足时" @close="sheet = null">
                   <div class="pfield"><span>怎么做</span><UiSelect :model-value="draft.response.then.type" :options="thenKinds" label="满足时怎么做" @update:model-value="draft.response.then = remedyOf($event)" /></div>
                   <OutcomeParams v-model="draft.response.then" :show-errors="showErrors" label="然后" @edit-group="sheet = null; emit('editGroup', $event)" />
@@ -498,7 +514,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <UiSelect v-if="draft.response.thenLog" v-model="draft.response.thenLog" class="erow__level" :options="levels" label="回答检查的日志级别" size="sm" />
               </div>
               <template v-if="phone">
-                <button class="crow" type="button" aria-label="修改不满足或没有回答时怎么做" @click="sheet = 'otherwise'"><span class="crow__text"><span class="crow__head"><i class="crow__join">否则</i><b>{{ remedySentence(model, draft.response.otherwise) }}</b></span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" /></button>
+                <button class="crow" :class="{ 'is-bad': wrong('otherwise') }" type="button" aria-label="修改不满足或没有回答时怎么做" @click="sheet = 'otherwise'"><span class="crow__text"><span class="crow__head"><i class="crow__join">否则</i><b>{{ remedySentence(model, draft.response.otherwise) }}</b></span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" /></button>
                 <PhoneSheet v-if="sheet === 'otherwise'" title="不满足或没有回答时" @close="sheet = null">
                   <div class="pfield"><span>怎么做</span><UiSelect :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足或没有回答时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" /></div>
                   <OutcomeParams v-if="draft.response.otherwise.type !== 'none'" v-model="draft.response.otherwise" :show-errors="showErrors" label="否则" @edit-group="sheet = null; emit('editGroup', $event)" />
@@ -528,7 +544,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
               <span class="crow__text"><span class="crow__head"><b>日志级别</b></span></span><span class="crow__value">{{ levelLabel(draft.log.level) }}</span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" />
               <select v-model="draft.log.level" class="crow__select" aria-label="日志级别"><option v-for="l in levels" :key="l.value" :value="l.value">{{ l.label }}</option></select>
             </label>
-            <button v-if="!draft.raw && draft.outcome.type === 'upstream'" class="crow" type="button" aria-label="修改客户端子网" @click="sheet = 'ecs'">
+            <button v-if="!draft.raw && draft.outcome.type === 'upstream'" class="crow" :class="{ 'is-bad': wrong('ecs') }" type="button" aria-label="修改客户端子网" @click="sheet = 'ecs'">
               <span class="crow__text"><span class="crow__head"><b>客户端子网（ECS）</b></span><span class="crow__vals">{{ ecsRow }}</span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" />
             </button>
             <label class="crow crow--pick">

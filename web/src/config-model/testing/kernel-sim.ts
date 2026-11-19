@@ -6,7 +6,7 @@
 // evaluate_rules, engine/rules.rs response actions, matcher/mod.rs eval_match_chain and the load-time operator rewrite,
 // config.rs compute_merged_forward.
 
-import { isNet } from '../grammar'
+import { isIp, isNet } from '../grammar'
 import { effectiveOps, foldChain, mergedForward, normalizeAddress, splitAddrs, type KConfigLike, type KMatcher, type KRuleLike } from '../kernel'
 export { effectiveOps, foldChain, mergedForward, normalizeAddress }
 export type { KAction, KConfigLike, KMatcher, KPipelineLike, KRuleLike, KSelectorLike } from '../kernel'
@@ -61,6 +61,48 @@ const oneNet = (m: KMatcher): string => { const c = String(m.cidr ?? ''); return
 const netList = (m: KMatcher): string[] => String(m.cidr ?? '').split(',').map((c) => c.trim()).filter(Boolean).map((c) => (isNet(c) ? c : refuse(`${m.type}「${c}」不是网段`)))
 const regexOf = (v: string) => { const ci = v.startsWith('(?i)'); try { return new RegExp(ci ? v.slice(4) : v, ci ? 'i' : '') } catch { return null } }
 
+// 内核认的类型名，照 config.rs 的 serde 名字抄（PipelineSelectorMatcher、Matcher、ResponseMatcher、Action）。名字不在里面的配置内核读都读不进来，
+// 所以这里一加载就报错，不当成「不命中」：面板和这个执行器共用一个写错的名字时，两边对得上，测试却不知道内核根本不收（回答条件的 GeoSite 就是这样漏掉的）
+// The type names the kernel knows, copied from config.rs's serde names (PipelineSelectorMatcher, Matcher, ResponseMatcher, Action). A config
+// with any other name does not even parse in the kernel, so it throws here at load rather than matching nothing: when the panel and this
+// executor share a misspelt name the two agree while the kernel refuses the config outright (the answer check's GeoSite slipped through so)
+const REQUEST_MATCHERS = ['any', 'domain_suffix', 'domain_exact', 'domain_regex', 'client_ip', 'geoip_country', 'geoip_private', 'qclass', 'edns_present', 'geo_site', 'geo_site_not', 'qtype']
+export const KERNEL_TYPES = {
+  entry: new Set([...REQUEST_MATCHERS, 'listener_label']),
+  request: new Set(REQUEST_MATCHERS),
+  response: new Set(['upstream_equals', 'request_domain_suffix', 'request_domain_exact', 'request_domain_regex', 'response_upstream_ip', 'response_answer_ip', 'response_type', 'response_rcode',
+    'response_qclass', 'response_edns_present', 'response_answer_ip_geoip_country', 'response_answer_ip_geoip_private', 'response_request_domain_geo_site', 'response_request_domain_geo_site_not', 'response_txt_content']),
+  action: new Set(['log', 'static_response', 'static_ip_response', 'static_cname_response', 'static_txt_response', 'jump_to_pipeline', 'allow', 'deny', 'forward', 'continue', 'replace_txt_response']),
+}
+export function refuseUnknownTypes(cfg: KConfigLike): void {
+  const check = (kind: keyof typeof KERNEL_TYPES, items: { type?: unknown }[] | undefined, where: string) => {
+    for (const m of items ?? []) if (!KERNEL_TYPES[kind].has(String(m.type))) refuse(`${where}的「${String(m.type)}」不是内核认的类型`)
+  }
+  for (const s of cfg.pipeline_select ?? []) check('entry', s.matchers, `入口「${s.pipeline}」`)
+  const rules = [...(cfg.pipelines ?? []).flatMap((p) => p.rules ?? []), ...(cfg.background_refresh_rule ? [cfg.background_refresh_rule as KRuleLike] : [])]
+  for (const r of rules) {
+    const where = `规则「${r.name}」`
+    check('request', r.matchers, where)
+    check('response', r.response_matchers, where)
+    for (const list of [r.actions, r.response_actions_on_match, r.response_actions_on_miss]) check('action', list, where)
+  }
+}
+// 上游的身份按面板读的那样：UDP、TCP 没写端口的是 53（model.ts withDefaultPort，写进内核时也这样补）。内核不收没端口的写法，
+// 这里比的只是请求去了哪个上游
+// An upstream's identity as the panel reads it: UDP or TCP without a port means 53 (model.ts withDefaultPort, which is also how it is
+// written to the kernel). The kernel refuses the portless form; what is compared here is only which upstream a request went to
+function upstreamKey(addr: string, transport: string): string {
+  const key = normalizeAddress(addr, transport)
+  const at = key.indexOf(':')
+  const kind = key.slice(0, at)
+  const host = key.slice(at + 1)
+  if (kind !== 'udp' && kind !== 'tcp' && kind !== 'tcp_udp') return key
+  if (isIp(host)) return `${kind}:${host.includes(':') ? `[${host}]` : host}:53`
+  const bracketed = /^\[([^\]]+)\]$/.exec(host)?.[1]
+  if (bracketed !== undefined && isIp(bracketed)) return `${kind}:${host}:53`
+  return kind === 'tcp' && /^[A-Za-z0-9.-]+$/.test(host) ? `${kind}:${host}:53` : key
+}
+
 function requestMatch(m: KMatcher, q: SimQuery): boolean {
   const domain = q.domain.toLowerCase().replace(/\.$/, '')
   const value = String(m.value ?? '')
@@ -78,7 +120,7 @@ function requestMatch(m: KMatcher, q: SimQuery): boolean {
     case 'geo_site': return inSimGeosite(domain, value)
     case 'geo_site_not': return !inSimGeosite(domain, value)
     case 'qtype': return value.toUpperCase() === q.qtype.toUpperCase()
-    default: return false
+    default: return refuse(`条件类型 ${m.type} 内核不认`)
   }
 }
 function responseMatch(m: KMatcher, q: SimQuery, r: UpstreamReply): boolean {
@@ -98,14 +140,14 @@ function responseMatch(m: KMatcher, q: SimQuery, r: UpstreamReply): boolean {
     case 'response_edns_present': return true === Boolean(m.expect)
     case 'response_answer_ip_geoip_country': return ips.some((ip) => codes(m).includes(countryOf(ip)))
     case 'response_answer_ip_geoip_private': return ips.some((ip) => isPrivateIp(ip)) === Boolean(m.expect)
-    case 'response_request_domain_geosite': return inSimGeosite(domain, value)
-    case 'response_request_domain_geosite_not': return !inSimGeosite(domain, value)
+    case 'response_request_domain_geo_site': return inSimGeosite(domain, value)
+    case 'response_request_domain_geo_site_not': return !inSimGeosite(domain, value)
     case 'response_txt_content': {
       const txts = r.answers.filter((a) => a.startsWith('TXT ')).map((a) => a.slice(4))
       const mode = String(m.mode ?? 'exact')
       return txts.some((t) => (mode === 'prefix' ? t.startsWith(value) : mode === 'regex' ? regexOf(value)?.test(t) ?? false : t === value))
     }
-    default: return false
+    default: return refuse(`回答条件类型 ${m.type} 内核不认`)
   }
 }
 
@@ -134,13 +176,14 @@ function staticIp(ipList: string, qtype: string): { rcode: string; answers: stri
 }
 
 export function simulate(cfg: KConfigLike, q: SimQuery, respond: Responder): SimResult {
+  refuseUnknownTypes(cfg)
   const pipelines = cfg.pipelines ?? []
   const byId = new Map(pipelines.map((p) => [p.id, p]))
   const settings = cfg.settings ?? {}
   const defaultUp = String(settings.default_upstream ?? '1.1.1.1:53')
   const jumpLimit = Number(settings.response_jump_limit ?? 10)
   const steps: SimStep[] = []
-  const defaultForward = (): Decision => ({ kind: 'forward', upstreams: splitAddrs(defaultUp).map((a) => normalizeAddress(a)).sort(), ecs: '', rule: null })
+  const defaultForward = (): Decision => ({ kind: 'forward', upstreams: splitAddrs(defaultUp).map((a) => upstreamKey(a, 'udp')).sort(), ecs: '', rule: null })
 
   // select_pipeline：第一个命中的入口；都不中就用第一个 Pipeline / the first matching entry, else the first pipeline
   let entry = pipelines[0]?.id ?? 'default'
@@ -154,9 +197,12 @@ export function simulate(cfg: KConfigLike, q: SimQuery, respond: Responder): Sim
     for (const rule of p.rules ?? []) {
       if (!foldChain(rule.matchers ?? [], rule.matcher_operator, (m) => requestMatch(m, q))) continue
       const actions = rule.actions ?? []
-      if (actions.filter((a) => a.type === 'forward').length > 1) {
+      // 几个转发只在轮到转发时才合并：前面写了别的作决定的动作（日志不算）就是那个动作的结果（config.rs compute_merged_forward，内核 main 79e8fd5）
+      // Several forwards merge only when a forward's turn comes: another deciding action written first (a log does not count) gives its own
+      // outcome (config.rs compute_merged_forward, kernel main 79e8fd5)
+      if (actions.filter((a) => a.type === 'forward').length > 1 && actions.find((a) => a.type !== 'log')?.type === 'forward') {
         steps.push({ pipeline: pid, rule: rule.name, phase: 'request', decision: 'forward' })
-        return { kind: 'forward', upstreams: mergedForward(actions).map((a) => normalizeAddress(a)).sort(), ecs: '', rule }
+        return { kind: 'forward', upstreams: mergedForward(actions).map((a) => upstreamKey(a, 'udp')).sort(), ecs: '', rule }
       }
       for (const a of actions) {
         const done = (d: Decision): Decision => { steps.push({ pipeline: pid, rule: rule.name, phase: 'request', decision: d.kind }); return d }
@@ -170,7 +216,7 @@ export function simulate(cfg: KConfigLike, q: SimQuery, respond: Responder): Sim
         if (a.type === 'forward') {
           const t = String(a.transport ?? 'udp')
           const up = typeof a.upstream === 'string' && a.upstream ? splitAddrs(a.upstream) : splitAddrs(defaultUp)
-          return done({ kind: 'forward', upstreams: up.map((x) => normalizeAddress(x, t)).sort(), ecs: ecsKey(a.ecs), rule })
+          return done({ kind: 'forward', upstreams: up.map((x) => upstreamKey(x, t)).sort(), ecs: ecsKey(a.ecs), rule })
         }
         if (a.type === 'replace_txt_response' || a.type === 'continue') break
         // log：不决定，接着看下一个动作 / log decides nothing; the next action follows
@@ -205,7 +251,7 @@ export function simulate(cfg: KConfigLike, q: SimQuery, respond: Responder): Sim
       if (a.type === 'forward') {
         if (++forwards > 4) return { rcode: 'SERVFAIL', answers: [] }
         const t = String(a.transport ?? 'udp')
-        const up = typeof a.upstream === 'string' && a.upstream ? splitAddrs(a.upstream).map((x) => normalizeAddress(x, t)).sort() : d.upstreams
+        const up = typeof a.upstream === 'string' && a.upstream ? splitAddrs(a.upstream).map((x) => upstreamKey(x, t)).sort() : d.upstreams
         reply = respond(up, '', q)
       }
     }

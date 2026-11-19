@@ -24,7 +24,7 @@ describe('配置字段共享校验', () => {
       expect(matcherFieldErrors({ type, operator: 'and', value: 'GeoSite:category-ads-all' }, 'request')).toEqual({ value: GEOSITE_PREFIX_ERROR })
       expect(matcherFieldErrors({ type, operator: 'and', value: 'cn' }, 'request')).toEqual({})
     }
-    for (const type of ['response_request_domain_geosite', 'response_request_domain_geosite_not']) {
+    for (const type of ['response_request_domain_geo_site', 'response_request_domain_geo_site_not']) {
       expect(matcherFieldErrors({ type, operator: 'and', value: 'geosite:cn' }, 'response')).toEqual({ value: GEOSITE_PREFIX_ERROR })
     }
     // 别的条件里的 geosite: 字样不算 / geosite: in any other condition is left alone

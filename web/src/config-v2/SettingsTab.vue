@@ -3,25 +3,29 @@ import { computed } from 'vue'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
-import { groupName, outcomeProblem, upstreamListProblem, withDefaultPorts } from '../config-model/model'
+import { defaultUpstreamFromRest, groupName, outcomeProblem, upstreamListProblem, withDefaultPorts } from '../config-model/model'
 import { changedSettingKeys, model } from './store'
 
 // 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、Geo 数据），最前面多一组「规则默认值」。
-// 「默认上游」不再单独出现：它由「其余请求」决定，生成配置时写成那个组的地址。
+// 「默认上游」一般不单独出现：它由「其余请求」决定，生成配置时写成那个组的地址。
 // The settings tab is today's page (listeners, connections, cache, stale cache, flow control, Geo data) with a 规则默认值
-// group in front. 默认上游 no longer appears on its own: 其余请求 decides it, written as that group's addresses.
-// 有高级规则时「默认上游」照原样留着、能改：高级规则里的「允许」还按它走 / With advanced rules 默认上游 stays visible and editable: their allow still uses it
-const hidden = computed(() => ([...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw) || model.rawPipelines?.length ? [] : ['default_upstream']))
-// 显示出来的「默认上游」照内核读一遍，说法和上游组的地址一样；没写这一项时内核用它的默认值，不查
-// The 默认上游 shown is read as the kernel reads it, worded as an upstream group's addresses; absent, the kernel uses its default and nothing is checked
+// group in front. 默认上游 does not usually appear on its own: 其余请求 decides it, written as that group's addresses.
+// 写进内核的是设置里照写的那个时（有高级规则：它们里面的「允许」还按它走；其余请求拦截时没有组可写），「默认上游」照原样显示、能改、查得出错
+// When what reaches the kernel is the setting as written (with advanced rules, whose allow still uses it; when 其余请求 blocks, with no group to
+// write), 默认上游 is shown as it is, editable and checked
+const hasRaw = computed(() => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw) || Boolean(model.rawPipelines?.length))
+const hidden = computed(() => (defaultUpstreamFromRest(model) ? ['default_upstream'] : []))
+// 显示出来的「默认上游」照内核读一遍，查的是写进内核的那样（没写端口的补上 53），说法和上游组的地址一样；没写这一项时内核用它的默认值，不查
+// The 默认上游 shown is read as the kernel reads it, checking what is written to the kernel (53 for a missing port), worded as an upstream
+// group's addresses; absent, the kernel uses its default and nothing is checked
 const problems = computed((): Record<string, string> => {
   const value = model.settings.default_upstream
-  const problem = hidden.value.length || value === undefined ? null : upstreamListProblem(String(value))
+  const problem = hidden.value.length || value === undefined ? null : upstreamListProblem(withDefaultPorts(String(value)))
   return problem ? { default_upstream: problem } : {}
 })
-// 默认上游写完（离开这一格、按回车）时和上游组的地址按「完成」时一样，只写 IP、TCP 主机的按 53 补上端口；写到一半不动它，上面照写的查
-// 默认上游 once written (leaving the box, pressing Enter) is treated as an upstream group's addresses on 完成: an IP or TCP host alone takes
-// port 53; mid-typing it is left alone and checked above as written
+// 默认上游写完（离开这一格、按回车、在框里按 Ctrl+S）时和上游组的地址按「完成」时一样，只写 IP、TCP 主机的按 53 补上端口；写到一半不动它，也不说错
+// 默认上游 once written (leaving the box, pressing Enter, Ctrl+S inside it) is treated as an upstream group's addresses on 完成: an IP or TCP
+// host alone takes port 53; mid-typing it is left alone, and no mistake is said
 const commit = { default_upstream: withDefaultPorts }
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]
 const blockNote: Record<string, string> = {
@@ -61,7 +65,7 @@ const lead = computed(() => ({
           </div>
         </div>
         <div class="ui-setrow">
-          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟\u2060着它，和规则列表最\u2060下\u2060面那行是同一个设置。' : '一条规则都没命中的请求交给哪里，和规则列表最\u2060下\u2060面那行是同一个设置。有高级规则时，KixDNS 的默认上游在「基础与监听」里单独设。' }}</small></span>
+          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟\u2060着它，和规则列表最\u2060下\u2060面那行是同一个设置。' : `一条规则都没命中的请求交给哪里，和规则列表最\u2060下\u2060面那行是同一个设置。${hasRaw ? '有高级规则时' : model.rest.type === 'block' ? '选拦截时' : '交给的组没有地址时'}，KixDNS 的默认上游在「基础与监听」里单独设。` }}</small></span>
           <div class="ui-setrow__control sets__stack">
             <UiSelect :model-value="restValue" :options="restOptions" label="其余请求" :invalid="restBroken" @update:model-value="setRest" />
             <p v-if="restBroken" class="ui-field-error">这个组已经删掉了，选一个现有的组</p>
