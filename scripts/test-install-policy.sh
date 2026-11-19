@@ -239,6 +239,38 @@ if (
 fi
 KIXDNS_SERVICE_UNIT=kixdns.service
 
+# 路径里的 .、.. 和空的一段（//）会让 dirname 看到的目录和真正写进去的目录对不上，配置目录的两条规则就被绕开：
+# /etc/kixdns/../x.json 看着在 /etc/kixdns 里，实际放在 /etc；/etc/kixdns-panel/x/../pipeline.json 实际在放着 panel.env 的目录里。
+# 每个路径参数都拒绝它们。
+# A ., .. or empty (//) component makes the directory dirname sees differ from the one really written to, so both
+# config-directory rules are bypassed: /etc/kixdns/../x.json looks inside /etc/kixdns but lands in /etc, and
+# /etc/kixdns-panel/x/../pipeline.json lands in the directory holding panel.env. Every path flag refuses them.
+path_verdict() {
+  (validate_absolute_path "路径" "$1" && printf 'accepted\n') 2>&1 || true
+}
+for bad_path in /etc/kixdns/../x.json /etc/kixdns-panel/x/../pipeline.json /etc/kixdns/./pipeline.json \
+  /etc//kixdns/pipeline.json /etc/kixdns/ /etc/kixdns/.. /etc/kixdns/. / //pipeline.json; do
+  output="$(path_verdict "${bad_path}")"
+  assert_contains "${output}" "安装失败：路径必须是绝对路径，不含空白，也不含 .、.. 或空的一段（//）" "${bad_path} 应被拒绝"
+  assert_not_contains "${output}" "accepted" "${bad_path} 不能被接受"
+done
+for good_path in /etc/kixdns/pipeline.json /srv/..kixdns/pipeline.json /srv/kixdns./x.json /run/kixdns/admin.sock; do
+  assert_equals "$(path_verdict "${good_path}")" "accepted" "${good_path} 应被接受"
+done
+for flag in --kixdns-config --kixdns-binary --control-socket; do
+  output="$(
+    (
+      parse_arguments "${flag}" /etc/kixdns/../x.json
+      KIXDNS_SERVICE_UNIT=kixdns.service
+      INSTALL_KIND=fresh
+      validate_install_mode
+      printf 'CONTINUED\n'
+    ) 2>&1 || true
+  )"
+  assert_contains "${output}" "不含 .、.. 或空的一段（//）" "${flag} 带 .. 时应被拒绝"
+  assert_not_contains "${output}" "CONTINUED" "${flag} 带 .. 时不能继续安装"
+done
+
 # ---------------------------------------------------------------------------
 # 旧「仅安装面板」主机 / Legacy panel-only hosts
 # ---------------------------------------------------------------------------
@@ -811,6 +843,44 @@ assert_contains "${output}" "UNIT=current unit" "再迁移时应备份主机上�
 assert_contains "${output}" "KIXDNS_CONFIG=/etc/new.json " "再迁移时应记下现在的原配置"
 assert_contains "${output}" "KIXDNS_WAS_ACTIVE=false KIXDNS_WAS_ENABLED=false " "再迁移时应记下现在的运行与开机状态"
 assert_contains "${output}" "AFTER-ROLLBACK=old unit 1" "迁移失败回滚应把原来那份备份原样放回"
+
+# 回归：旧备份刚挪进回滚备份、还没记下「这次建了备份」时被中断（Ctrl-C、SIGTERM），回滚按那个还没设的标记跳过了放回，
+# 旧备份随回滚备份一起删掉。放回要看回滚备份里实际有没有它。
+# Regression: interrupted (Ctrl-C, SIGTERM) right after the old backup moved into the rollback backup and before the run
+# recorded that it made a backup, the rollback skipped the move-back on that unset flag and the old backup was deleted with
+# the rollback backup. The move-back must follow what the rollback backup actually holds.
+interrupted_stale_backup() {
+  local root="${WORK}/interrupted-stale-backup"
+  rm -rf -- "${root}"
+  mkdir -p "${root}/units" "${root}/external-backup" "${root}/rollback"
+  printf 'old unit\n' > "${root}/external-backup/kixdns.service"
+  printf 'KIXDNS_BINARY=/usr/local/bin/kixdns\n' > "${root}/external-backup/install.env"
+  printf 'current unit\n' > "${root}/units/kixdns.service"
+  (
+    EXTERNAL_BACKUP="${root}/external-backup"
+    SYSTEMD_UNIT_DIRECTORY="${root}/units"
+    BACKUP_ROOT="${root}/rollback"
+    install() { mkdir -p "${@: -1}"; }
+    chmod() { :; }
+    systemctl() { :; }
+    restore_path() { :; }
+    restore_managed_config() { :; }
+    restore_panel_database() { :; }
+    # 旧备份挪走的那一刻被中断 / Interrupted the moment the old backup has moved
+    mv() { command mv "$@"; [[ ${*: -1} != "${BACKUP_ROOT}/external-backup" ]] || rollback_install 130 interrupted; }
+    INSTALL_MODE=managed
+    INSTALL_KIND=migrate
+    EXISTING_PANEL=false
+    EXISTING_KIXDNS_BINARY_PATH=/usr/local/bin/kixdns
+    KIXDNS_BINARY_CHANGED=true
+    KIXDNS_UNIT_CHANGED=true
+    RESOLVED_CHANGED=false
+    preserve_external_install
+    printf 'NOT-INTERRUPTED\n'
+  ) > /dev/null 2>&1 || true
+  printf 'AFTER-INTERRUPT=%s\n' "$(cat "${root}/external-backup/kixdns.service" 2>/dev/null || printf missing)"
+}
+assert_equals "$(interrupted_stale_backup)" "AFTER-INTERRUPT=old unit" "旧备份挪走后马上被中断，回滚也要把它放回去"
 
 # ---------------------------------------------------------------------------
 # 迁移时的配置 / The config on migration

@@ -40,6 +40,10 @@ KIXDNS_KEPT_EARLIER=false
 # Units pointing at the panel's kixdns after the binary is gone: panel-created ones go with the panel, others stay.
 DEAD_PANEL_UNITS=()
 DEAD_FOREIGN_UNITS=()
+# 和 install.sh 一样：放回去的原来的 KixDNS 要在这么长时间里起来，并保持同一个主进程这么久。
+# As in install.sh: the original KixDNS put back must come up within this long and keep one main process for this long.
+SERVICE_WAIT_SECONDS=15
+SERVICE_STABLE_SECONDS=4
 
 fail() {
   printf '卸载失败：%s\n' "$*" >&2
@@ -606,6 +610,54 @@ mark_kixdns_unmanaged() {
   mv -fT -- "${temporary}" "${PANEL_ENV}"
 }
 
+port_accepts_connection() {
+  local host=$1
+  local port=$2
+  # install.sh 不要求 curl；bash 自带的 /dev/tcp 足够确认端口在接受连接。
+  # install.sh does not require curl; bash's own /dev/tcp is enough to see the port accepting connections.
+  # shellcheck disable=SC2016 # $1/$2 由内层 bash 展开 / expanded by the inner bash
+  timeout 1 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "${host}" "${port}" 2>/dev/null
+}
+
+# 和 install.sh 的同名函数一字不差（scripts/test-uninstall-policy.sh 校对）：卸载器单独分发，不能 source 安装器。
+# Identical to install.sh's function of the same name (checked by scripts/test-uninstall-policy.sh): the uninstaller ships
+# on its own and cannot source the installer.
+# Type=simple 的服务 fork 成功 systemctl 就返回，崩溃循环也会先显示 active。
+# 这里要求主进程在比 RestartSec 更长的窗口里保持同一个 PID，必要时端口也已接受连接。
+# systemctl returns as soon as a Type=simple service forks, and a crash loop briefly reads active.
+# Require the same main PID for longer than RestartSec, and the port accepting connections when given.
+wait_for_service_stable() {
+  local unit=$1
+  local host=${2:-}
+  local port=${3:-}
+  local tick
+  local state
+  local pid
+  local stable_pid=""
+  local stable_ticks=0
+  for ((tick = 0; tick < SERVICE_WAIT_SECONDS * 2; tick++)); do
+    state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
+    pid="$(systemctl show --property=MainPID --value "${unit}" 2>/dev/null || true)"
+    if [[ ${state} == active && ${pid} =~ ^[1-9][0-9]*$ ]]; then
+      if [[ ${pid} == "${stable_pid}" ]]; then
+        stable_ticks=$((stable_ticks + 1))
+      else
+        stable_pid=${pid}
+        stable_ticks=0
+      fi
+      if ((stable_ticks >= SERVICE_STABLE_SECONDS * 2)) &&
+        { [[ -z ${port} ]] || port_accepts_connection "${host}" "${port}"; }; then
+        return 0
+      fi
+    else
+      stable_pid=""
+      stable_ticks=0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
 restore_external_state() {
   [[ ${RESTORED_EXTERNAL} == true ]] || return 0
   if [[ ${ORIGINAL_ENABLED} == true ]]; then
@@ -615,6 +667,9 @@ restore_external_state() {
   fi
   if [[ ${ORIGINAL_ACTIVE} == true ]]; then
     systemctl start "${ORIGINAL_UNIT}" || restore_incomplete
+    # start 在 Type=simple 的服务 fork 以后就返回 0：起来又崩溃的不算恢复。
+    # start returns 0 once a Type=simple service forks: one that comes up and crashes is not restored.
+    wait_for_service_stable "${ORIGINAL_UNIT}" || restore_incomplete
   else
     systemctl stop "${ORIGINAL_UNIT}" 2>/dev/null || true
   fi

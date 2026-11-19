@@ -479,6 +479,23 @@ assert_not_contains() {
 
 INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 
+# 卸载器单独分发、不能 source 安装器，这几个函数各有一份，必须一字不差：哪边改了另一边没跟上，这里就失败。
+# The uninstaller ships on its own and cannot source the installer, so these functions exist twice and must match
+# exactly: when one side changes without the other, this fails.
+for shared_function in wait_for_service_stable port_accepts_connection; do
+  installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}")"
+  uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
+  [[ -n ${installer_copy} && ${installer_copy} == "${uninstaller_copy}" ]] || {
+    printf '断言失败：安装器和卸载器的 %s 不一样\n' "${shared_function}" >&2
+    diff <(printf '%s\n' "${installer_copy}") <(printf '%s\n' "${uninstaller_copy}") >&2 || true
+    exit 1
+  }
+done
+for shared_setting in SERVICE_WAIT_SECONDS SERVICE_STABLE_SECONDS; do
+  assert_equals "$(bash -c "source '${UNINSTALLER}'; printf '%s' \"\${${shared_setting}:-}\"")" \
+    "$(bash -c "source '${INSTALLER}'; printf '%s' \"\${${shared_setting}}\"")" "安装器和卸载器的 ${shared_setting} 应一样"
+done
+
 # 在临时目录里搭一台迁移过的主机：用安装器自己的函数迁移一个外部 KixDNS（原配置 etc/kixdns.json），
 # 再像面板那样改写它管理的那份配置。改动系统的命令换成只在临时目录里生效的替身。
 # Build a migrated host in a scratch tree: migrate an external KixDNS (original config etc/kixdns.json) with the
@@ -571,14 +588,26 @@ uninstall_scratch_host() {
     RESOLVED_STATE="${PANEL_STATE_DIRECTORY}/resolved-stub"
     KIXDNS_RUNTIME_DIRECTORY="${root}/run-kixdns"
     KIXDNS_CONFIG_DIRECTORY="${root}/etc-kixdns"
-    # SYSTEMCTL_LOG 非空时记下每个 systemctl 调用；SYSTEMCTL_FAIL_START=true 时启动服务失败，像真的卸载器那样就此停下。
-    # With SYSTEMCTL_LOG set every systemctl call is recorded; with SYSTEMCTL_FAIL_START=true starting a service fails and,
-    # as in the real uninstaller, the run stops there.
+    # SYSTEMCTL_LOG 非空时记下每个改动服务的 systemctl 调用；SYSTEMCTL_FAIL_START=true 时启动服务失败，像真的卸载器那样就此
+    # 停下。查询（show）不记：恢复后等原来的 KixDNS 稳定运行时会反复查它的状态，默认它一直是同一个主进程；
+    # SYSTEMCTL_UNSTABLE=true 时它一直起不来（Restart= 的崩溃循环里总是 activating）。
+    # With SYSTEMCTL_LOG set every systemctl call that changes a service is recorded; with SYSTEMCTL_FAIL_START=true starting
+    # a service fails and, as in the real uninstaller, the run stops there. Queries (show) are not recorded: after the restore
+    # the uninstaller keeps asking for the original KixDNS's state while waiting for it to settle, and by default it stays
+    # the same main process; with SYSTEMCTL_UNSTABLE=true it never comes up (always activating in a Restart= crash loop).
     systemctl() {
+      if [[ $1 == show ]]; then
+        case $2 in
+          --property=ActiveState) [[ ${SYSTEMCTL_UNSTABLE:-} == true ]] && printf 'activating\n' || printf 'active\n' ;;
+          --property=MainPID) printf '4242\n' ;;
+        esac
+        return 0
+      fi
       [[ -z ${SYSTEMCTL_LOG:-} ]] || printf '%s\n' "$*" >> "${SYSTEMCTL_LOG}"
       [[ $1 != start || ${SYSTEMCTL_FAIL_START:-} != true ]] || return 1
       [[ $1 != is-active ]]
     }
+    sleep() { :; }
     getent() { return 2; }
     groupdel() { :; }
     chown() { :; }
@@ -722,6 +751,26 @@ for config_action in keep remove; do
   [[ ! -e ${host}/state/external-backup ]] || { printf '断言失败：恢复做完后应删掉备份（%s）\n' "${config_action}" >&2; exit 1; }
 done
 [[ ! -e ${host}/panel-etc ]] || { printf '断言失败：恢复做完后删除数据时面板配置目录应删掉\n' >&2; exit 1; }
+
+# 回归：Type=simple 的服务 fork 成功 systemctl start 就返回 0，原来的 KixDNS 随后崩溃循环（读不了配置之类），卸载却说已恢复、
+# 用掉了备份，再运行也接不上。要像安装器那样等它稳定运行；起不来就和启动失败一样，留着备份和 panel.env，说清怎么接着恢复。
+# Regression: systemctl start returns 0 once a Type=simple service forks, and the original KixDNS then crash-looped (unable to
+# read its config, say) while the uninstall reported it restored and used the backup up, so a rerun could not carry on. Wait
+# for it to settle as the installer does; when it does not, keep the backup and panel.env and say how to carry on, as for a
+# failed start.
+for config_action in keep remove; do
+  migrated_host "${host}" > /dev/null 2>&1 || printf 'MIGRATION-FAILED\n'
+  output="$(SYSTEMCTL_UNSTABLE=true uninstall_scratch_host "${host}" --remove-kixdns "--${config_action}-config" --yes)"
+  assert_contains "${output}" "RUN-FAILED" "原来的 KixDNS 起来又崩溃时卸载应失败（${config_action}）"
+  assert_contains "${output}" "原来的 KixDNS（kixdns.service）没能按迁移前的状态恢复" "起来又崩溃时应说明没恢复好（${config_action}）"
+  assert_contains "${output}" "| sudo bash -s -- --remove-kixdns --${config_action}-config --yes" \
+    "起来又崩溃时应给出接着恢复的命令（${config_action}）"
+  assert_not_contains "${output}" "原来的 KixDNS 已恢复" "起来又崩溃时不能说已恢复（${config_action}）"
+  [[ -f ${host}/state/external-backup/install.env && -f ${host}/panel-etc/panel.env ]] ||
+    { printf '断言失败：原来的 KixDNS 没稳定运行时备份和 panel.env 都要留着（%s）\n' "${config_action}" >&2; exit 1; }
+  output="$(uninstall_scratch_host "${host}" --remove-kixdns "--${config_action}-config" --yes)"
+  assert_contains "${output}" "原来的 KixDNS 已恢复，运行状态和迁移前一样。" "它能稳定运行以后重新运行卸载器应恢复完（${config_action}）"
+done
 
 # 保留增强版、删除面板数据：保留的 KixDNS 还在用副本，副本和它的目录必须留下，面板配置目录里的其他东西照删；
 # 再卸载一次（这时已经没有 panel.env）也一样。

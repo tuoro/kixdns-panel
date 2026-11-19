@@ -158,11 +158,17 @@ validate_unit() {
     fail "KixDNS systemd unit 名称无效"
 }
 
+# 路径里的 .、.. 和空的一段（//，或者结尾的 /）都不收：dirname 看到的目录会和真正写进去的目录对不上，配置目录的规则
+# （require_dedicated_config_directory）就被绕开了，例如 /etc/kixdns/../x.json 实际放在 /etc。
+# Paths with a ., .. or empty component (//, or a trailing /) are refused: the directory dirname sees would differ from the
+# one really written to, bypassing the config-directory rules (require_dedicated_config_directory); /etc/kixdns/../x.json,
+# say, lands in /etc.
 validate_absolute_path() {
   local label=$1
   local path=$2
-  [[ ${path} == /* && ${#path} -le 4096 && ! ${path} =~ [[:space:]] ]] ||
-    fail "${label}必须是不含空白的绝对路径"
+  [[ ${path} == /* && ${#path} -le 4096 && ! ${path} =~ [[:space:]] &&
+    ${path}/ != *//* && ${path}/ != */./* && ${path}/ != */../* ]] ||
+    fail "${label}必须是绝对路径，不含空白，也不含 .、.. 或空的一段（//）"
 }
 
 environment_value() {
@@ -1120,13 +1126,17 @@ rollback_install() {
       systemctl stop "${KIXDNS_SERVICE_UNIT}" 2>/dev/null
     fi
     rm -rf -- "${EXTERNAL_BACKUP}"
-    # 这次迁移换下来的旧备份放回去，主机和安装前一样 / The old backup this migration replaced goes back, leaving the host as
-    # it was before the install
-    if [[ -e ${BACKUP_ROOT}/external-backup || -L ${BACKUP_ROOT}/external-backup ]]; then
-      mv -- "${BACKUP_ROOT}/external-backup" "${EXTERNAL_BACKUP}"
-    fi
   elif kixdns_replaced; then
     restore_managed_service_state
+  fi
+  # 这次迁移换下来的旧备份放回去，主机和安装前一样。看回滚备份里实际有没有它，不看上面的标记：旧备份挪走以后、标记设上以前
+  # 被中断时，它只在回滚备份里，跟着回滚备份删掉就没了。
+  # The old backup this migration replaced goes back, leaving the host as it was before the install. Whether the rollback
+  # backup really holds it decides, not the flag above: interrupted after the old backup moved and before the flag was set,
+  # it lives only in the rollback backup and would be deleted with it.
+  if [[ -e ${BACKUP_ROOT}/external-backup || -L ${BACKUP_ROOT}/external-backup ]]; then
+    rm -rf -- "${EXTERNAL_BACKUP}"
+    mv -- "${BACKUP_ROOT}/external-backup" "${EXTERNAL_BACKUP}"
   fi
   if [[ ${EXISTING_PANEL} == true ]]; then
     systemctl restart kixdns-panel.service
