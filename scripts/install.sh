@@ -198,6 +198,10 @@ QUARANTINED_TO=""
 # SHOULD 3：回滚真的开始了（rollback_install 一进来就设）；在这之前退出时由 on_installer_exit 收拾 / SHOULD 3: the rollback
 # really started (set first thing in rollback_install); an exit before that is tidied up by on_installer_exit
 ROLLBACK_STARTED=false
+# 这次重写不能信的 panel.env 时挪进 quarantine 的那份；回滚放回原来的 panel.env 以后它只是副本，删掉 / The copy moved into
+# quarantine when this run rewrote an untrusted panel.env; once a rollback puts the old panel.env back it is only a
+# duplicate, and goes
+PANEL_ENV_QUARANTINED=""
 ONE_CLICK_URL="https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh"
 # 和 uninstall.sh 同一个：本地的卸载命令随面板删掉以后接着卸载用的 / The same as uninstall.sh's: what carries an uninstall on
 # once the local command is gone with the panel
@@ -2281,6 +2285,7 @@ rollback_install() {
     restore_original_config
     restore_panel_database
     restore_path "${PANEL_ENV}" panel-env
+    [[ -z ${PANEL_ENV_QUARANTINED} ]] || rm -f -- "${PANEL_ENV_QUARANTINED}"
     restore_owners
     sweep_new_panel_files
   fi
@@ -3079,6 +3084,7 @@ update_panel_environment() {
   chmod 0640 -- "${temporary}"
   if [[ ${PANEL_ENV_TRUSTED} == false && ( -e ${PANEL_ENV} || -L ${PANEL_ENV} ) ]]; then
     quarantine_record "${PANEL_ENV}" panel.env
+    PANEL_ENV_QUARANTINED=${QUARANTINED_TO}
     destination="已删掉"
     [[ -z ${QUARANTINED_TO} ]] || destination="挪到了 ${QUARANTINED_TO}"
     printf '%s 面板能改，这次照安装包的示例重写，里面原来的设置一项也没用（%s）；要用其中的设置（比如监听地址），核对以后照着改 %s，再 sudo systemctl restart kixdns-panel.service。\n' \

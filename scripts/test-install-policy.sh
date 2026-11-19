@@ -2945,6 +2945,7 @@ escape_run() {
     installed_kixdns_labels
     printf 'LABELS=%s %s %s\n' "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
     update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
+    [[ -z ${PANEL_ENV_QUARANTINED:-} || ! -f ${PANEL_ENV_QUARANTINED} ]] || printf 'REMEMBERED-QUARANTINE\n'
   ) 2>&1
   printf 'CONFIG-LINES=%s\n' "$(grep -c '^KIXDNS_CONFIG=' "${base}/panel-etc/panel.env")"
   printf 'FIRST-CONFIG=%s\n' "$(grep -m1 '^KIXDNS_CONFIG=' "${base}/panel-etc/panel.env")"
@@ -2961,6 +2962,15 @@ assert_not_contains "${output}" "INJECTED" "不能信的 panel.env 里的值不�
 assert_not_contains "${output}" "CARRIED-OVER" "不能信的 panel.env 里认不得的行不能带过来"
 assert_contains "${output}" "KIXDNS_PANEL_BIND=0.0.0.0:5738" "不能信的 panel.env 照安装包的示例重写"
 assert_contains "${output}" "OLD-QUARANTINED" "不能信的 panel.env 应挪进 quarantine 留给管理员看"
+# 回滚放回原来的 panel.env 以后，这次挪进 quarantine 的那份只是它的副本：记下它，回滚时删掉（容器里中断在重写以后的那几处，
+# quarantine 里多出一份）/ Once a rollback puts the old panel.env back, the copy this run moved into quarantine is only a
+# duplicate: it is remembered and the rollback removes it (interrupting just after the rewrite left one more in quarantine
+# in the container)
+assert_contains "${output}" "REMEMBERED-QUARANTINE" "挪进 quarantine 的 panel.env 应记下来，回滚时删掉"
+restore_env_line="$(grep -n 'restore_path "${PANEL_ENV}" panel-env' <<< "$(declare -f rollback_install)" | head -n 1 | cut -d: -f1 || true)"
+drop_env_line="$(grep -n 'rm -f -- "${PANEL_ENV_QUARANTINED}"' <<< "$(declare -f rollback_install)" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${restore_env_line} && -n ${drop_env_line} && ${drop_env_line} -eq $((restore_env_line + 1)) ]] ||
+  { printf '断言失败：回滚放回 panel.env 以后应删掉这次挪进 quarantine 的那份（restore=%s drop=%s）\n' "${restore_env_line}" "${drop_env_line}" >&2; exit 1; }
 assert_contains "${output}" "面板能改，这次照安装包的示例重写，里面原来的设置一项也没用" "重写不能信的 panel.env 时应说明"
 # 内核的来源、提交、编号照 root 的事实定：面板目录里的内核和这个包的一字不差，就是包里的；不然写成空
 # The kernel's source, commit and id from root's facts: a kernel identical to this package's is the package's; otherwise
