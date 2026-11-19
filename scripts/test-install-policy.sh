@@ -2431,6 +2431,105 @@ assert_not_contains "${output}" "panel.db.v5-1795091192.bak" "回滚应删掉这
 assert_not_contains "${output}" ".kixdns-panel-Ab12Cd" "回滚应删掉这次的面板写到一半的临时文件"
 assert_contains "${output}" "panel.db" "回滚不能删掉本来就有的数据库"
 
+# R2：建了面板账号以后再停一次它的进程：新账号可能拿到旧账号空出来的 UID。/ R2: the panel account's processes are stopped
+# once more after it is created: a new account may get a UID an old one freed.
+main_body="$(declare -f main)"
+accounts_line="$(grep -n 'create_accounts' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+directories_line="$(grep -n 'create_panel_directories' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+second_stop="$(sed -n "${accounts_line},${directories_line}p" <<< "${main_body}" | grep -c 'stop_panel_processes' || true)"
+assert_equals "${second_stop}" "1" "建了面板账号以后、建目录之前应再停一次它的进程"
+# R2：要停的 UID 里有面板能写的路径的属主里已经没有账号的那些（旧面板账号删掉以后它的进程可能还在）。
+# R2: the UIDs to stop include owners of panel-writable paths that no longer have an account (the processes of a deleted
+# old panel account may live on).
+freed_uids="$(
+  id() { return 1; }
+  stat() { [[ $2 == %u ]] && printf '4711\n'; }
+  getent() { return 2; }
+  panel_process_uids "${WORK}"
+)"
+assert_equals "${freed_uids}" "4711" "面板能写的路径归一个已经没有账号的 UID 时，它的进程也要停"
+# R2：开头为了挪旧版的记录停了面板，没真的开始安装就退出时照原样重启它；没开头停过的照常看 systemd。
+# R2: when the panel was stopped at the start to move older records and the run ends before the install really starts, it
+# is restarted as it was; otherwise systemd is asked as usual.
+early_restart="$(
+  (
+    systemctl() { printf 'systemctl %s\n' "$*"; [[ $1 == is-active ]]; }
+    stop_panel_processes() { :; }
+    quiesce_for_records
+    panel_was_running && printf 'WAS-RUNNING\n'
+  )
+)"
+assert_contains "${early_restart}" "systemctl stop kixdns-panel.service" "挪旧版的记录之前应停面板"
+assert_contains "${early_restart}" "systemctl start kixdns-panel.service" "没真的开始安装就退出时应重启开头停下的面板"
+assert_contains "${early_restart}" "WAS-RUNNING" "开头停过面板时，看的是停之前它在不在运行"
+# R3：内核包的身份目录已经有时不用 install -d；里面的文件先删掉同名的再写。/ R3: an existing bundle directory gets no
+# install -d; its files are removed by name before being written.
+output="$(
+  base="${WORK}/bundle-target"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/bundle"
+  ln -s -- /nonexistent "${base}/bundle/KIXDNS_BUILD_COMMIT"
+  install() { printf 'install %s\n' "$*"; }
+  chown() { printf 'chown %s\n' "$*"; }
+  chmod() { printf 'chmod %s\n' "$*"; }
+  abort_install() { printf 'ABORTED %s\n' "$*"; exit 1; }
+  INSTALL_KIND=upgrade
+  eval "$(declare -f install_bundled_metadata | sed "s|/var/lib/kixdns-panel/bundle|${base}/bundle|")"
+  install_bundled_metadata
+  [[ -L ${base}/bundle/KIXDNS_BUILD_COMMIT ]] && printf 'LINK-LEFT\n'
+  true
+)"
+assert_not_contains "${output}" "install -d -o root -g kixdns -m 0750 ${WORK}/bundle-target/bundle" "已有的 bundle 目录不能用 install -d"
+assert_contains "${output}" "chown -h root:kixdns -- ${WORK}/bundle-target/bundle" "已有的 bundle 目录查过以后 chown -h"
+assert_not_contains "${output}" "LINK-LEFT" "写 bundle 里的文件之前应删掉同名的东西"
+# R3：放回属主只放到还是同一种东西上：记下时是目录、现在成了文件（或符号链接）的不动。/ R3: owners go back only onto the same
+# kind of thing: what was a directory when recorded and is now a file (or a symlink) is left alone.
+output="$(
+  base="${WORK}/owners-kind"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/backup" "${base}/swapped"
+  BACKUP_ROOT="${base}/backup"
+  record_owner "${base}/swapped"
+  rmdir -- "${base}/swapped"
+  : > "${base}/swapped"
+  chown() { printf 'chown %s\n' "$*"; }
+  chmod() { printf 'chmod %s\n' "$*"; }
+  restore_owners
+)"
+assert_not_contains "${output}" "${WORK}/owners-kind/swapped" "记下时是目录、现在不是的不能放回属主和权限"
+# R3：回滚放回配置时，已有的配置目录不用 install -d（它会改成 0755）。/ R3: putting the config back on rollback runs no
+# install -d on an existing config directory (which would make it 0755).
+(
+  base="${WORK}/managed-config"
+  rm -rf -- "${base}"
+  mkdir -p "${base}/backup" "${base}/etc-kixdns"
+  chmod 0700 "${base}/etc-kixdns"
+  printf '{}\n' > "${base}/backup/kixdns-config"
+  BACKUP_ROOT="${base}/backup"
+  KIXDNS_CONFIG_PATH="${base}/etc-kixdns/pipeline.json"
+  restore_managed_config
+)
+assert_equals "$(stat -c '%a' "${WORK}/managed-config/etc-kixdns")" "700" "回滚放回配置时不能改已有配置目录的权限"
+# R3：面板停了以后再查一遍时，panel.env 也不能是符号链接（安装器要读它、换掉它）。/ R3: on the check once the panel has
+# stopped, panel.env may not be a symlink either (the installer reads and replaces it).
+targets_tree
+mkdir -p "${WORK}/targets/panel-etc"
+ln -s -- "${WORK}/targets/elsewhere/shadow" "${WORK}/targets/panel-etc/panel.env"
+assert_contains "$(PANEL_ENV=${WORK}/targets/panel-etc/panel.env targets_verdict)" "panel.env 不能是符号链接" "panel.env 是符号链接时应被拒绝"
+# R4：照 unit 认配置路径，只认跑面板的 KixDNS 程序、只有 root 能改的 unit 文件。/ R4: the config path comes only from a unit
+# file that runs the panel's KixDNS program and that root alone can change.
+unit_base="${WORK}/unit-config"
+rm -rf -- "${unit_base}"
+mkdir -p "${unit_base}/units"
+printf '[Service]\nExecStart=/var/lib/kixdns-panel/bin/kixdns run --config /etc/kixdns/pipeline.json --admin-socket /run/kixdns/admin.sock\n' \
+  > "${unit_base}/units/kixdns.service"
+printf '[Service]\nExecStart=/usr/bin/other run --config /etc/kixdns/pipeline.json\n' > "${unit_base}/units/other.service"
+assert_equals "$(ROOT_UID="$(id -u)" managed_unit_config "${unit_base}/units/kixdns.service")" "/etc/kixdns/pipeline.json" \
+  "跑面板 KixDNS 的 unit 应给出它的配置"
+assert_equals "$(ROOT_UID="$(id -u)" managed_unit_config "${unit_base}/units/other.service")" "" "跑别的程序的 unit 不能拿来认配置"
+chmod 0664 "${unit_base}/units/kixdns.service"
+assert_equals "$(ROOT_UID="$(id -u)" managed_unit_config "${unit_base}/units/kixdns.service")" "" "别人能改的 unit 文件不能拿来认配置"
+
 # 规则写在脚本开头 / The rules are written at the top of the script
 for rule in R1 R2 R3 R4; do
   assert_contains "$(head -n 60 "${INSTALLER}")" "# ${rule}：" "install.sh 开头应写明规则 ${rule}"

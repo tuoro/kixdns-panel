@@ -1578,7 +1578,7 @@ account_line="$(grep -n 'remove_account kixdns-panel' <<< "${state_body}" | head
 # Regression (#4): when a unit's config argument cannot be told (a variable, a relative path), /etc/kixdns stays whole,
 # what the panel owns goes to root, and this is said.
 # shellcheck disable=SC2016 # 就是要 unit 里写着没展开的变量 / The unit is meant to hold the unexpanded variable
-for unclear_option in '-c ${KIXDNS_CONFIG}' '--config=pipeline.json'; do
+for unclear_option in '-c ${KIXDNS_CONFIG}' '--config=pipeline.json' ''; do
   fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
   assert_not_contains "$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)" "RUN-FAILED" "先移除面板的 KixDNS 不应失败"
   printf '[Service]\nExecStart=/usr/local/bin/kixdns run %s\n' "${unclear_option}" > "${host}/units/kixdns.service"
