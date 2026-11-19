@@ -140,9 +140,20 @@ export function withDefaultPort(item: UpstreamAddress): UpstreamAddress {
   const address = item.address.trim()
   const prefix = /^[a-z+]+:\/\//i.exec(address)?.[0] ?? ''
   const host = address.slice(prefix.length)
+  // 方括号里的 IPv6 也一样：写了括号没写端口 / An IPv6 in brackets too: brackets written, the port not
+  const bracketed = /^\[([^\]]+)\]$/.exec(host)?.[1]
+  if (bracketed !== undefined && bracketed.includes(':') && isIp(bracketed)) return { ...item, address: `${prefix}${host}:53` }
   const bare = isIp(host) || (protocol === 'tcp' && /^[A-Za-z0-9.-]+$/.test(host))
   return bare ? { ...item, address: `${prefix}${host.includes(':') ? `[${host}]` : host}:53` } : item
 }
+/**
+ * 一个上游地址写进内核的样子：协议写成前缀，没写端口的按 53 补上。编配置、编辑器查地址、按地址认组和对统计都用它，
+ * 所以没点「完成」就保存的、以前存下来没带端口的，写出去都是内核认的那样，下次保存就好了
+ * One upstream address as written to the kernel: the protocol as a prefix, a missing port taken as 53. Compiling, the editor's
+ * check, matching groups by address and matching statistics all use it, so an address saved without 完成, or stored portless
+ * long ago, is written as the kernel takes it and heals on the next save
+ */
+export const kernelUpstream = (item: UpstreamAddress): string => kernelAddress(withDefaultPort(item))
 /**
  * 一串逗号隔开的上游（设置里的默认上游）逐个按 withDefaultPort 补端口，没写前缀的照 UDP 读，和内核一样；要补的那几个换掉，别的写法（空格、逗号）
  * 一个字不动。默认上游写完（离开这一格、按回车）时用它，和上游组的地址按「完成」时一样
@@ -176,7 +187,7 @@ const DOMAIN_OPS: OpDef[] = [
   { value: 're', label: '匹配正则', negate: false, regex: true }, { value: 'nre', label: '不匹配正则', negate: true, regex: true },
 ]
 // 「就是」配 *. 自相矛盾：通配符说的是子域名 / 「就是」 with *. contradicts itself: the wildcard speaks of subdomains
-const domainValid = (v: string, c: { regex?: boolean; exact?: boolean }) => (c.regex ? kernelRegexOk(v) : isDomain(v) && !(c.exact && v.startsWith('*.')))
+const domainValid = (v: string, c: { regex?: boolean; exact?: boolean }) => (c.regex ? kernelRegexOk('domain', v) : isDomain(v) && !(c.exact && v.startsWith('*.')))
 // 内核按写的原样查分类，「geosite:cn」找不到 cn 这个分类，永远不命中 / The kernel looks the category up as written, so 「geosite:cn」 never finds cn and never matches
 const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
 // 记录类型、类别、响应码内核只认那几个：标红的同时说出能用哪些（HTTPS 这样的真类型标红了不说，看着像面板错了）
@@ -215,7 +226,7 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
     { value: 'prefix', label: '开头是', negate: false, txtMode: 'prefix' }, { value: 'nprefix', label: '开头不是', negate: true, txtMode: 'prefix' },
     { value: 're', label: '匹配正则', negate: false, txtMode: 'regex' }, { value: 'nre', label: '不匹配正则', negate: true, txtMode: 'regex' },
-  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? byteLength(v) <= TXT_REGEX_BYTES && kernelRegexOk(v) : true) },
+  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? byteLength(v) <= TXT_REGEX_BYTES && kernelRegexOk('txt', v) : true) },
   qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN', upper: true, suggest: 'qclass', valid: isQclass, explain: onlyThese('查询类别', isQclass, CLASSES_TEXT) },
   edns: { label: '回答的 EDNS', ops: [{ value: 'is', label: '带', phrase: '回答带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '回答不带 EDNS', negate: true }], values: false, placeholder: '' },
 }
@@ -341,12 +352,18 @@ export const withoutWildcard = (v: string) => v.replace(/^\*\./, '')
 // 域名「就是」写了 *.：通配符说的是子域名，和「就是」矛盾，直接说怎么改 / 域名 就是 with *.: a wildcard speaks of subdomains, which 就是 excludes, so say how to fix it
 export const exactWildcardProblem = (c: { regex?: boolean; exact?: boolean; values: string[] }): string | null =>
   !c.regex && c.exact && c.values.some((v) => v.startsWith('*.')) ? '「就是」只算这个名字本身，*. 要改用「属于」' : null
+// 写进内核的那几个值：去掉两头空白，空的不算（编配置时也这样，见 eachValue） / The values written to the kernel: trimmed, blanks
+// dropped (as compiling does, see eachValue)
+const filledValues = (values: string[]): string[] => values.map((x) => x.trim()).filter(Boolean)
 export function valueProblem(def: FieldDef, c: { values: string[]; regex?: boolean; exact?: boolean; txtMode?: string }): string | null {
   if (!def.values) return null
-  if (!c.values.length) return `「${def.label}」还没填值`
-  const why = def.explain?.(c)
+  // 查的就是写进内核的那几个：只有空白的值编出来什么都没有，「全部满足」时成了所有回答都算 / What is checked is what is written: a value of
+  // blanks compiles to nothing, which under 「全部满足」 made every answer count
+  const filled = { ...c, values: filledValues(c.values) }
+  if (!filled.values.length) return `「${def.label}」还没填值`
+  const why = def.explain?.(filled)
   if (why) return why
-  if (def.valid && !c.values.every((v) => def.valid!(v, c))) return `「${def.label}」里有写错的值（标红的那个）`
+  if (def.valid && !filled.values.every((v) => def.valid!(v, filled))) return `「${def.label}」里有写错的值（标红的那个）`
   return null
 }
 export const conditionProblem = (c: Condition) => valueProblem(FIELD[c.field], c)
@@ -410,8 +427,8 @@ export function upstreamProblem(upstream: string, transport = 'udp'): string | n
   const kind = upstreamTransport(upstream, transport)
   return fault ? ADDRESS_FAULT[fault](PROTOCOL_LABEL[kind as Protocol] ?? kind) : null
 }
-/** 上游组里一个地址内核用不用得了（没写端口的先按 53 补上） / Whether the kernel can use one address of a group (a missing port taken as 53 first) */
-export const addressProblem = (item: UpstreamAddress): string | null => upstreamProblem(kernelAddress(withDefaultPort(item)))
+/** 上游组里一个地址内核用不用得了：查的就是写进内核的那样（kernelUpstream） / Whether the kernel can use one address of a group: what is checked is what is written to the kernel (kernelUpstream) */
+export const addressProblem = (item: UpstreamAddress): string | null => upstreamProblem(kernelUpstream(item))
 /**
  * 一串逗号隔开的上游（设置里的默认上游）内核用不用得了：每一个照 UDP 读，一个都没有也不收（config.rs problems）。说法和上游组的地址一样，
  * 用得了为 null
@@ -449,31 +466,86 @@ export function nextId(model: Model): number {
   return Math.max(0, ...ids) + 1
 }
 
-export function ruleProblems(model: Model, rule: Rule): string[] {
-  const out: string[] = []
+/**
+ * 回答条件的「全部 / 任一」放得下这些条件吗：内核在这里只认一层，「全部满足」只能有一个条件拆成几个匹配器，「满足任一」的「不是」只能各一个值。
+ * 编辑器（ruleProblems）和导入（importer.ts responseOf）用同一句判断，导入读出来的总是编辑器认的
+ * Whether the answer check's all / any can hold these conditions: the kernel reads a single level here, so 「全部满足」 takes one condition
+ * spread over several matchers and 「满足任一」 one value per 不是. The editor (ruleProblems) and the import (importer.ts responseOf) share
+ * this test, so what an import reads is always what the editor accepts
+ */
+export function responseShapeProblem(r: Pick<ResponseHandling, 'match' | 'conditions'>): string | null {
+  const terms = r.conditions.flatMap(responseTerms)
+  if (r.match === 'all' && terms.filter((t) => !t.negative && t.any.length > 1).length > 1) return '「全部满足」时只能有一个条件填多个值，其余的拆成单独的条件或改成「满足任一」'
+  if (r.match === 'any' && terms.filter((t) => t.negative).length > r.conditions.filter((c) => c.negate && filledValues(c.values).length).length) return '「满足任一」时，「不是」的条件只能填一个值，几个值拆成几条'
+  return null
+}
+type AnyCondition = Condition | ResponseCondition
+/**
+ * 一组「且」起来的条件里，同一种比法既是又不是同一个值：内核里这个值的那一支永远不成立，导入时被去掉（整组都是它时整条读成高级规则）。
+ * 比的是写进内核的匹配器，和导入的认法一样；不同的比法（属于和就是）不算
+ * Within one AND group, one comparison both holds and is negated for one value: the kernel's branch for that value never holds and the
+ * import drops it (a whole group of it reads back as an advanced rule). The matchers written to the kernel are compared, as the import
+ * compares them; different comparisons (属于 and 就是) do not count
+ */
+function contradiction(group: AnyCondition[], fields: Record<string, FieldDef>, terms: (c: AnyCondition) => Term[]): string | null {
+  const kind = (c: AnyCondition) => `${c.field}|${Boolean(c.regex)}|${Boolean(c.exact)}|${'txtMode' in c ? c.txtMode ?? '' : ''}`
+  // 每个值写成的匹配器，按「是」写；几个值合成一个匹配器的（地区、网段列表）整个算一个 / The matcher each value is written as, taken as 是;
+  // fields whose values make one matcher (regions, network lists) count as one
+  const matchers = (c: AnyCondition): { key: string; value: string }[] => {
+    const values = filledValues(c.values)
+    const any = terms({ ...c, negate: false } as AnyCondition).flatMap((t) => t.any)
+    return any.map((m, i) => ({ key: JSON.stringify(m), value: any.length === values.length ? values[i]! : values.join('、') }))
+  }
+  for (const yes of group.filter((c) => !c.negate)) {
+    for (const no of group.filter((c) => c.negate && kind(c) === kind(yes))) {
+      const def = fields[yes.field]!
+      const said = `同一组里「${def.label}」既${opOf(def, yes).label}又${opOf(def, no).label}`
+      if (!def.values) return `${said}，去掉其中一个`
+      const negated = new Set(matchers(no).map((m) => m.key))
+      const shared = matchers(yes).find((m) => negated.has(m.key))
+      if (shared) return `${said} ${shared.value}，去掉其中一个`
+    }
+  }
+  return null
+}
+
+/**
+ * 一处要改的在规则编辑里的哪儿：条件、结果、客户端子网、回答后检查的条件、「然后」「否则」。手机上后四样各在一个弹层里，编辑器按它标出那一行、
+ * 找第一处时先打开那个弹层
+ * Where in the rule editor a mistake sits: the conditions, the outcome, the client subnet, the answer check's conditions, 然后, 否则. On a
+ * phone the last four each live in a sheet, so the editor marks that row and opens the sheet before finding the first mistake
+ */
+export type ProblemPlace = 'conditions' | 'outcome' | 'ecs' | 'after' | 'then' | 'otherwise'
+export function ruleProblemPlaces(model: Model, rule: Rule): { place: ProblemPlace; text: string }[] {
+  const out: { place: ProblemPlace; text: string }[] = []
+  const at = (place: ProblemPlace, text: string | null) => { if (text) out.push({ place, text }) }
   if (rule.raw) return []
-  for (const group of rule.conditions) for (const c of group) { const p = conditionProblem(c); if (p) out.push(p) }
-  const outcome = outcomeProblem(model, rule.outcome)
-  if (outcome) out.push(outcome)
+  for (const group of rule.conditions) {
+    for (const c of group) at('conditions', conditionProblem(c))
+    at('conditions', contradiction(group, FIELD, (c) => requestTerms(c as Condition)))
+  }
+  at('outcome', outcomeProblem(model, rule.outcome))
   // 客户端子网和回答后检查只在交给上游组时写进配置 / Client subnet and the answer check are written only when the rule hands off to an upstream group
-  if (rule.outcome.type === 'upstream') { const p = ecsProblem(rule.ecs); if (p) out.push(p) }
+  if (rule.outcome.type === 'upstream') at('ecs', ecsProblem(rule.ecs))
   if (rule.outcome.type === 'upstream' && rule.response.mode === 'custom') {
     const r = rule.response
-    if (!r.conditions.length) out.push('「回答后检查」还没加条件')
-    for (const c of r.conditions) { const p = valueProblem(RESPONSE_FIELD[c.field], c); if (p) out.push(p) }
-    if (r.match === 'all' && r.conditions.flatMap(responseTerms).filter((t) => !t.negative && t.any.length > 1).length > 1) out.push('「全部满足」时只能有一个条件填多个值，其余的拆成单独的条件或改成「满足任一」')
-    if (r.match === 'any' && r.conditions.flatMap(responseTerms).filter((t) => t.negative).length > r.conditions.filter((c) => c.negate).length) out.push('「满足任一」时，「不是」的条件只能填一个值，几个值拆成几条')
+    if (!r.conditions.length) at('after', '「回答后检查」还没加条件')
+    for (const c of r.conditions) at('after', valueProblem(RESPONSE_FIELD[c.field], c))
+    at('after', responseShapeProblem(r))
+    // 「满足任一」里既是又不是：总有一个成立，不矛盾 / Under 「满足任一」 is and is-not: one of them always holds, no contradiction
+    if (r.match === 'all') at('after', contradiction(r.conditions, RESPONSE_FIELD, (c) => responseTerms(c as ResponseCondition)))
     // 没有条件时「然后」「否则」都不写进配置 / Without conditions neither then nor otherwise is written
     if (r.conditions.length) {
       const then = outcomeProblem(model, r.then)
-      if (then) out.push(`「回答后检查」的「然后」：${then}`)
+      at('then', then && `「回答后检查」的「然后」：${then}`)
       const otherwise = outcomeProblem(model, r.otherwise)
-      if (otherwise) out.push(`「回答后检查」的「否则」：${otherwise}`)
+      at('otherwise', otherwise && `「回答后检查」的「否则」：${otherwise}`)
     }
   }
-  if (kernelRuleCount(rule) > 32) out.push('条件组合太多（展开后超过 32 条），把多值条件合并成一个')
+  if (kernelRuleCount(rule) > 32) at('conditions', '条件组合太多（展开后超过 32 条），把多值条件合并成一个')
   return out
 }
+export const ruleProblems = (model: Model, rule: Rule): string[] => ruleProblemPlaces(model, rule).map((p) => p.text)
 
 // ---------- 落成内核配置 / compile ----------
 
@@ -515,12 +587,14 @@ function responseTerms(c: ResponseCondition): Term[] {
     case 'upstream': return each((x) => ({ type: 'upstream_equals', value: x }))
     case 'qclass': return each((x) => ({ type: 'response_qclass', value: x.toUpperCase() }))
     case 'request_domain': return each((x) => (c.regex ? { type: 'request_domain_regex', value: x } : c.exact ? { type: 'request_domain_exact', value: kernelDomain(x) } : { type: 'request_domain_suffix', value: kernelDomain(withoutWildcard(x)) }))
-    // 「不属于」也按否定的项写（不用 _not 那个匹配器）：几个值时和别的字段一样由下面的条件链和 ruleProblems 的「满足任一」那条管。回答阶段总拿着
-    // GeoSite 数据（engine/rules.rs acquire_geo_locks），所以否定的 response_request_domain_geosite 和 _not 那个一样
-    // 不属于 is a negated term too (not the _not matcher): with several values it is handled, like any other field, by the chains below and
-    // ruleProblems' 满足任一 check. The answer phase always holds the GeoSite data (engine/rules.rs acquire_geo_locks), so a negated
-    // response_request_domain_geosite equals the _not matcher
-    case 'request_geosite': return each((x) => ({ type: 'response_request_domain_geosite', value: x }))
+    // 类型名照内核的写：response_request_domain_geo_site（config.rs ResponseMatcher::ResponseRequestDomainGeoSite），以前写的 _geosite 内核不认，
+    // 整份配置都不收。「不属于」也按否定的项写（不用 _not 那个匹配器）：几个值时和别的字段一样由下面的条件链和 ruleProblems 的「满足任一」那条管。
+    // 回答阶段总拿着 GeoSite 数据（engine/rules.rs acquire_geo_locks），所以否定的 response_request_domain_geo_site 和 _not 那个一样
+    // The type name is the kernel's: response_request_domain_geo_site (config.rs ResponseMatcher::ResponseRequestDomainGeoSite); the _geosite
+    // written before is unknown to the kernel, which refused the whole config. 不属于 is a negated term too (not the _not matcher): with several
+    // values it is handled, like any other field, by the chains below and ruleProblems' 满足任一 check. The answer phase always holds the GeoSite
+    // data (engine/rules.rs acquire_geo_locks), so a negated response_request_domain_geo_site equals the _not matcher
+    case 'request_geosite': return each((x) => ({ type: 'response_request_domain_geo_site', value: x }))
     case 'txt': return each((x) => ({ type: 'response_txt_content', mode: c.txtMode ?? 'exact', value: x }))
     case 'answer_ip': return [{ negative: c.negate, any: [{ type: 'response_answer_ip', cidr: v.map(cidrOf).join(',') }] }]
     case 'upstream_ip': return [{ negative: c.negate, any: [{ type: 'response_upstream_ip', cidr: v.map(cidrOf).join(',') }] }]
@@ -554,8 +628,12 @@ export function andChains(terms: Term[], seed: KMatcher | null): { matchers: KMa
 // 先用同一个条件垫出恒真（x 或非 x）或恒假（x 且非 x），再把每一项并进来。
 // The answer phase has no 'any' matcher and the first item always seeds as a positive (matcher/mod.rs eval_match_chain), so when every
 // item is negated the chain first builds a constant from one item — true as x or_not x, false as x and_not x — and folds the rest onto it.
-function responseChain(r: ResponseHandling): { matchers: KMatcher[]; operator: string } {
-  const terms = r.conditions.flatMap(responseTerms)
+// 一个匹配器都没写出来（值只有空白）的条件不算；一个都不剩时为 null，和没有条件一样不写回答处理（ruleProblems 拦着保存）
+// A condition that writes no matcher (blank values only) does not count; with none left it is null and, as with no conditions, no answer
+// handling is written (ruleProblems holds the save back)
+function responseChain(r: ResponseHandling): { matchers: KMatcher[]; operator: string } | null {
+  const terms = r.conditions.flatMap(responseTerms).filter((t) => t.any.length)
+  if (!terms.length) return null
   const items = terms.flatMap((t) => t.any.map((m) => ({ m, negative: t.negative })))
   if (r.match === 'any') {
     const pos = items.filter((i) => !i.negative)
@@ -586,7 +664,7 @@ function kernelEcs(ecs: Ecs): Record<string, unknown> | null {
 function forwardPipeline(model: Model, id: string, groupId: string, ecs: Ecs, response: Partial<KRule>): KPipeline {
   const g = model.groups.find((x) => x.id === groupId)
   const kecs = kernelEcs(ecs)
-  const action: Record<string, unknown> = g?.addresses.length ? { type: 'forward', upstream: g.addresses.map(kernelAddress).join(', ') } : { type: 'allow' }
+  const action: Record<string, unknown> = g?.addresses.length ? { type: 'forward', upstream: g.addresses.map(kernelUpstream).join(', ') } : { type: 'allow' }
   if (kecs && action.type === 'forward') action.ecs = kecs
   return { id, ...(kecs ? { ecs: kecs } : {}), rules: [{ ...emptyRule(id, [action]), ...response }] }
 }
@@ -628,8 +706,8 @@ function rulePipeline(model: Model, rule: Rule): KPipeline | null {
   if (o.type !== 'upstream' || !ownsForward(rule)) return null
   const g = model.groups.find((x) => x.id === o.group)
   let response: Partial<KRule> = {}
-  if (rule.response.mode === 'custom' && rule.response.conditions.length) {
-    const chain = responseChain(rule.response)
+  const chain = rule.response.mode === 'custom' ? responseChain(rule.response) : null
+  if (chain) {
     const withLog = (level: LogLevel | null | undefined, acts: Record<string, unknown>[]) => (level ? [{ type: 'log', level }, ...acts] : acts)
     response = { response_matchers: chain.matchers, response_matcher_operator: chain.operator, response_actions_on_match: withLog(rule.response.thenLog, outcomeActions(model, rule.response.then)), response_actions_on_miss: withLog(rule.response.otherwiseLog, outcomeActions(model, rule.response.otherwise)) }
   } else if (rule.response.mode === 'inherit' && g) response = groupFallback(model, g) ?? {}
@@ -660,7 +738,11 @@ const baseName = (name: string) => name.replace(SPLIT, '')
  * What each enabled rule of a list is called in the kernel. Its name when the name can only lead back to it; rule-<id>, as an unnamed
  * rule is, when the name repeats in the list, equals the list's catch-all, is shaped like 「…#digits」 (how split parts are named) or
  * 「rule-digits」, or is the base of a name an advanced rule writes back verbatim. Repeated names all switch together, so reordering
- * changes no kernel name
+ * changes no kernel name.
+ * rule-编号 也要躲开列表里已经有人用的名字（高级规则原样写回的、别的规则自己的名字）：被占了就用 rule-编号-2 这样的，读回来时按上一份编出来的
+ * 对照表认（importer.ts carryOver），不靠名字的样子
+ * rule-<id> steers clear of names the list already uses too (written back verbatim by advanced rules, other rules' own names): when taken
+ * it becomes rule-<id>-2 and so on, read back through the previous compile's index (importer.ts carryOver), not by the name's shape
  */
 function listKernelNames(rules: Rule[], rest: string): Map<number, string> {
   const live = rules.filter((r) => r.enabled)
@@ -668,7 +750,17 @@ function listKernelNames(rules: Rule[], rest: string): Map<number, string> {
   const uses = new Map<string, number>()
   for (const r of live) if (!r.raw && r.name.trim()) uses.set(r.name.trim(), (uses.get(r.name.trim()) ?? 0) + 1)
   const own = (name: string) => name !== '' && uses.get(name) === 1 && name !== rest && !SPLIT.test(name) && !/^rule-\d+$/.test(name) && !verbatim.has(name)
-  return new Map(live.filter((r) => !r.raw).map((r) => [r.id, own(r.name.trim()) ? r.name.trim() : `rule-${r.id}`]))
+  const names = new Map<number, string>()
+  const claimed = new Set<string>([...verbatim, rest])
+  for (const r of live) if (!r.raw && own(r.name.trim())) { names.set(r.id, r.name.trim()); claimed.add(r.name.trim()) }
+  for (const r of live) {
+    if (r.raw || names.has(r.id)) continue
+    let name = `rule-${r.id}`
+    for (let n = 2; claimed.has(name); n++) name = `rule-${r.id}-${n}`
+    claimed.add(name)
+    names.set(r.id, name)
+  }
+  return names
 }
 
 /** 内核规则名指向面板里的哪一样 / What a kernel rule name stands for in the panel */
@@ -700,8 +792,9 @@ export interface KernelRuleIndex {
   nameOf: (ruleId: number) => { pipeline: string; name: string } | null
 }
 
-/** 写出的内核配置和它的规则名对照表，同一次编译做出来 / The kernel config and its rule-name index, made by one compile */
-export function compileNamed(model: Model): { config: KernelConfig; index: KernelRuleIndex } {
+/** 写出的内核配置和它的规则名对照表，同一次编译做出来；strict 时重名的 Pipeline id 直接报错（测试里默认这样） / The kernel config and its
+ * rule-name index, made by one compile; with strict a repeated pipeline id throws (the default in tests) */
+export function compileNamed(model: Model, strict = STRICT_PIPELINE_IDS): { config: KernelConfig; index: KernelRuleIndex } {
   type Names = Map<string, Map<string, KernelRuleRef | null>>
   // 内核报上来的是确切的名字：确切的名字先认，拆开的几段的基名只在没有这个确切名字时才算 / The kernel reports exact names: an exact name comes
   // first, and the base of split parts counts only where no exact name is that
@@ -730,6 +823,8 @@ export function compileNamed(model: Model): { config: KernelConfig; index: Kerne
     ruleBases.set(ref.id, at)
   }
   const config = compileClaiming(model, claim)
+  const clash = strict ? repeatedPipelineIds(config) : []
+  if (clash.length) throw new Error(`编出了两个同名的 Pipeline：${clash.join('、')}`)
   // 一个列表里这个名字：undefined 是没有，null 是被两样东西认领 / This name in one list: undefined when absent, null when two things claim it
   const inList = (pipeline: string, name: string): KernelRuleRef | null | undefined => {
     const here = exact.get(pipeline)
@@ -798,6 +893,41 @@ export function blocklistEntries(model: Model, pipeline = BLOCKLIST_PIPELINE): K
   return entries
 }
 
+// 规则、上游组、规则组和原样保留的 Pipeline 用掉的 id：域名映射和拦截列表的 Pipeline 都躲开它们 / The ids rules, upstream groups, rule
+// groups and verbatim pipelines take: the mappings' and the blocklists' pipelines both steer clear of them
+function listPipelineIds(model: Model): Set<string> {
+  const rules = [...model.rules, ...model.ruleGroups.flatMap((rg) => rg.rules)].filter((r) => r.enabled)
+  return new Set<string>([
+    ...model.groups.map((g) => upstreamPipelineId(model, g.id)), mainPipelineId(model),
+    ...model.ruleGroups.map((rg) => ruleGroupPipelineId(model, rg.id)), ...(model.rawPipelines ?? []).map((p) => String(p.id)),
+    ...rules.flatMap((r) => (ownsForward(r) ? [`rule-${r.id}`] : [])),
+  ])
+}
+/**
+ * 规则编号定下它自己那个转发的名字（rule-编号）。这几个形如 rule-编号 的 id 已经是别的 Pipeline 的（读成上游组、规则组或原样保留的），新规则
+ * 不用对应的编号，不然它以后单独设子网或回答检查时编出两个同名的。编辑器发新编号时按它躲（导入起编号时躲的是配置里所有的 Pipeline）
+ * A rule's id names its own forward (rule-<id>). These rule-<id>-shaped ids already belong to other pipelines (read as upstream groups, rule
+ * groups or kept verbatim), so a new rule does not take the matching id, or once it sets its own subnet or answer check it compiles to two of
+ * one name. The editor's new ids steer clear of them (the import's steer clear of every pipeline in the config)
+ */
+export function foreignRulePipelines(model: Model): Set<string> {
+  const ids = [...model.groups.map((g) => upstreamPipelineId(model, g.id)), ...model.ruleGroups.map((rg) => ruleGroupPipelineId(model, rg.id)), ...(model.rawPipelines ?? []).map((p) => String(p.id)), mainPipelineId(model), model.mappingId ?? '']
+  return new Set(ids.filter((id) => /^rule-\d+$/.test(id)))
+}
+/**
+ * 域名映射那个 Pipeline 的 id：一般是 domain_mapping，导入的配置里叫别的就用那个；别的列表已经叫这个名字时（比如 JSON 里把一个规则组改成了
+ * domain_mapping），换成 domain_mapping-2 这样不重名的。编配置、测试域名、执行路径、查询日志和概览都用它
+ * The mappings' pipeline id: usually domain_mapping, or what an imported config called it; when another list already has that name (a rule group
+ * renamed domain_mapping in the JSON, say), one nothing else uses such as domain_mapping-2. Compiling, the domain tester, the trace, the query
+ * log and the overview all use it
+ */
+export function mappingPipelineId(model: Model): string {
+  const taken = listPipelineIds(model)
+  const own = model.mappingId ?? 'domain_mapping'
+  let id = own
+  for (let n = 2; taken.has(id); n++) id = `${own}-${n}`
+  return id
+}
 /**
  * 拦截列表那个 Pipeline 的 id：一般是 blocklist；JSON 里手改过、认不出的旧拦截列表还留着同名的 Pipeline 时，换成 blocklist-2 这样不重名的。
  * 编配置、测试域名和执行路径都用它
@@ -805,16 +935,28 @@ export function blocklistEntries(model: Model, pipeline = BLOCKLIST_PIPELINE): K
  * name, one nothing else uses such as blocklist-2. Compiling, the domain tester and the trace all use it
  */
 export function blocklistPipelineId(model: Model): string {
-  const rules = [...model.rules, ...model.ruleGroups.flatMap((rg) => rg.rules)].filter((r) => r.enabled)
-  const taken = new Set<string>([
-    ...model.groups.map((g) => upstreamPipelineId(model, g.id)), model.mappingId ?? 'domain_mapping', mainPipelineId(model),
-    ...model.ruleGroups.map((rg) => ruleGroupPipelineId(model, rg.id)), ...(model.rawPipelines ?? []).map((p) => String(p.id)),
-    ...rules.flatMap((r) => rulePipeline(model, r)?.id ?? []),
-  ])
+  const taken = new Set([...listPipelineIds(model), mappingPipelineId(model)])
   let id = BLOCKLIST_PIPELINE
   for (let n = 2; taken.has(id); n++) id = `${BLOCKLIST_PIPELINE}-${n}`
   return id
 }
+
+/**
+ * 写出的配置里重名的 Pipeline id。内核的校验和热重载不收；启动时只记警告照样加载，入口和跳转只认后一个，前一个的规则悄悄没了（以前的内核校验时
+ * 也照收）。所以面板一个都不该写出来：测试里 compile 直接报错，页面上保存条说保存不了，不写出去（useConfigDocument pipelineClash）
+ * The pipeline ids a written config repeats. The kernel's validation and reload refuse them; startup only warns and loads them, entries and
+ * jumps reach the later one and the earlier one's rules silently vanish (earlier kernels took them at validation too). So the panel must
+ * write none: in tests compile throws outright, and on the page the save bar says the save cannot happen and nothing is written
+ * (useConfigDocument pipelineClash)
+ */
+export function repeatedPipelineIds(config: Pick<KernelConfig, 'pipelines'>): string[] {
+  const ids = config.pipelines.map((p) => p.id)
+  return [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))]
+}
+/** 草稿写出去会有重名的 Pipeline id 吗（不报错，给页面用） / Whether the draft would write repeated pipeline ids (never throws; for the page) */
+export const draftPipelineClashes = (model: Model): string[] => repeatedPipelineIds(compileClaiming(model, () => {}))
+// 测试里重名的 Pipeline id 直接报错：哪一处编出了它，当场看得见 / In tests a repeated pipeline id throws outright, so whatever compiled it shows at once
+const STRICT_PIPELINE_IDS = import.meta.env?.MODE === 'test'
 
 export function compile(model: Model): KernelConfig {
   return compileNamed(model).config
@@ -837,7 +979,7 @@ function compileClaiming(model: Model, claim: Claim): KernelConfig {
   // 域名映射和现在的面板一样做成最前面的入口：所有请求先过它，被高级入口带去别处的也一样
   // Domain mappings are the first entry, as in today's panel: every request meets them first, including those an advanced entry sends elsewhere
   const live = model.mappings.filter(mappingLive)
-  const mappingId = model.mappingId ?? 'domain_mapping'
+  const mappingId = mappingPipelineId(model)
   if (live.length) {
     for (const r of live) claim(mappingId, `域名映射 ${r.domain.trim()}`, { kind: 'mapping', domain: r.domain.trim() })
     pipelines.push({ id: mappingId, rules: live.map(mappingRule) })
@@ -872,7 +1014,11 @@ function compileClaiming(model: Model, claim: Claim): KernelConfig {
   select.push({ pipeline: mainPipelineId(model), matcher_operator: 'and', matchers: [] })
   select.push(...(model.trailingEntries ?? []).map((e) => JSON.parse(JSON.stringify({ matcher_operator: 'and', ...e })) as KernelConfig['pipeline_select'][number]))
   const own = defaultUpstreamOf(model)
-  const settings: Record<string, unknown> = { ...model.settings, ...(own === undefined ? {} : { default_upstream: own }) }
+  // 照写的默认上游（有高级规则、或其余请求拦截时）也按 53 补上没写的端口，和上游组的地址一样：没点「完成」就保存的、以前存下来的，写出去都是内核认的
+  // A default upstream written as it is (with advanced rules, or when 其余请求 blocks) takes 53 for a missing port too, as a group's addresses
+  // do: one saved without 完成, or stored long ago, is written as the kernel takes it
+  const asWritten = model.settings.default_upstream
+  const settings: Record<string, unknown> = { ...model.settings, ...(own !== undefined ? { default_upstream: own } : typeof asWritten === 'string' ? { default_upstream: withDefaultPorts(asWritten) } : {}) }
   // 拦截列表合成的文件排在 Geo 数据的 GeoSite 后面，和面板服务端同步 Geo 数据时的写法一样 / The blocklists' file follows Geo data's GeoSite files, as the panel server writes them when syncing Geo data
   if (model.blocklists.file) {
     settings.geosite_data_paths = [...(Array.isArray(settings.geosite_data_paths) ? settings.geosite_data_paths : []), model.blocklists.file]
@@ -883,10 +1029,13 @@ function compileClaiming(model: Model, claim: Claim): KernelConfig {
 // 内核的默认上游只在「放行」和没写上游的转发里用到；写成其余请求那个组的地址，两处说法一致
 // The kernel's default upstream is only used by allow and by a forward without upstream; it takes the catch-all group's addresses so both agree
 // 有高级规则或原样保留的 Pipeline 时不改：它们里面的「允许」还按原来的默认上游走 / Left alone when advanced rules or kept pipelines exist: their allow still means the original default
+/** 默认上游是不是由其余请求的组写的（是的话设置里那一项不写进内核，页面上不显示） / Whether the default upstream is written from 其余请求's group
+ * (when it is, the setting is not written to the kernel and the page does not show it) */
+export const defaultUpstreamFromRest = (model: Model): boolean => defaultUpstreamOf(model) !== undefined
 function defaultUpstreamOf(model: Model): string | undefined {
   const keepDefault = Boolean(model.rawPipelines?.length) || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw)
   const restGroup = !keepDefault && model.rest.type === 'upstream' ? model.groups.find((g) => g.id === (model.rest as { group: string }).group) : undefined
-  return restGroup?.addresses.length ? restGroup.addresses.map(kernelAddress).join(', ') : undefined
+  return restGroup?.addresses.length ? restGroup.addresses.map(kernelUpstream).join(', ') : undefined
 }
 
 /**
@@ -903,6 +1052,8 @@ export function settingsFromKernel(model: Model, kernel: Record<string, unknown>
   const restore = (key: string) => { if (was[key] !== undefined) settings[key] = JSON.parse(JSON.stringify(was[key])) as unknown; else delete settings[key] }
   const own = defaultUpstreamOf(model)
   if (own !== undefined && settings.default_upstream === own) restore('default_upstream')
+  // 照写的那个只是补了端口：模型里还是原来的写法 / The one written as it is only took its ports: the model keeps how it was written
+  else if (own === undefined && typeof was.default_upstream === 'string' && settings.default_upstream === withDefaultPorts(was.default_upstream)) settings.default_upstream = was.default_upstream
   const file = model.blocklists.file
   if (file && Array.isArray(settings.geosite_data_paths)) {
     const paths = (settings.geosite_data_paths as unknown[]).filter((p) => p !== file)

@@ -92,6 +92,7 @@ impl Database {
     pub async fn open(path: PathBuf) -> anyhow::Result<Self> {
         let populated = fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0);
         prepare_database_file(&path)?;
+        sweep_backup_temporaries(&path);
         let database = Self {
             path: Arc::new(path),
         };
@@ -944,7 +945,7 @@ fn backup_database(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = database_directory(path);
     let mut sequence = 0_u16;
     let backup = loop {
         let suffix = if sequence == 0 {
@@ -962,13 +963,57 @@ fn backup_database(
             .checked_add(1)
             .context("无法为数据库备份生成唯一文件名")?;
     };
-    let backup_text = backup.to_str().context("数据库备份路径不是有效 UTF-8")?;
+    // 先写进同一目录里一个只有自己进得去的临时目录（SQLite 的 -journal 也落在里面），写完、落盘、改好权限才换上正式的名字：
+    // 写到一半断掉不会在正式的名字下留下半截备份；失败时临时目录随之删掉，被杀掉时下次启动清掉（见 Database::open）
+    // Written first into a temporary directory in the same place that only the panel can enter (SQLite's -journal lands there
+    // too), and renamed to its real name only once written, synced and restricted: cut short, it leaves no half backup under the
+    // real name; on failure the temporary directory goes with it, and after a kill the next start clears it (see
+    // Database::open)
+    let staging = tempfile::Builder::new()
+        .prefix(&backup_temporary_prefix(file_name))
+        .tempdir_in(parent)
+        .context("创建数据库备份的临时目录失败")?;
+    let staged = staging.path().join("backup.db");
+    let staged_text = staged.to_str().context("数据库备份路径不是有效 UTF-8")?;
     connection
-        .execute("VACUUM INTO ?1", [backup_text])
+        .execute("VACUUM INTO ?1", [staged_text])
         .context("创建迁移前数据库备份失败")?;
+    fs::File::open(&staged)
+        .and_then(|file| file.sync_all())
+        .context("数据库备份落盘失败")?;
     #[cfg(unix)]
-    restrict_file_permissions(&backup)?;
+    restrict_file_permissions(&staged)?;
+    fs::rename(&staged, &backup).context("数据库备份换上正式的名字失败")?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .context("数据库备份落盘失败")?;
     Ok(backup)
+}
+
+/// 迁移前备份写到一半时的临时目录的前缀：`.` 加数据库文件名加 `-backup-`，后面是 tempfile 起的 6 个字母或数字
+/// The prefix of the temporary directory a pre-migration backup is written in: `.`, the database's file name and `-backup-`,
+/// followed by 6 letters or digits from tempfile
+fn backup_temporary_prefix(file_name: &str) -> String {
+    format!(".{file_name}-backup-")
+}
+
+/// 清掉上次迁移前备份写到一半（进程被杀、断电）留下的临时目录 / Clears the temporary directories a pre-migration backup cut short
+/// (a killed process, a power loss) left last time
+fn sweep_backup_temporaries(path: &Path) {
+    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+        crate::temporaries::sweep(
+            database_directory(path),
+            &[&backup_temporary_prefix(file_name)],
+        );
+    }
+}
+
+/// 数据库文件所在的目录；只写了文件名时是当前目录 / The directory the database file is in; the current one for a bare file
+/// name
+fn database_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 fn prune_config_versions(connection: &Connection) -> rusqlite::Result<()> {
@@ -1501,6 +1546,104 @@ mod tests {
         };
         assert!(format!("{error:#}").contains("高于当前支持的版本"));
         assert!(database_backups(directory.path()).is_empty());
+    }
+
+    /// 一份 v1 的数据库，`users` 里有好几页数据 / A v1 database with several pages of data in `users`
+    fn write_v1_database(path: &std::path::Path) {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute_batch(
+                r"
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE sessions (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    csrf_hash TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE config_versions (
+                    id INTEGER PRIMARY KEY,
+                    sha256 TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE audit_events (
+                    id INTEGER PRIMARY KEY,
+                    actor TEXT,
+                    action TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                PRAGMA user_version = 1;
+                ",
+            )
+            .unwrap();
+        for id in 0..400 {
+            connection
+                .execute(
+                    "INSERT INTO users(username, password_hash, created_at) VALUES(?1, ?2, 1)",
+                    params![format!("user{id}"), "h".repeat(200)],
+                )
+                .unwrap();
+        }
+    }
+
+    /// 迁移前的备份先写进一个临时目录，写完、落盘、改好权限才换上正式的名字：半路断掉（这里拿一页坏掉的数据库让它半路失败）
+    /// 不会在正式的名字下留下半截备份，也不留下临时的；上次断掉留下的临时目录启动时清掉
+    /// The pre-migration backup is written into a temporary directory first and takes its real name only once written, synced
+    /// and restricted: cut short (here by a database with a broken page, which makes it fail half way) it leaves no half backup
+    /// under the real name and no temporary one either; a temporary directory left by an earlier cut goes at start
+    #[tokio::test]
+    async fn a_backup_cut_short_leaves_nothing_under_its_name() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("panel.db");
+        write_v1_database(&path);
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() > 8 * 4096, "{}", bytes.len());
+        bytes[5 * 4096..6 * 4096].fill(0xff);
+        std::fs::write(&path, bytes).unwrap();
+        let earlier = directory.path().join(".panel.db-backup-AbC123");
+        std::fs::create_dir(&earlier).unwrap();
+        std::fs::write(earlier.join("panel.db.bak"), b"half").unwrap();
+
+        assert!(Database::open(path.clone()).await.is_err());
+
+        let mut left: Vec<String> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| !name.starts_with("panel.db") || name.contains(".bak"))
+            .collect();
+        left.sort();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// 备份写成以后是 0600，临时目录不留 / A finished backup is 0600 and no temporary directory stays
+    #[tokio::test]
+    async fn a_finished_backup_is_private_and_leaves_no_temporary() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("panel.db");
+        write_v1_database(&path);
+        Database::open(path).await.unwrap();
+        let backups = database_backups(directory.path());
+        assert_eq!(backups.len(), 1);
+        let mode = std::fs::metadata(&backups[0]).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let names: Vec<String> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with('.'))
+            .collect();
+        assert!(names.is_empty(), "{names:?}");
     }
 
     fn database_backups(directory: &std::path::Path) -> Vec<std::path::PathBuf> {

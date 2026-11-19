@@ -1,7 +1,8 @@
 import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
 import { exportConfig, panelHash, PANEL_FORMAT, readConfig } from '../config-model/document'
 import { compile } from '../config-model/model'
-import { regexSurelyRefused } from '../config-model/grammar'
+import { regexSurelyRefused, TXT_REGEX_BYTES } from '../config-model/grammar'
+import { REGEX_MAX_BYTES, type RegexAnswer, type RegexItem } from '../config-model/regex-check'
 import { SETTING_SECTIONS } from '../config-editor/schema'
 import { sampleModel } from '../config-model/testing/samples'
 import type {
@@ -1221,16 +1222,26 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     removeConfigVersions([id], emptyFirstInstall)
     return { deleted_id: id } as DeleteConfigVersionResult as T
   }
-  // 正则照内核编译：演示里没有内核的正则库，按页面自己查得出的那几种（前后断言、反向引用、Rust 不认的转义）回答，别的都算收；
-  // kixdns:demo-regex-refused（JSON 数组）里列的也算内核不收，演示服务端回答以后才标红的样子
+  // 正则照内核编译：演示里没有内核的正则库，按页面自己查得出的那几种（前后断言、反向引用、Rust 不认的转义、没写完的括号……）回答，TXT 的
+  // 照内核先看长度，别的都算收；kixdns:demo-regex-refused（JSON 数组）里列的也算写法不对、kixdns:demo-regex-too-big 里列的算编译出来太大，
+  // 演示服务端回答以后才标红的样子
   // Regexes compiled as the kernel does: the demo has no kernel regex library, so it answers by the few kinds the page can tell itself
-  // (lookaround, backreferences, escapes Rust does not know) and takes the rest; those listed in kixdns:demo-regex-refused (a JSON array)
-  // count as refused too, showing a mark that appears once the server answers
+  // (lookaround, backreferences, escapes Rust does not know, unclosed brackets…), a TXT one by its length first as the kernel does, and
+  // takes the rest; those listed in kixdns:demo-regex-refused (a JSON array) count as written wrong and those in kixdns:demo-regex-too-big
+  // as too big once compiled, showing a mark that appears once the server answers
   if (path === '/api/v1/config/regex-check' && method === 'POST') {
-    const { patterns } = JSON.parse(String(init?.body)) as { patterns: string[] }
-    const listed = typeof localStorage === 'undefined' ? null : localStorage.getItem('kixdns:demo-regex-refused')
-    const refused = new Set<string>(listed ? JSON.parse(listed) as string[] : [])
-    return { errors: patterns.map((p) => (refused.has(p) || regexSurelyRefused(p) ? 'regex parse error' : null)) } as T
+    const { patterns } = JSON.parse(String(init?.body)) as { patterns: RegexItem[] }
+    const list = (key: string) => new Set<string>(JSON.parse((typeof localStorage === 'undefined' ? null : localStorage.getItem(key)) ?? '[]') as string[])
+    const [refused, tooBig] = [list('kixdns:demo-regex-refused'), list('kixdns:demo-regex-too-big')]
+    const answer = ({ kind, pattern }: RegexItem): RegexAnswer => {
+      const bytes = new TextEncoder().encode(pattern).length
+      if (kind === 'txt' && bytes > TXT_REGEX_BYTES) return { verdict: 'refused', cause: 'too-long', error: `regex pattern too long: ${bytes} bytes (max ${TXT_REGEX_BYTES})` }
+      if (kind === 'domain' && bytes > REGEX_MAX_BYTES) return { verdict: 'refused', cause: 'too-long', error: `regex pattern too long: ${bytes} bytes (max ${REGEX_MAX_BYTES})` }
+      if (refused.has(pattern) || regexSurelyRefused(pattern)) return { verdict: 'refused', cause: 'syntax', error: 'regex parse error' }
+      if (tooBig.has(pattern)) return { verdict: 'refused', cause: 'too-big', error: 'Compiled regex exceeds size limit of 1000000 bytes.' }
+      return { verdict: 'compiles' }
+    }
+    return { answers: patterns.map(answer) } as T
   }
   if (path === '/api/v1/config/validate') {
     // kixdns:demo-validate-slow：校验要 1.5 秒，演示校验途中按保存、离开页面 / kixdns:demo-validate-slow: validation takes 1.5 s, to show saving or leaving while it runs

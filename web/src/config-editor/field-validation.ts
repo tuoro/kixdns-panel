@@ -1,4 +1,5 @@
-import { byteLength, isIp, isNet, isQclass, isQtype, isRcode, isTtl, kernelRegexOk, QCLASSES, QTYPES, RCODES, TTL_PROBLEM, TXT_REGEX_BYTES, TXT_SEGMENT_BYTES } from '../config-model/grammar'
+import { byteLength, isIp, isNet, isQclass, isQtype, isRcode, isTtl, kernelRegexCause, QCLASSES, QTYPES, RCODES, regexCauseText, TTL_PROBLEM, TXT_SEGMENT_BYTES } from '../config-model/grammar'
+import { kernelRegexChecking, type RegexKind } from '../config-model/regex-check'
 import { upstreamProblem } from '../config-model/model'
 import { matcherHint } from './matcher-hints'
 import { MATCHER_DEFINITIONS } from './schema'
@@ -24,11 +25,28 @@ export function validDnsName(value: string): boolean {
 
 // GeoSite 条件的值是分类名本身：内核把它原样当标签去查，写成 geosite:cn 永远匹配不上。
 // A GeoSite condition's value is the bare category: the kernel looks it up as the tag exactly as written, so geosite:cn never matches.
-const GEOSITE_MATCHERS = new Set(['geo_site', 'geo_site_not', 'response_request_domain_geosite', 'response_request_domain_geosite_not'])
+const GEOSITE_MATCHERS = new Set(['geo_site', 'geo_site_not', 'response_request_domain_geo_site', 'response_request_domain_geo_site_not'])
 export const GEOSITE_PREFIX_ERROR = '只写分类名，去掉 geosite: 前缀'
 
 export function isGeoSiteMatcher(matcher: MatcherConfig): boolean {
   return GEOSITE_MATCHERS.has(matcher.type)
+}
+
+/** 这个条件的值是哪一种正则；不是正则时为 null / Which kind of regex this condition's value is; null when it is no regex */
+function regexKindOf(matcher: MatcherConfig): RegexKind | null {
+  if (['domain_regex', 'request_domain_regex'].includes(matcher.type)) return 'domain'
+  return matcher.type === 'response_txt_content' && matcher.mode === 'regex' ? 'txt' : null
+}
+
+/**
+ * 这个条件的正则还在问面板服务端，本地也没看出毛病：出错提示先停在上一次的结论上，标成在查（见 regex-check.ts）
+ * This condition's regex is still being asked about and the page finds nothing wrong itself: its error stays at the last conclusion,
+ * marked as checking (see regex-check.ts)
+ */
+export function matcherValueChecking(matcher: MatcherConfig): boolean {
+  const kind = regexKindOf(matcher)
+  const value = matcher.value ?? ''
+  return kind !== null && Boolean(value.trim()) && kernelRegexChecking(kind, value) && kernelRegexCause(kind, value) === null
 }
 
 export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope): Record<string, string> {
@@ -46,12 +64,14 @@ export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope):
   // some other way, is marked at once, by the same reading as the condition form (config-model/grammar.ts)
   const value = matcher.value ?? ''
   if (!errors.value && value.trim()) {
-    const regex = ['domain_regex', 'request_domain_regex'].includes(matcher.type) || (matcher.type === 'response_txt_content' && matcher.mode === 'regex')
+    const regex = regexKindOf(matcher)
+    const cause = regex ? kernelRegexCause(regex, value) : null
     if (['qtype', 'response_type'].includes(matcher.type) && !isQtype(value)) errors.value = `KixDNS 只认 ${QTYPES.join('、')}`
     else if (['qclass', 'response_qclass'].includes(matcher.type) && !isQclass(value)) errors.value = `KixDNS 只认 ${QCLASSES.join('、')}`
     else if (matcher.type === 'response_rcode' && !isRcode(value)) errors.value = `KixDNS 只认 ${RCODES.join('、')}，其余的响应码写 OTHER`
-    else if (regex && !kernelRegexOk(value)) errors.value = '正则写得不对：KixDNS 不认前后断言、反向引用这些写法'
-    else if (regex && matcher.type === 'response_txt_content' && byteLength(value) > TXT_REGEX_BYTES) errors.value = `TXT 的正则最长 ${TXT_REGEX_BYTES} 字节`
+    // 说的是内核不收的那个原因：写法、编译后太大、TXT 太长各说各的 / The reason given is the kernel's own: the syntax, too big once compiled,
+    // or a TXT regex too long, each in its own words
+    else if (regex && cause) errors.value = regexCauseText(regex, cause)
   }
   // 规则和入口的 client_ip 只认一个网段；回答阶段的网段是逗号隔开的列表 / A rule's or entry's client_ip takes one network; answer-phase networks
   // are a comma-separated list
