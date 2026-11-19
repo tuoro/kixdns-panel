@@ -1497,6 +1497,7 @@ config_directory_run() {
     install_configuration
     install_services
     printf 'UNIT=%s\n' "$(render_kixdns_unit | grep '^ExecStart=')"
+    printf 'UNIT-OWN-LINES=%s\n' "$(render_kixdns_unit | grep -c '^# 主机上自己加的$' || true)"
     print_summary http://192.168.1.20:5738
   ) 2>&1 || true
 }
@@ -1610,6 +1611,9 @@ legacy_host_tree() {
 }
 for legacy_arguments in "" --panel-only-update; do
   legacy_host_tree 'User=kxu\n'
+  # 已装的 unit 里主机自己加的一行：仅更新面板只改配置路径，这行要留着 / A line the host added to the installed unit: a
+  # panel-only update changes only the config path, so it stays
+  printf '# 主机上自己加的\n' >> "${root}/units/kixdns.service"
   # shellcheck disable=SC2086 # 空参数就是不带参数 / An empty argument means none
   output="$(config_directory_run ${legacy_arguments})"
   label=${legacy_arguments:-升级}
@@ -1636,6 +1640,7 @@ for legacy_arguments in "" --panel-only-update; do
   assert_contains "${output}" "  ${root}/etc/foo.json：" "安装结果应列出改了的文件（${label}）"
 done
 assert_contains "${output}" "KixDNS：程序未替换，unit 改用新的配置路径，保持原状态（已停止）" "仅更新面板时应说明只换了 unit"
+assert_contains "${output}" "UNIT-OWN-LINES=1" "仅更新面板只改 unit 里的配置路径，别的行照旧"
 # 原来的 KixDNS 以 root 运行：原配置只留给 root；看不出以谁运行（DynamicUser）：谁都能读。
 # The original KixDNS ran as root: the original config is left to root alone; when it cannot be told (DynamicUser): anyone may read it.
 for legacy_case in "|0600|root:root" 'DynamicUser=yes\n|0644|root:root' 'User=kxu\nGroup=staff\n|0640|root:staff'; do
