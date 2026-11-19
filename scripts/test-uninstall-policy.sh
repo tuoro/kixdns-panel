@@ -1941,13 +1941,15 @@ run_line="$(grep -n 'run_uninstall' <<< "${main_body}" | head -n 1 | cut -d: -f1
 [[ -n ${lock_line} && -n ${run_line} && ${lock_line} -lt ${run_line} ]] ||
   { printf '断言失败：卸载器要一开头就拿锁（lock=%s run=%s）\n' "${lock_line}" "${run_line}" >&2; exit 1; }
 components_body="$(declare -f remove_panel_components)"
-helper_line="$(grep -n 'stop_unit kixdns-panel-helper.service' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
+# 只停 helper 本身：面板的 unit Requires= helper，照常停 helper 会先停面板 / The helper alone: the panel's unit Requires= the
+# helper, so a plain stop of the helper stops the panel first
+helper_line="$(grep -n 'systemctl stop --job-mode=ignore-dependencies kixdns-panel-helper.service' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
 panel_line="$(grep -n 'stop_unit kixdns-panel.service' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
 update_line="$(grep -n 'stop_unit kixdns-panel-update.service' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
 [[ -n ${helper_line} && -n ${panel_line} && -n ${update_line} && ${update_line} -lt ${panel_line} && ${helper_line} -lt ${panel_line} ]] ||
   { printf '断言失败：面板停下之前应先停在线更新和 helper（update=%s helper=%s panel=%s）\n' "${update_line}" "${helper_line}" "${panel_line}" >&2; exit 1; }
 records_quiesce="$(declare -f quiesce_for_records)"
-helper_line="$(grep -n 'systemctl stop kixdns-panel-helper.service' <<< "${records_quiesce}" | head -n 1 | cut -d: -f1 || true)"
+helper_line="$(grep -n 'systemctl stop --job-mode=ignore-dependencies kixdns-panel-helper.service' <<< "${records_quiesce}" | head -n 1 | cut -d: -f1 || true)"
 panel_line="$(grep -n 'systemctl stop kixdns-panel.service' <<< "${records_quiesce}" | head -n 1 | cut -d: -f1 || true)"
 [[ -n ${helper_line} && -n ${panel_line} && ${helper_line} -lt ${panel_line} ]] ||
   { printf '断言失败：挪记录前面板停下之前应先停 helper（helper=%s panel=%s）\n' "${helper_line}" "${panel_line}" >&2; exit 1; }

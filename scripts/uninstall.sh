@@ -861,7 +861,10 @@ quiesce_for_records() {
   trap restart_panel_after_early_stop EXIT
   # R2：先停 helper，面板停下时就请不动它以 root 做事 / R2: the helper first, so the panel cannot have it do anything as root
   # while stopping
-  systemctl stop kixdns-panel-helper.service 2>/dev/null || true
+  # 面板的 unit Requires= helper：照常停 helper，systemd 会先把面板停掉，面板停下时 helper 还在，还能替它做事。所以只停 helper 本身
+  # The panel's unit Requires= the helper: a plain stop of the helper has systemd stop the panel first, with the helper
+  # still there to act for it while it stops. So the helper alone is stopped
+  systemctl stop --job-mode=ignore-dependencies kixdns-panel-helper.service 2>/dev/null || true
   systemctl stop kixdns-panel.service 2>/dev/null || true
   stop_panel_processes refuse_with_panel_held
 }
@@ -1480,6 +1483,10 @@ remove_panel_components() {
   # cannot have them do anything as root while stopping
   stop_unit kixdns-panel-update.service
   wait_for_unit_inactive kixdns-panel-update.service
+  # 面板的 unit Requires= helper：照常停 helper，systemd 会先把面板停掉，面板停下时 helper 还在，还能替它做事。所以只停 helper 本身
+  # The panel's unit Requires= the helper: a plain stop of the helper has systemd stop the panel first, with the helper
+  # still there to act for it while it stops. So the helper alone is stopped
+  systemctl stop --job-mode=ignore-dependencies kixdns-panel-helper.service 2>/dev/null || true
   stop_unit kixdns-panel-helper.service
   wait_for_unit_inactive kixdns-panel-helper.service
   stop_unit kixdns-panel.service

@@ -2680,7 +2680,9 @@ assert_contains "$(sed -n '/systemctl stop kixdns-panel.service/,$p' <<< "${earl
   "挪旧版的记录之前、停了面板以后，应停光面板账号的进程"
 # 结构 3：先停 helper 再停面板，结束时 helper 也照原样重启 / Structural change 3: the helper stops before the panel, and is
 # restarted as it was at the end
-helper_stop_line="$(grep -n '^systemctl stop kixdns-panel-helper.service' <<< "${early_restart}" | head -n 1 | cut -d: -f1 || true)"
+# 只停 helper 本身：面板的 unit Requires= helper，照常停 helper 会先停面板 / The helper alone: the panel's unit Requires= the
+# helper, so a plain stop of the helper stops the panel first
+helper_stop_line="$(grep -n '^systemctl stop --job-mode=ignore-dependencies kixdns-panel-helper.service' <<< "${early_restart}" | head -n 1 | cut -d: -f1 || true)"
 panel_stop_line="$(grep -n '^systemctl stop kixdns-panel.service' <<< "${early_restart}" | head -n 1 | cut -d: -f1 || true)"
 [[ -n ${helper_stop_line} && -n ${panel_stop_line} && ${helper_stop_line} -lt ${panel_stop_line} ]] || {
   printf '断言失败：面板停下之前应先停 helper（helper=%s panel=%s）\n' "${helper_stop_line}" "${panel_stop_line}" >&2

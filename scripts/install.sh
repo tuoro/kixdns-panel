@@ -1073,7 +1073,10 @@ stop_panel_helper() {
   if systemctl is-active --quiet kixdns-panel-helper.service 2>/dev/null; then
     HELPER_WAS_ACTIVE=true
   fi
-  systemctl stop kixdns-panel-helper.service 2>/dev/null || true
+  # 面板的 unit Requires= helper：照常停 helper，systemd 会先把面板停掉，面板停下时 helper 还在，还能替它做事。所以只停 helper 本身
+  # The panel's unit Requires= the helper: a plain stop of the helper has systemd stop the panel first, with the helper
+  # still there to act for it while it stops. So the helper alone is stopped
+  systemctl stop --job-mode=ignore-dependencies kixdns-panel-helper.service 2>/dev/null || true
 }
 
 # 开头为了记录停下面板，在真的开始安装之前就退出时：照原样重启 helper 和面板；照记录停下的（refuse_with_panel_held）不重启。
