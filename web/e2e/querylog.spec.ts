@@ -157,6 +157,77 @@ test('从概览的上游状态点进来，只看问过这个上游的查询', as
   await expect(page.locator('.qlog-pane .ui-steps')).toContainText(upstream)
 })
 
+// 筛选块的名字（「域名」「问过上游」）一行写完，长的值在点、斜杠这些地方折行，不从短的一段中间断开，也不撑出卡片
+// A chip's name (域名, 问过上游) stays on one line, and a long value wraps at dots, slashes and the like, never inside a short piece
+// and never past the card
+test('筛选块里的长域名、长上游：名字一行写完，值在点和斜杠处折行 @responsive', async ({ page }) => {
+  const qname = 'very-long-subdomain-name-for-testing-purposes.edge-cdn.example-provider-network.com.cn'
+  const upstream = 'https://dns.example-provider-network.com.cn/very-long-path-segment/dns-query'
+  // 第二组：一段 60 个字、中间没有可折的地方的域名，长的 IPv6 客户端，短的规则 / The second set: a domain with a 60-character label and
+  // nowhere to fold inside it, a long IPv6 client, a short rule
+  const label = 'x'.repeat(60)
+  const client = '2001:db8:aaaa:bbbb:cccc:dddd:eeee:ffff'
+  const sets: { path: string; chips: [string, string][] }[] = [
+    { path: `/logs?qname=${qname}&upstream=${encodeURIComponent(upstream)}`, chips: [['域名', qname], ['问过上游', upstream]] },
+    { path: `/logs?qname=${label}.example.com&client=${encodeURIComponent(client)}&rule=r1`, chips: [['域名', `${label}.example.com`], ['客户端', client], ['规则', '「r1」']] },
+  ]
+  for (const set of sets) {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(set.path)
+    const chips = page.locator('.qlog-filter')
+    await expect(chips).toHaveCount(set.chips.length)
+    await expect(chips.first()).toContainText(`${set.chips[0]![0]} ${set.chips[0]![1]}`)
+    for (const width of [320, 375, 1440]) {
+      await page.setViewportSize({ width, height: 900 })
+      const found = await page.locator('.qlog-filters').evaluate((row, values) => {
+        const problems: string[] = []
+        const edge = row.getBoundingClientRect()
+        // 一段字（可能跨几个元素）的各行 / The line boxes of a run of text (it may span several elements)
+        const rectsOf = (root: Element, text: string): DOMRect[] => {
+          const start = (root.textContent ?? '').indexOf(text)
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+          const range = document.createRange()
+          let at = 0
+          let begun = false
+          for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+            const size = node.data.length
+            if (!begun && start < at + size) { range.setStart(node, start - at); begun = true }
+            if (begun && start + text.length <= at + size) { range.setEnd(node, start + text.length - at); break }
+            at += size
+          }
+          return [...range.getClientRects()].filter((rect) => rect.width > 0)
+        }
+        const lines = (root: Element, text: string) => new Set(rectsOf(root, text).map((rect) => Math.round(rect.top))).size
+        const chips = [...row.querySelectorAll<HTMLElement>('.qlog-filter')]
+        chips.forEach((chip, index) => {
+          const [name, value] = values[index]!
+          if (lines(chip, name) !== 1) problems.push(`名字折行：${name}`)
+          const box = chip.getBoundingClientRect()
+          if (box.right > edge.right + 1 || box.left < edge.left - 1) problems.push(`撑出去：${name}`)
+          // 去掉按钮还在块里、没被挤扁（30 见方，宽屏 26） / The remove button stays in the chip, not squeezed (30 square, 26 on wide screens)
+          const button = chip.querySelector('button')!.getBoundingClientRect()
+          if (button.width < (innerWidth <= 640 ? 30 : 26) || button.right > box.right + 1) problems.push(`按钮：${name}`)
+          // 名字和值的第一行在同一行、不叠在一起，值不跑到按钮底下；只有一行时字和按钮一样居中
+          // The name and the value's first line share a line without overlapping, the value never runs under the button; on a single
+          // line the text is centred like the button
+          const [head] = rectsOf(chip, name)
+          const body = rectsOf(chip, value)
+          if (!head || !body.length) { problems.push(`找不到字：${name}`); return }
+          if (Math.abs(head.top - body[0]!.top) > 1 || head.right > body[0]!.left + 1) problems.push(`名字和值没排好：${name}`)
+          if (Math.max(...body.map((rect) => rect.right)) > button.left + 1) problems.push(`值压到按钮：${name}`)
+          if (new Set(body.map((rect) => Math.round(rect.top))).size === 1 && Math.abs((head.top + head.bottom) / 2 - (button.top + button.bottom) / 2) > 1.5) problems.push(`没居中：${name}`)
+          // 值在点、斜杠后面才折：24 个字以内的一段不从中间断开 / The value wraps after dots and slashes: a piece of up to 24 characters
+          // never breaks inside
+          for (const piece of value.split(/(?<=[./:])(?![./:])/)) if (piece.length <= 24 && lines(chip, piece) > 1) problems.push(`从中间断开：${piece}`)
+        })
+        return problems
+      }, set.chips)
+      expect(found, `${set.path} ${width}px`).toEqual([])
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), `${width}px`).toBeLessThanOrEqual(0)
+    }
+  }
+})
+
 test('地址栏带着上游组的去向打开：等配置读到再筛，只列这个组的', async ({ page }) => {
   await openQueryLog(page)
   const value = await page.getByLabel('按去向筛选').evaluate((select) => [...(select as HTMLSelectElement).options].find((o) => o.value.startsWith('group:'))!.value)
@@ -652,6 +723,8 @@ test('第一次读取失败以后：轮询照常整个重读，读到的行不�
   await page.clock.install()
   await page.goto('/logs')
   await expect(page.locator('.logs-notice')).toContainText('读取失败')
+  // 一次也没读到：不出空卡（那会说「还没有查询」） / Never read once: no empty card (it would say 还没有查询)
+  await expect(page.locator('.qlog-stream .ui-empty')).toHaveCount(0)
   await page.clock.pauseAt(Date.now() + 1_000)
   // 轮询替它重读的这一次停在路上：不出骨架，「重试」照样能按 / The re-read the poll sends is held on its way: no skeleton, and 重试
   // can still be pressed
@@ -741,6 +814,40 @@ test('换了筛选那次没读到：旧列表停在哪、「继续往前查」�
   await expect(page.locator('.logs-notice')).toContainText('下面还是换筛选之前的结果')
   await expect(page.locator('.qlog-stopped')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '继续往前查' })).toHaveCount(0)
+})
+
+// 读到了一个空列表（日志是空的，或者筛出来什么也没有），之后轮询失败：列表是读到了的，只是可能不是最新的，空卡照旧说为什么是空的
+// An empty list was read (the log is empty, or the filter matched nothing), then a poll fails: the list was read, it may just not be
+// current, and the empty card still says why it is empty
+test('读到的列表是空的、之后轮询失败：不说「读取失败」，空卡留着；筛出来是空的也一样', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await fakeQueryLog(page, 'ql-empty-poll', 0)
+  await page.clock.install()
+  await page.goto('/logs')
+  const notice = page.locator('.logs-notice')
+  const empty = page.locator('.qlog-stream .ui-empty')
+  await expect(empty).toContainText('还没有查询')
+  await page.clock.pauseAt(Date.now() + 1_000)
+  const failPolls = () => page.evaluate(() => {
+    (globalThis as unknown as { __ql: FakeLog }).__ql.fail = (p) => (p.has('after') ? { message: '查询日志读取失败（模拟的 500）', status: 500, code: 'internal_error' } : null)
+  })
+  await failPolls()
+  await page.clock.runFor(5_000)
+  // 提示的结论（原因行里是服务端的原话） / The notice's conclusion (the reason line carries the server's own words)
+  await expect(notice.locator(':scope > span')).toHaveText('数据可能已过期')
+  await expect(notice).toContainText('模拟的 500')
+  await expect(empty).toContainText('还没有查询')
+  // 带着筛选读回来是空的 / A filtered read comes back empty
+  await page.evaluate(() => { (globalThis as unknown as { __ql: FakeLog }).__ql.fail = null })
+  await page.getByLabel('搜索域名或客户端').fill('zzzz-nothing')
+  await page.clock.runFor(300)
+  await expect(page).toHaveURL(/q=zzzz-nothing/)
+  await expect(empty).toContainText('没有符合条件的查询')
+  await expect(notice).toHaveCount(0)
+  await failPolls()
+  await page.clock.runFor(5_000)
+  await expect(notice.locator(':scope > span')).toHaveText('数据可能已过期')
+  await expect(empty).toContainText('没有符合条件的查询')
 })
 
 test('轮询读失败了照实说：普通的错给重试，查询日志目录打不开就不再轮询', async ({ page }, testInfo) => {

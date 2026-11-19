@@ -1,3 +1,50 @@
+import type { RequestTrend } from './api/types'
+
+/** 面板每分钟采样一次（服务端的 METRIC_SAMPLE_INTERVAL_SECONDS） / The panel samples once a minute (the server's METRIC_SAMPLE_INTERVAL_SECONDS) */
+const SAMPLE_INTERVAL_SECONDS = 60
+
+/**
+ * 曲线画到哪一刻：最后一次采样。桶是从读取那一刻往回切的，最后一个桶的末尾总是「现在」，拿它当「截至」会每分钟往后挪一格，
+ * 说出并不存在的数据。服务端没报这一项（没有数据点）时退回最后一个桶的末尾
+ * The moment the curve runs to: the last sample. Buckets are cut back from the moment of the read, so the last bucket always ends
+ * "now"; taking that as 截至 moves it forward every minute and claims data that do not exist. Without the server's figure (no points)
+ * it falls back to the last bucket's end
+ */
+export function trendEnd(trend: RequestTrend): number | null {
+  const last = trend.points.at(-1)
+  if (!last) return null
+  return trend.sampled_until_unix ?? last.start_unix + (trend.bucket_seconds || 3600)
+}
+
+/**
+ * 趋势还在往前走吗：手上是实时数据（KixDNS 在跑），而且最后一次采样就在这次读取之前（漏一次也还算）。缺一样，曲线就停在最后一次
+ * 采样那一刻：时段写「截至」，最后一个桶不当成正在进行的那一小时，右端不写「现在」。不按最后一个桶离现在多远判断：桶从读取那一刻往
+ * 回切，停了以后最后一个桶还会「新」上一个半桶宽。readAtUnix 是服务端读到这份数据的时刻，和采样同一只钟
+ * Whether the trend is still moving: the data in hand is live (KixDNS runs) and the last sample came just before this read (one missed
+ * sample still counts). Lacking either, the curve stops at its last sample: the period reads 截至, the last bucket is not the hour in
+ * progress, and the right end does not say 现在. Not judged by how old the last bucket is: buckets are cut back from the read, so after
+ * a stop the last one still looks recent for a bucket and a half. readAtUnix is when the server read this data, on the samples' clock
+ */
+export function trendIsLive(trend: RequestTrend, live: boolean, readAtUnix: number): boolean {
+  const until = trend.sampled_until_unix
+  return live && until != null && readAtUnix - until <= 3 * SAMPLE_INTERVAL_SECONDS
+}
+
+/**
+ * 最后一个桶是不是还没攒满：还在采时它就是正在进行的那一小时；停了以后最后一次采样落在它中间，它只有停下之前那一段。两种都照没攒满
+ * 画（柱子淡、曲线最后一段虚线），不读成流量骤降；停下那一刻正好在桶的末尾时它是满的
+ * Whether the last bucket is not yet full: while sampling it is the hour in progress; after a stop the last sample falls inside it and
+ * it holds only the part before the stop. Both are drawn as not yet full (a faint bar, a dashed last curve segment), never read as a
+ * drop; a stop right at the bucket's end leaves it full
+ */
+export function lastBucketUnfinished(trend: RequestTrend, live: boolean): boolean {
+  const last = trend.points.at(-1)
+  if (!last) return false
+  if (live) return true
+  const until = trend.sampled_until_unix
+  return until != null && until < last.start_unix + (trend.bucket_seconds || 3600)
+}
+
 export interface Sparkline {
   /** 折线路径 */
   line: string

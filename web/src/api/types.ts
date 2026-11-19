@@ -161,6 +161,13 @@ export interface RequestTrend {
   points: TrendPoint[]
   /** 上列各桶之和。 */
   total: number
+  /**
+   * 画出来的数据采到哪一刻（最后一次用上的采样），没有数据点时为 null。桶从读取那一刻往回切，最后一个桶的末尾总是「现在」，
+   * 采样停了以后「截至」要按这一刻说。
+   * The moment the drawn data runs to (the last sample used), null without points. Buckets are cut back from the read, so the last
+   * one always ends "now"; once sampling has stopped, 截至 is told from this moment.
+   */
+  sampled_until_unix: number | null
 }
 
 export interface Overview {

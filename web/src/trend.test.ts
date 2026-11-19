@@ -1,5 +1,63 @@
 import { describe, expect, it } from 'vitest'
-import { sparkline } from './trend'
+import type { RequestTrend } from './api/types'
+import { lastBucketUnfinished, sparkline, trendEnd, trendIsLive } from './trend'
+
+describe('趋势采到哪一刻、还在不在采', () => {
+  // 读取在 READ；桶从 READ 往回切，最后一个桶的末尾就是 READ / Read at READ; buckets are cut back from it, so the last one ends at READ
+  const READ = 1_800_000_000
+  const trend = (sampledAgo: number | null): RequestTrend => ({
+    bucket_seconds: 3600,
+    points: [{ start_unix: READ - 7200, requests: 10 }, { start_unix: READ - 3600, requests: 20 }],
+    total: 30,
+    sampled_until_unix: sampledAgo === null ? null : READ - sampledAgo,
+  })
+
+  it('「截至」是最后一次采样，不是最后一个桶的末尾', () => {
+    expect(trendEnd(trend(20 * 60))).toBe(READ - 20 * 60)
+    expect(trendEnd({ ...trend(null), points: [] })).toBeNull()
+  })
+
+  it('KixDNS 在跑、刚采过：还在采', () => {
+    expect(trendIsLive(trend(30), true, READ)).toBe(true)
+    // 漏了一次采样也还算 / One missed sample still counts
+    expect(trendIsLive(trend(150), true, READ)).toBe(true)
+  })
+
+  it('停了、读不到：哪怕最后一个桶还「新」，也不算在采', () => {
+    expect(trendIsLive(trend(20 * 60), false, READ)).toBe(false)
+    expect(trendIsLive(trend(30), false, READ)).toBe(false)
+  })
+
+  it('KixDNS 刚回来、面板还没采到新样本：曲线还停在上次采样那一刻', () => {
+    expect(trendIsLive(trend(3 * 3600), true, READ)).toBe(false)
+    expect(trendIsLive(trend(20 * 60), true, READ)).toBe(false)
+  })
+
+  it('没有采样就谈不上在采', () => {
+    expect(trendIsLive(trend(null), true, READ)).toBe(false)
+  })
+
+  // 最后一个桶 [READ - 3600, READ) / The last bucket is [READ - 3600, READ)
+  it('停了以后最后一个桶只采到一部分：和正在进行的那一小时一样画成没攒满', () => {
+    expect(lastBucketUnfinished(trend(20 * 60), false)).toBe(true)
+    expect(lastBucketUnfinished(trend(59 * 60), false)).toBe(true)
+  })
+
+  it('最后一个桶采满了才画成实的', () => {
+    expect(lastBucketUnfinished(trend(0), false)).toBe(false)
+    expect(lastBucketUnfinished({ ...trend(0), points: trend(0).points.slice(0, 1) }, false)).toBe(false)
+  })
+
+  it('还在采时最后一个桶照旧是正在进行的那一小时', () => {
+    expect(lastBucketUnfinished(trend(30), true)).toBe(true)
+    expect(lastBucketUnfinished(trend(0), true)).toBe(true)
+  })
+
+  it('不知道采到哪一刻、没有数据点时不说没攒满', () => {
+    expect(lastBucketUnfinished(trend(null), false)).toBe(false)
+    expect(lastBucketUnfinished({ ...trend(20 * 60), points: [] }, false)).toBe(false)
+  })
+})
 
 describe('趋势折线', () => {
   it('把首尾铺满整个宽度，最大值贴顶、最小值贴底', () => {
