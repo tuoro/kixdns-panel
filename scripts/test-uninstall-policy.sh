@@ -69,6 +69,16 @@ assert_contains() {
   }
 }
 
+assert_not_contains() {
+  local haystack=$1
+  local needle=$2
+  local message=$3
+  [[ ${haystack} != *"${needle}"* ]] || {
+    printf '断言失败：%s\n实际输出：\n%s\n' "${message}" "${haystack}" >&2
+    exit 1
+  }
+}
+
 # 回归：终端提示之后 stderr 不能被永久吞掉，否则取消信息用户看不到。
 # Regression: stderr must not stay swallowed after the tty prompt, or the cancel message vanishes.
 output="$(run_in_pty "
@@ -106,16 +116,23 @@ fake_systemctl_show() {
       break
     fi
   done
+  [[ -n ${file} ]] || return 0
+  # /etc/systemd/system/<unit>.d/ 里的 drop-in 跟在后面，后写的算数 / Drop-ins in /etc/systemd/system/<unit>.d/ follow, the last
+  # one written wins
+  local files=("${file}")
+  for directory in "${SYSTEMD_UNIT_DIRECTORY}/${unit}.d"/*.conf; do
+    [[ ! -f ${directory} ]] || files+=("${directory}")
+  done
   case ${property} in
     ActiveState) printf 'active\n' ;;
     MainPID) printf '4242\n' ;;
     FragmentPath) printf '%s\n' "${file}" ;;
     ExecStart)
-      [[ -z ${file} ]] ||
-        awk '/^ExecStart=/ { line = $0; sub(/^ExecStart=/, "", line); split(line, words, " ")
-          printf "{ path=%s ; argv[]=%s ; ignore_errors=no ; }\n", words[1], line }' "${file}"
+      awk '/^ExecStart=./ { line = $0; sub(/^ExecStart=/, "", line) }
+        END { if (line != "") { split(line, words, " "); printf "{ path=%s ; argv[]=%s ; ignore_errors=no ; }\n", words[1], line } }' \
+        "${files[@]}"
       ;;
-    User) [[ -z ${file} ]] || awk '/^User=/ { value = $0; sub(/^User=/, "", value) } END { print value }' "${file}" ;;
+    User) awk '/^User=/ { value = $0; sub(/^User=/, "", value) } END { print value }' "${files[@]}" ;;
   esac
 }
 systemctl() { [[ $1 != show ]] || fake_systemctl_show "$@"; }
@@ -458,9 +475,20 @@ dead_unit_uninstall() {
         printf '[Unit]\nDocumentation=https://example.com/my-dns\n[Service]\nExecStart=%s run -c /opt/dns.json\n' \
           "${PANEL_STATE_DIRECTORY}/bin/kixdns" > "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service"
         ;;
+      panel-dropin)
+        # 面板写的 unit，用户用 drop-in 换成跑自己的程序：systemd 跑的不是面板的程序，那就是用户的服务
+        # A unit the panel wrote, switched by the user through a drop-in to their own program: systemd does not run the
+        # panel's program, so it is the user's service
+        printf '[Service]\nExecStart=%s run --config /etc/kixdns/pipeline.json --admin-socket /run/kixdns/admin.sock\n' \
+          "${PANEL_STATE_DIRECTORY}/bin/kixdns" > "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service"
+        mkdir -p "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service.d"
+        printf '[Service]\nExecStart=\nExecStart=/usr/local/sbin/kixdns run --config /etc/my-dns.json\n' \
+          > "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service.d/override.conf"
+        ;;
     esac
     systemctl() {
       [[ $1 != is-active ]] || return 1
+      [[ $1 != show ]] || { fake_systemctl_show "$@"; return 0; }
       printf 'systemctl %s\n' "$*"
     }
     getent() { return 2; }
@@ -501,19 +529,16 @@ output="$(dead_unit_uninstall foreign 2>&1)"
 }
 assert_contains "${output}" "UNIT-LEFT" "不是面板创建的 unit 必须原样保留"
 assert_contains "${output}" "这个服务不是面板创建的，保留不动" "保留失效的外部 unit 时必须说明"
+# 回归：只看 /etc/systemd/system 里的文件，drop-in 已经让它跑用户自己程序的 unit 也被当成面板留下的、程序已不在的 unit 删掉。
+# Regression: looking only at the file in /etc/systemd/system, a unit a drop-in had switched to the user's own program was
+# removed as a dead unit the panel left.
+output="$(dead_unit_uninstall panel-dropin 2>&1)"
+assert_not_contains "${output}" "RUN-FAILED" "drop-in 换了程序的 unit 不应让卸载失败"
+assert_contains "${output}" "UNIT-LEFT" "systemd 跑的不是面板程序的 unit 必须原样保留"
+assert_not_contains "${output}" "systemctl disable --now kixdns.service" "systemd 跑的不是面板程序的 unit 不应被停用"
 [[ ${output} != *"systemctl disable --now kixdns.service"* ]] || {
   printf '断言失败：不是面板创建的 unit 不应被停用\n%s\n' "${output}" >&2
   exit 1
-}
-
-assert_not_contains() {
-  local haystack=$1
-  local needle=$2
-  local message=$3
-  [[ ${haystack} != *"${needle}"* ]] || {
-    printf '断言失败：%s\n实际输出：\n%s\n' "${message}" "${haystack}" >&2
-    exit 1
-  }
 }
 
 # ---------------------------------------------------------------------------
