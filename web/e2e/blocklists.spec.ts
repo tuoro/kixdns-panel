@@ -87,7 +87,10 @@ test('自己写的规则只指出用不上的行；规则页最上面多一行�
 test('自己写的正则：接着改，没用上的那一行不闪，原因照内核说 @responsive', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('kixdns:demo-regex-refused', JSON.stringify(['^ad[a-\\d]x', '^ad[a-\\d]xy']))
-    localStorage.setItem('kixdns:demo-regex-too-big', JSON.stringify(['^ad\\w{60}']))
+    // \pL 照旧是 Unicode 字母类，域名的正则里 \w 按 ASCII 理解、\w{60} 编得出（kixdns #232）；带大写字母的规则问的是加了 (?i) 的 / \pL is
+    // still the Unicode letter class, while \w reads as ASCII in a name regex and \w{60} compiles (kixdns #232); a rule with a capital
+    // letter is asked about with (?i)
+    localStorage.setItem('kixdns:demo-regex-too-big', JSON.stringify(['(?i)^ad\\pL{60}']))
   })
   await open(page)
   const text = page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true })
@@ -109,7 +112,7 @@ test('自己写的正则：接着改，没用上的那一行不闪，原因照�
   await page.evaluate(() => new Promise(requestAnimationFrame))
   expect(await page.evaluate(() => (window as unknown as { problemGone: number }).problemGone)).toBe(0)
   // 编译后太大的说大小 / One too big once compiled is said as size
-  await text.fill('||ok.example^\n/^ad\\w{60}/')
+  await text.fill('||ok.example^\n/^ad\\pL{60}/')
   await expect(problems).toContainText('正则编译出来超过 KixDNS 的 1 MB 上限')
   await text.fill('||ok.example^\n/^ad\\.example$/')
   await expect(problems).toHaveCount(0)

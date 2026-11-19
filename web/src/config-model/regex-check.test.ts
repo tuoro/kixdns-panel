@@ -51,6 +51,22 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
     expect([grammar.kernelRegexOk('domain', 'a'.repeat(1001)), grammar.kernelRegexOk('txt', 'a'.repeat(1001))]).toEqual([true, false])
   })
 
+  // 编译后太大时提示点名最占地方的写法：\w、\pL 里，点的正是内核在那一种正则里配上 {50} 编不下的。域名的正则里 \w 按 ASCII 理解
+  // （kixdns #232），\w{50} 编得出，不能再怪它；TXT 的照旧按 Unicode，两个都点
+  // Too big once compiled, the hint names what takes the most room: of \w and \pL, exactly those the kernel cannot compile with {50}
+  // in that kind of regex. In a name regex \w reads as ASCII (kixdns #232) and \w{50} compiles, so it is no longer to blame; TXT stays
+  // Unicode, and both are named
+  it('编译后太大的提示点的正是内核在那一种正则里编不下的写法', async () => {
+    const { grammar } = await load()
+    for (const kind of ['domain', 'txt'] as const) {
+      const classes = ['\\w', '\\pL']
+      const named = classes.filter((c) => grammar.regexCauseText(kind, 'too-big').includes(c))
+      const tooBig = classes.filter((c) => kernelAnswer({ kind, pattern: `${c}{50}` }).verdict !== 'compiles')
+      expect(tooBig, kind).not.toEqual([])
+      expect(named, kind).toEqual(tooBig)
+    }
+  })
+
   it('规则条件、回答条件、TXT、高级规则、拦截列表自己写的规则都用这个回答，各问各的那一种', async () => {
     const { check, grammar, model, blocklist, fields } = await load()
     const asked: RegexItem[] = []
@@ -58,14 +74,17 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
       asked.push(...items)
       return items.map(({ kind, pattern }): RegexAnswer => {
         if (pattern.includes('a-\\d')) return { verdict: 'refused', cause: 'syntax', error: 'invalid range boundary' }
-        if (pattern === '\\w{60}') return { verdict: 'refused', cause: 'too-big', error: 'Compiled regex exceeds size limit of 1000000 bytes.' }
+        // \pL 照旧是 Unicode 字母类（域名的正则里 \w 按 ASCII 理解，\w{60} 编得出，kixdns #232）；自己写的规则带大写字母，问的是加了 (?i) 的 /
+        // \pL is still the Unicode letter class (\w reads as ASCII in a name regex and \w{60} compiles, kixdns #232); one's own rule has a
+        // capital letter, so what is asked carries (?i)
+        if (pattern === '\\pL{60}' || pattern === '(?i)\\pL{60}') return { verdict: 'refused', cause: 'too-big', error: 'Compiled regex exceeds size limit of 1000000 bytes.' }
         // 只是个替身：按种类回答得不一样，看得出每一处问的是哪一种 / Only a stand-in: answering by kind shows which kind each place asks with
         if (kind === 'txt' && pattern === '\\w+') return { verdict: 'refused', cause: 'syntax', error: 'stand-in for a TXT refusal' }
         return { verdict: 'compiles' }
       })
     })
     // 内核收、JS 读不了的 a++；内核不收、JS 收的 [a-\d] / a++ the kernel takes and JS cannot read; [a-\d] the kernel refuses and JS takes
-    await check.checkKernelRegexes(['a++', '[a-\\d]', '(?i)^Ads[a-\\d]', '\\w+', '\\w{60}'].flatMap((pattern) => [{ kind: 'domain' as const, pattern }, { kind: 'txt' as const, pattern }]))
+    await check.checkKernelRegexes(['a++', '[a-\\d]', '(?i)^Ads[a-\\d]', '\\w+', '\\pL{60}', '(?i)\\pL{60}'].flatMap((pattern) => [{ kind: 'domain' as const, pattern }, { kind: 'txt' as const, pattern }]))
     const regex = { regex: true }
     expect([model.FIELD.domain.valid!('a++', regex), model.FIELD.domain.valid!('[a-\\d]', regex), model.FIELD.domain.valid!('\\w+', regex)]).toEqual([true, false, true])
     expect([model.RESPONSE_FIELD.request_domain.valid!('a++', regex), model.RESPONSE_FIELD.request_domain.valid!('[a-\\d]', regex)]).toEqual([true, false])
@@ -77,13 +96,13 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
       expect(fields.matcherFieldErrors({ type, operator: 'and', value: '[a-\\d]' }, scope)).toEqual({ value: SYNTAX })
       expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\w+' }, scope)).toEqual({})
       // 编译后太大说的是大小，不是写法 / Too big once compiled is said as size, not syntax
-      expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\w{60}' }, scope)).toEqual({ value: grammar.regexCauseText('domain', 'too-big') })
+      expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\pL{60}' }, scope)).toEqual({ value: grammar.regexCauseText('domain', 'too-big') })
     }
     const txtField = (value: string) => fields.matcherFieldErrors({ type: 'response_txt_content', operator: 'and', mode: 'regex', value }, 'response')
     expect(txtField('[a-\\d]')).toEqual({ value: SYNTAX })
     expect(txtField('\\w+')).toEqual({ value: SYNTAX })
     // TXT 编译后太大说的也是 1 MB / Too big once compiled is 1 MB for TXT too
-    expect(txtField('\\w{60}')).toEqual({ value: grammar.regexCauseText('txt', 'too-big') })
+    expect(txtField('\\pL{60}')).toEqual({ value: grammar.regexCauseText('txt', 'too-big') })
     expect([grammar.regexCauseText('domain', 'too-big'), grammar.regexCauseText('txt', 'too-big')].every((text) => text.includes('1 MB'))).toBe(true)
     // TXT 先看长度，和内核一样 / A TXT regex's length comes first, as in the kernel
     expect(txtField(`(?=x)${'a'.repeat(1000)}`)).toEqual({ value: 'TXT 的正则最长 1000 字节' })
@@ -92,7 +111,7 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
     // 自己写的规则问的是写进内核的那个（带大写字母的加了 (?i)），原因分写法和太大 / One's own rule asks about what reaches the kernel (with (?i) for a
     // capital letter), the reason being syntax or size
     expect(blocklist.parseOwnRules('/^Ads[a-\\d]/').problems.map((p) => p.problem)).toEqual([blocklist.skipText({ reason: 'bad-regex' })])
-    expect(blocklist.parseOwnRules('/\\w{60}/').problems.map((p) => p.problem)).toEqual([blocklist.skipText({ reason: 'regex-too-large' })])
+    expect(blocklist.parseOwnRules('/\\pL{60}/').problems.map((p) => p.problem)).toEqual([blocklist.skipText({ reason: 'regex-too-large' })])
     expect(blocklist.parseOwnRules('/a++/').rules.map((r) => r.match)).toEqual([{ kind: 'regex', value: 'a++' }])
     expect(asked.filter((i) => i.pattern === '\\w+').map((i) => i.kind)).toEqual(['domain', 'txt'])
   })
