@@ -1458,6 +1458,13 @@ accounts_line="$(grep -n 'create_accounts' <<< "${main_body}" | head -n 1 | cut 
 # records, not this run's default name.
 main_body="$(declare -f main)"
 refuse_line="$(grep -n 'refuse_unfinished_restore' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+# 读任何记录之前，先把旧版放在面板状态目录里的记录挪进只有 root 能进的目录、验过（P2）/ Before any record is read, the
+# records older versions kept in the panel's state directory are moved into the root-only directory and checked (P2)
+secure_line="$(grep -n 'secure_root_records' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${secure_line} && -n ${refuse_line} && ${secure_line} -lt ${refuse_line} ]] || {
+  printf '断言失败：安装器读记录之前要先把它们挪进只有 root 能进的目录（secure=%s refuse=%s）\n' "${secure_line}" "${refuse_line}" >&2
+  exit 1
+}
 for later in load_existing_panel_settings skip_if_already_installed choose_install_mode; do
   later_line="$(grep -n "${later}" <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
   [[ -n ${refuse_line} && -n ${later_line} && ${refuse_line} -lt ${later_line} ]] || {
@@ -1499,6 +1506,27 @@ for later in require_regular_targets backup_panel_state create_accounts create_p
     exit 1
   }
 done
+# 面板账号的进程真的一个个停掉：/proc 里属主是它的进程都发 SIGKILL，停光才往下走；停不掉就不动面板的目录。这里 kill 只记下来，
+# 不会真的停开发机上的进程。
+# The panel account's processes are really stopped one by one: every process in /proc owned by it gets SIGKILL, and only
+# once none is left does the run go on; when they cannot be stopped, the panel's directories are left alone. kill is only
+# recorded here, so no process of the dev host is really stopped.
+panel_processes_stopped() {
+  (
+    killed="${WORK}/killed-processes"
+    rm -f -- "${killed}"
+    id() { command id -u; }
+    account_has_processes() { [[ ! -s ${killed} ]]; }
+    kill() { printf '%s\n' "$*" >> "${killed}"; }
+    sleep() { :; }
+    abort_install() { printf 'ABORTED %s\n' "$*"; return 1; }
+    stop_panel_processes && printf 'STOPPED\n'
+    [[ ! -s ${killed} ]] || printf 'KILL %s\n' "$(head -n 1 "${killed}" | cut -d' ' -f1)"
+  ) 2>&1 || true
+}
+output="$(panel_processes_stopped)"
+assert_contains "${output}" "STOPPED" "面板账号的进程停光以后应往下走"
+assert_contains "${output}" "KILL -KILL" "面板账号的进程应发 SIGKILL 停掉"
 # 面板停了以后再查一遍：面板能写的路径不能是符号链接，文件只能有一个链接（硬链接到别处的文件，改属主就改到别处去了）。
 # Checked again once the panel has stopped: no path the panel can write may be a symlink, and a file may have one link
 # only (changing the owner of a file hard-linked from elsewhere changes it elsewhere too).
@@ -1643,6 +1671,28 @@ assert_contains "${output}" "USERDEL=1" "回滚应删掉这次建的面板账号
   restore_path "${WORK}/never-backed-up-target/file" never
 )
 assert_equals "$(cat "${WORK}/never-backed-up-target/file" 2>/dev/null || printf missing)" "live" "没备份过的路径回滚时不能删"
+# 回归（S1）：放回一样东西时，它所在的目录已经在就不动（install -d 会把已有的目录改成 0755）：以前回滚把只有 root 能进的
+# 0700 备份目录改成了谁都能进。建目录的时候，已有的 helper 目录也一样不改权限。
+# Regression (S1): putting a thing back leaves its directory alone when it exists (install -d would make an existing one
+# 0755): rollback used to make the root-only 0700 backup directory enterable by anyone. Creating directories leaves an
+# existing helper directory's mode alone too.
+(
+  BACKUP_ROOT="${WORK}/restore-parent/rollback"
+  mkdir -p "${BACKUP_ROOT}/external-backup" "${WORK}/restore-parent/records"
+  chmod 0700 "${WORK}/restore-parent/records"
+  printf 'KIXDNS_SERVICE_UNIT=kixdns.service\n' > "${BACKUP_ROOT}/external-backup/install.env"
+  restore_path "${WORK}/restore-parent/records/external-backup" external-backup
+)
+assert_equals "$(stat -c '%a' "${WORK}/restore-parent/records")" "700" "放回备份时不能改它所在目录的权限"
+[[ -f ${WORK}/restore-parent/records/external-backup/install.env ]] ||
+  { printf '断言失败：回滚应放回备份\n' >&2; exit 1; }
+output="$(
+  LIBEXEC_DIRECTORY="${WORK}/existing-libexec"
+  mkdir -p "${LIBEXEC_DIRECTORY}"
+  install() { printf 'install %s\n' "$*"; }
+  create_panel_directories
+)"
+assert_not_contains "${output}" "${WORK}/existing-libexec" "已有的 helper 目录不能被 install -d 改权限"
 
 # ---------------------------------------------------------------------------
 # 配置所在的目录 / The config's directory
@@ -2033,6 +2083,37 @@ output="$(FORGED_RECORDS=true config_directory_run)"
 assert_contains "${output}" "不是 root 建的" "面板写的备份应被拒绝"
 assert_not_contains "${output}" "PLANNED" "面板写的备份应在改动主机之前拒绝"
 assert_not_contains "${output}" "chown root:" "面板写的备份不能让安装器交还任何文件"
+# 一份记录要整份都是 root 的才算：面板建的空目录、目录别人能写、里面有符号链接或别的硬链接的，都不算；放记录的目录本身要是只有
+# root 能进的 0700；新旧两处都有一份时分不清用哪份，也停下。
+# A record counts only when all of it is root's: an empty directory the panel made, a directory others can write, or one
+# holding a symlink or a file with another hard link does not; the directory holding the records must itself be root-only
+# 0700; and with a copy in both the old and the new place there is no telling which to use, so the run stops too.
+legacy_host_tree 'User=kxu\n'
+rm -f -- "${root}/state/external-backup"/*
+output="$(FORGED_RECORDS=true config_directory_run)"
+assert_contains "${output}" "不是 root 建的" "面板建的空目录不能当成记录"
+for record_case in symlink hardlink writable; do
+  legacy_host_tree 'User=kxu\n'
+  case ${record_case} in
+    symlink) ln -s -- "${root}/etc/foo.json" "${root}/state/external-backup/extra" ;;
+    hardlink) ln -- "${root}/etc/foo.json" "${root}/state/external-backup/extra" ;;
+    writable) chmod 0770 "${root}/state/external-backup" ;;
+  esac
+  output="$(config_directory_run)"
+  assert_contains "${output}" "不是 root 建的" "记录里有${record_case}时不能照它做事"
+  assert_not_contains "${output}" "PLANNED" "记录里有${record_case}时应在改动主机之前拒绝"
+done
+legacy_host_tree 'User=kxu\n'
+mkdir -p "${root}/records"
+chmod 0755 "${root}/records"
+output="$(config_directory_run)"
+assert_contains "${output}" "${root}/records 不是只有 root 能进的目录，不能放安装记录" "放记录的目录别人能进时应拒绝"
+assert_not_contains "${output}" "PLANNED" "放记录的目录别人能进时应在改动主机之前拒绝"
+legacy_host_tree 'User=kxu\n'
+mkdir -p "${root}/records/external-backup"
+chmod 0700 "${root}/records"
+output="$(config_directory_run)"
+assert_contains "${output}" "${root}/state/external-backup 和 ${root}/records/external-backup 都在，分不清该用哪份" "新旧两处都有记录时应停下"
 # 已经改管副本的主机再升级：备份里有副本的记录，不再动原配置。/ A host already on the copy upgrades again: the backup records
 # the copy, and the original is not touched again.
 legacy_host_tree 'User=kxu\n'

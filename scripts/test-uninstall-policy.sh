@@ -1052,6 +1052,27 @@ ln "${host}/elsewhere/shadow" "${host}/state/geo/site-abc.dat"
 output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
 assert_not_contains "$(cat "${chown_log}")" "${host}/etc-kixdns/pipeline.json" "硬链接到别处的配置不能改属主"
 assert_not_contains "$(cat "${chown_log}")" "${host}/state/geo/site-abc.dat" "硬链接到别处的 Geo 文件不能改属主"
+# 面板账号的进程真的一个个停掉：/proc 里属主是它的进程都发 SIGKILL，停光才往下走；停不掉就不动面板的目录。这里 kill 只记下来，
+# 不会真的停开发机上的进程。
+# The panel account's processes are really stopped one by one: every process in /proc owned by it gets SIGKILL, and only
+# once none is left does the run go on; when they cannot be stopped, the panel's directories are left alone. kill is only
+# recorded here, so no process of the dev host is really stopped.
+panel_processes_stopped() {
+  (
+    killed="${scratch}/killed-processes"
+    rm -f -- "${killed}"
+    id() { command id -u; }
+    account_has_processes() { [[ ! -s ${killed} ]]; }
+    kill() { printf '%s\n' "$*" >> "${killed}"; }
+    sleep() { :; }
+    fail() { printf 'FAILED %s\n' "$*"; return 1; }
+    stop_panel_processes && printf 'STOPPED\n'
+    [[ ! -s ${killed} ]] || printf 'KILL %s\n' "$(head -n 1 "${killed}" | cut -d' ' -f1)"
+  ) 2>&1 || true
+}
+output="$(panel_processes_stopped)"
+assert_contains "${output}" "STOPPED" "面板账号的进程停光以后应往下走"
+assert_contains "${output}" "KILL -KILL" "面板账号的进程应发 SIGKILL 停掉"
 run_body="$(declare -f run_uninstall)"
 components_line="$(grep -n 'remove_panel_components' <<< "${run_body}" | head -n 1 | cut -d: -f1 || true)"
 stop_line="$(grep -n 'stop_panel_processes' <<< "${run_body}" | head -n 1 | cut -d: -f1 || true)"
@@ -1156,6 +1177,16 @@ output="$(OTHER_UNIT_DIRECTORY=${host}/vendor-units PANEL_OWNED=true CHOWN_LOG=$
 assert_not_contains "${output}" "RUN-FAILED" "unit 不在备份里的原地迁移主机卸载不应失败"
 assert_equals "$(kept_owner_of root:990 "${host}/etc/kixdns.json")" "root:990 640" \
   "unit 不在备份里时应按名字找到它，按它运行用的账号交还，不能交还成谁都能读"
+# 回归（P1）：交还的原配置硬链接到别处时不改它：改属主、权限就改到别处去了。
+# Regression (P1): an original config hard-linked from elsewhere is not handed back: changing its owner and mode would
+# change something else.
+inplace_host "${host}"
+mkdir -p "${host}/elsewhere"
+ln -- "${host}/etc/kixdns.json" "${host}/elsewhere/shadow"
+: > "${chown_log}"
+output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_not_contains "$(cat "${chown_log}")" "${host}/etc/kixdns.json" "硬链接到别处的原配置不能改属主"
+assert_equals "$(stat -c '%a' "${host}/elsewhere/shadow")" "640" "硬链接到别处的原配置不能改权限"
 # 只列真改了的：目录已经是 0755 时不列它。/ Only what really changed is listed: a directory already 0755 is not.
 inplace_host "${host}"
 chmod 0755 "${host}/etc"
