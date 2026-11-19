@@ -278,12 +278,23 @@ function githubRateReset(): string {
   return reset ? formatDate(reset) : ''
 }
 
+// Token 状态和内核状态一样按编号认：保存、删除的回应就是改了以后的状态，之前发出的读取（检查更新以后、打开页面时）晚回来不算数
+// The token status is matched by number like the kernel state: the answer to a save or delete is the state after it, and a read sent
+// before (after 检查更新, on opening the page) does not count when it lands late
+let tokenRequest = 0
+function takeTokenStatus(next: GithubTokenStatus): void {
+  tokenRequest += 1
+  githubTokenStatus.value = next
+}
 async function loadGithubTokenStatus(): Promise<void> {
+  const request = ++tokenRequest
   try {
-    githubTokenStatus.value = await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token')
+    const next = await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token')
+    if (request !== tokenRequest) return
+    githubTokenStatus.value = next
     githubTokenError.value = ''
   } catch (error) {
-    githubTokenError.value = errorMessage(error)
+    if (request === tokenRequest) githubTokenError.value = errorMessage(error)
   }
 }
 
@@ -296,10 +307,10 @@ async function saveGithubToken(): Promise<void> {
   if (!githubToken.value || githubTokenBusy.value) return
   githubTokenBusy.value = true
   try {
-    githubTokenStatus.value = await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token', {
+    takeTokenStatus(await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token', {
       method: 'PUT',
       ...jsonBody({ token: githubToken.value }),
-    })
+    }))
     githubToken.value = ''
     githubTokenVisible.value = false
     githubTokenError.value = ''
@@ -325,7 +336,7 @@ async function deleteGithubToken(): Promise<void> {
     })) return
   githubTokenBusy.value = true
   try {
-    githubTokenStatus.value = await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token', { method: 'DELETE' })
+    takeTokenStatus(await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token', { method: 'DELETE' }))
     githubToken.value = ''
     githubTokenError.value = ''
     toast.success('GitHub Token 已删除')
@@ -470,6 +481,18 @@ function loadService(silent = false, fresh = false): Promise<void> {
   return pendingService
 }
 
+// 更新、回退的回应就是换了以后的内核状态：之前发出、还在路上的读取（保存 Token、重新连上、检查结果到了以后发的）一律作废，
+// 晚回来也不把页面退回换之前；它们的收尾也不再归它们，读取中的骨架在这里收起
+// The answer to an update or rollback is the kernel state after the switch: reads sent before it and still on their way (after a token
+// save, a reconnect, a check result) are void, so landing late they cannot put the page back to before it; their winding up is no
+// longer theirs either, so the reading skeleton goes here
+function takeKernel(next: KixdnsKernel): void {
+  kernelRequest += 1
+  kernel.value = next
+  kernelError.value = ''
+  loadingKernel.value = false
+}
+
 function loadKernel(silent = false): Promise<void> {
   const request = ++kernelRequest
   loadingKernel.value = true
@@ -573,10 +596,10 @@ async function updateKernel(): Promise<void> {
   kernelAction.value = 'update'
   kernelUpdateStartedAt.value = Date.now()
   try {
-    kernel.value = await apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel/update', {
+    takeKernel(await apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel/update', {
       method: 'POST',
       ...jsonBody({ source_id: latest.source_id }),
-    })
+    }))
     // 换内核之前发出的读取、检查都不算数 / Reads and checks sent before the switch do not count
     await Promise.all([loadService(true, true), refreshUpdates(true)])
     toast.success(switchedMessage(service.value, `内核已${verb}`))
@@ -599,7 +622,7 @@ async function rollbackKernel(): Promise<void> {
   })) return
   kernelAction.value = 'rollback'
   try {
-    kernel.value = await apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel/rollback', { method: 'POST' })
+    takeKernel(await apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel/rollback', { method: 'POST' }))
     await Promise.all([loadService(true, true), refreshUpdates(true)])
     toast.success(switchedMessage(service.value, '已回退到上一个内核'))
   } catch (error) {

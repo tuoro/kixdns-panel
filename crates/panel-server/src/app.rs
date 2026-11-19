@@ -274,6 +274,17 @@ struct RequestTrend {
     ///
     /// The sum of the buckets above: requests over the covered period.
     total: u64,
+    /// 画出来的数据采到哪一刻（最后一次用上的采样）；没有数据点时为空。桶是从读取那一刻往回切的，
+    /// 最后一个桶的末尾总是「现在」：采样停了以后（KixDNS 停了、读不到），页面要按这一刻说「截至」，
+    /// 不能按桶的末尾，否则每分钟往后挪一格，说出并不存在的数据。
+    ///
+    /// The moment the drawn data runs to (the last sample used); none without
+    /// points. Buckets are cut back from the moment of the read, so the last
+    /// bucket always ends "now": once sampling has stopped (the kernel stopped or
+    /// unreadable) the page names this moment as 截至, never the bucket's end,
+    /// which would move forward every minute and claim data that do not exist.
+    #[serde(default)]
+    sampled_until_unix: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1748,6 +1759,9 @@ fn build_request_trend(samples: &[MetricSample], now: i64) -> RequestTrend {
     let window_start = now - bucket_seconds * TREND_BUCKETS;
     let mut buckets = vec![0u64; usize::try_from(TREND_BUCKETS).unwrap_or_default()];
     let mut covered_buckets = vec![false; buckets.len()];
+    // 画出来的数据采到哪一刻：落进窗口的最后一段的末尾（窗口到现在为止） / The moment the drawn data runs to: the end of the last
+    // interval that lands in the window (which ends now)
+    let mut sampled_until = None;
 
     for pair in samples.windows(2) {
         let (previous, current) = (pair[0], pair[1]);
@@ -1755,7 +1769,7 @@ fn build_request_trend(samples: &[MetricSample], now: i64) -> RequestTrend {
             continue;
         }
         let delta = interval_delta(previous, current);
-        spread_interval(
+        if spread_interval(
             delta,
             previous.captured_at,
             current.captured_at,
@@ -1763,7 +1777,9 @@ fn build_request_trend(samples: &[MetricSample], now: i64) -> RequestTrend {
             bucket_seconds,
             &mut buckets,
             &mut covered_buckets,
-        );
+        ) {
+            sampled_until = sampled_until.max(Some(current.captured_at.min(now)));
+        }
     }
 
     let points: Vec<TrendPoint> = buckets
@@ -1780,6 +1796,7 @@ fn build_request_trend(samples: &[MetricSample], now: i64) -> RequestTrend {
         bucket_seconds,
         points,
         total,
+        sampled_until_unix: sampled_until,
     }
 }
 
@@ -1798,6 +1815,7 @@ fn interval_delta(previous: MetricSample, current: MetricSample) -> u64 {
     .unwrap_or_default()
 }
 
+/// 返回这一段有没有落进窗口里的哪个桶 / Returns whether the interval landed in any bucket of the window
 fn spread_interval(
     delta: u64,
     start: i64,
@@ -1806,11 +1824,12 @@ fn spread_interval(
     bucket_seconds: i64,
     buckets: &mut [u64],
     covered: &mut [bool],
-) {
+) -> bool {
     let span = end - start;
     if span <= 0 {
-        return;
+        return false;
     }
+    let mut landed = false;
     for (index, bucket) in buckets.iter_mut().enumerate() {
         let offset = bucket_seconds * i64::try_from(index).unwrap_or(0);
         let bucket_start = window_start + offset;
@@ -1821,6 +1840,7 @@ fn spread_interval(
             continue;
         }
         covered[index] = true;
+        landed = true;
         // 按「到这一格为止的累计份额」相减，而不是各算各的再取整。
         //
         // 每格单独 floor(delta * overlap / span) 会各丢一点零头，桶一多就积成
@@ -1836,6 +1856,7 @@ fn spread_interval(
         let share = scaled(delta, to - start, span) - scaled(delta, from - start, span);
         *bucket = bucket.saturating_add(share);
     }
+    landed
 }
 
 /// `delta * position / span`，用 128 位算避免中途溢出。

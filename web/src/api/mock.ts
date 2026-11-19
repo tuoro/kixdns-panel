@@ -195,6 +195,8 @@ const requestTrend: RequestTrend = {
     requests: weight * 1000,
   })),
   total: trendShape.reduce((sum, weight) => sum + weight, 0) * 1000,
+  // 演示里一直在采：最后一次采样就是现在 / The demo keeps sampling: the last sample is now
+  sampled_until_unix: now,
 }
 
 const overview: Overview = {

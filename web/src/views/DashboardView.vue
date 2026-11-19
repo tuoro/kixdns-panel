@@ -24,7 +24,7 @@ import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
-import { sparkline } from '../trend'
+import { lastBucketUnfinished, sparkline, trendEnd, trendIsLive } from '../trend'
 import { softBreakParts } from '../ui/soft-breaks'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
 import GlueText from '../config-v2/GlueText.vue'
@@ -334,12 +334,10 @@ const statsWindowKey = computed({
 const statsWindowItems = computed(() => statsWindows.map((item) => ({ value: String(item.value), label: item.label, disabled: runtimeControlsDisabled.value })))
 // 时段跟着手上这份数据的窗口写，不跟着刚点的那一档：新窗口的数据到了才换
 // The period follows the window of the data in hand, not the option just pressed: it changes when the new window's data arrives
-const statsWindowLabel = computed(() => {
-  const seconds = displayStats.value?.window_seconds ?? statsWindow.value
-  // 一小时写成「最近一小时」，和上游状态、平均延迟同一种说法 / One hour reads 最近一小时, as upstream status and mean latency say it
-  if (seconds === 3_600) return '最近一小时'
-  return `最近 ${statsWindows.find((item) => item.value === seconds)?.label ?? `${Math.round(seconds / 3600)} 小时`}`
-})
+// 和上游状态、平均延迟同一种说法（一小时写「最近一小时」）；手上是快照（KixDNS 停了、读不到，或者排行读到的就是快照）时一样从快照往前说
+// Told as upstream status and mean latency tell it (one hour reads 最近一小时); with a snapshot in hand (KixDNS stopped or unreadable,
+// or the rankings read being a snapshot themselves) it counts back from the snapshot likewise
+const statsWindowLabel = computed(() => recentWindowLabel(displayStats.value?.window_seconds ?? statsWindow.value, snapshotData.value || displayStats.value?.live === false))
 // 排行里的域名可以在「.」前面折行，长域名不再从字母中间断开；客户端地址照旧按通用规则 / Ranked domains may wrap before a dot, so a long one never splits inside a label; client addresses keep the general rule
 const rankedParts = (group: string, name: string): string[] => (group === 'domains' ? name.split(/(?=\.)/) : breakable(name))
 const rankingGroups = [
@@ -537,11 +535,11 @@ const trendWindow = computed(() => {
   // started as one that has run a full hour.
   const hours = Math.round(seconds / 3600)
   const span = seconds >= 24 * 3600 ? ' 24 小时' : seconds < 3600 ? ` ${Math.max(1, Math.round(seconds / 60))} 分钟` : hours === 1 ? '一小时' : ` ${hours} 小时`
-  // 采样停过（KixDNS 停了、读不到）：曲线到最后一个桶的末尾就没了，时段写「截至那一刻的…」，不说「最近」
-  // Sampling stopped (KixDNS stopped or could not be read): the curve ends with its last bucket, so the period reads 「截至 that
+  // 采样停了（KixDNS 停了、读不到）：曲线到最后一次采样就没了，时段写「截至那一刻的…」，不说「最近」
+  // Sampling stopped (KixDNS stopped or could not be read): the curve ends at its last sample, so the period reads 「截至 that
   // moment 的…」 instead of 最近
   if (lastIsNow.value) return `最近${span}`
-  return `截至 ${clock((trend.points[trend.points.length - 1]!.start_unix + bucket) * 1000, false)} 的${span}`
+  return `截至 ${clock(trendEnd(trend)! * 1000, false)} 的${span}`
 })
 
 const trendPending = computed(() => {
@@ -559,18 +557,26 @@ const spark = computed(() => {
   if (points.length < 2) return null
   return sparkline(points.map((point) => point.requests), SPARK_WIDTH, SPARK_HEIGHT)
 })
-// 最后一个桶是不是正在进行的这一小时 / Whether the last bucket is the hour still in progress
+// 最后一个桶是不是正在进行的这一小时：按 KixDNS 在不在跑和最后一次采样在哪一刻说，不按最后一个桶离现在多远（见 trendIsLive）；
+// 「截至」、两张图的读屏说法、柱图右端都跟着它
+// Whether the last bucket is the hour still in progress: told from whether KixDNS runs and when the last sample was, not from how old the
+// last bucket is (see trendIsLive); 截至, both charts' labels and the bar chart's right end follow it
 const lastIsNow = computed(() => {
-  const trend = displayOverview.value?.trend
-  const last = trend?.points.at(-1)?.start_unix
-  return last !== undefined && Date.now() / 1000 - last < (trend?.bucket_seconds || 3600) * 1.5
+  const view = displayOverview.value
+  return Boolean(view) && trendIsLive(view!.trend, runtimeState.value === 'live', view!.captured_at_unix)
 })
-// 正在进行的这一小时还没攒满，最后一段画成虚线，读者不会把它读成流量骤降
-// The hour in progress is not full yet, so the last segment is dashed and never reads as traffic collapsing
+// 最后一个桶还没攒满（正在进行的这一小时，或者停了以后只采到停下之前那一段）：最后一段画成虚线、最后一根柱子画淡，读者不会把它读成
+// 流量骤降（见 lastBucketUnfinished）
+// The last bucket is not full yet (the hour in progress, or after a stop only the part before it): the last segment is dashed and the
+// last bar faint, so it never reads as traffic collapsing (see lastBucketUnfinished)
+const lastUnfinished = computed(() => {
+  const view = displayOverview.value
+  return Boolean(view) && lastBucketUnfinished(view!.trend, lastIsNow.value)
+})
 const sparkPaths = computed(() => {
   const curve = spark.value?.curve ?? ''
   const parts = curve.split(' C')
-  if (!lastIsNow.value || parts.length < 3) return { solid: curve, live: '' }
+  if (!lastUnfinished.value || parts.length < 3) return { solid: curve, live: '' }
   const end = parts.at(-2)!.match(/-?[\d.]+/g)!.slice(-2)
   return { solid: parts.slice(0, -1).join(' C'), live: `M${end[0]},${end[1]} C${parts.at(-1)}` }
 })
@@ -602,7 +608,7 @@ const barScale = computed(() => {
 const bars = computed(() => (displayOverview.value?.trend.points ?? []).map((point, index, points) => ({
   key: point.start_unix,
   share: barScale.value.top ? point.requests / barScale.value.top : 0,
-  live: lastIsNow.value && index === points.length - 1,
+  live: lastUnfinished.value && index === points.length - 1,
   title: `${clock(point.start_unix * 1000, false)} 起 ${formatNumber(point.requests)} 次`,
 })))
 // 网格的刻度值按万、亿缩写：这里只标量级，精确的数在柱子的提示和上面的卡里
@@ -642,10 +648,10 @@ const chartPixels = computed(() => {
 })
 
 // 柱图的时间刻度：本地整点，每 1/2/3/6 小时一个（最多四个），按时间落在所属那根柱子里的位置；右端写「现在 HH:MM」，
-// 采样停过时右端改写最后一个桶的整点，不让旧数据看起来像现在。放不下的刻度字直接去掉：会压住右端那个字的不要
+// 采样停了时右端写最后一次采样的时刻（和「截至」同一个），不让旧数据看起来像现在。放不下的刻度字直接去掉：会压住右端那个字的不要
 // The bar chart's time ticks: local whole hours every 1/2/3/6 hours (at most four), each placed by time inside its bucket's bar;
-// the right end reads 现在 HH:MM, or the last bucket's hour after a sampling gap so old data never pass for now. A label that
-// cannot fit is dropped: none may run into the right-end label
+// the right end reads 现在 HH:MM, or the last sample's moment once sampling has stopped (the same one as 截至) so old data never pass
+// for now. A label that cannot fit is dropped: none may run into the right-end label
 interface AxisTick { x: number; label: string; end?: boolean; start?: boolean }
 const axisTicks = computed<AxisTick[]>(() => {
   const trend = displayOverview.value?.trend
@@ -657,7 +663,8 @@ const axisTicks = computed<AxisTick[]>(() => {
   const span = last - first
   if (span <= 0) return []
   const isNow = lastIsNow.value
-  const ticks: AxisTick[] = [{ x: 1, label: isNow ? `现在 ${clock(Date.now(), false)}` : `${new Date(last * 1000).getHours()}:00`, end: true }]
+  const endLabel = isNow ? `现在 ${clock(Date.now(), false)}` : clock(trendEnd(trend)! * 1000, false)
+  const ticks: AxisTick[] = [{ x: 1, label: endLabel, end: true }]
   const stepHours = [1, 2, 3, 6].find((hours) => span / (hours * 3600) <= 4.5)
   if (!stepHours) return ticks
   const px = chartPixels.value
@@ -676,8 +683,10 @@ const axisTicks = computed<AxisTick[]>(() => {
     // 落在采样断档里的整点没有柱子可挂，不画 / A whole hour inside a sampling gap has no bar to hang on and is skipped
     if (at >= from + bucket) continue
     const x = (index + (at - from) / bucket) / points.length
-    // 右端的「现在 HH:MM」约 66 宽、整点字半宽约 17，中间再留 4：不到 88 就让开 / The right-end 「现在 HH:MM」 is about 66 wide and a tick label half-width about 17, with 4 between: under 88 the tick gives way
-    if ((1 - x) * px < (isNow ? 88 : 56)) continue
+    // 右端的「现在 HH:MM」（带日期的「MM/DD HH:MM」也一样）约 66 宽、整点字半宽约 17，中间再留 4：不到 88 就让开；只有「HH:MM」时 56
+    // The right-end 「现在 HH:MM」 (or a dated 「MM/DD HH:MM」) is about 66 wide and a tick label half-width about 17, with 4 between:
+    // under 88 the tick gives way; 56 for a bare 「HH:MM」
+    if ((1 - x) * px < (endLabel.length > 5 ? 88 : 56)) continue
     // 字居中在它的时刻上；离左端不到 18 时改为从那里向右写，不越出卡片 / Centred on its moment; within 18 of the left end it runs rightward from there instead of passing the card edge
     ticks.push({ x, label: `${date.getHours()}:00`, start: x * px < 18 })
   }
@@ -842,7 +851,7 @@ onBeforeUnmount(() => {
                 <div><dt class="ui-lbl">缓存命中</dt><dd><UiNumber v-if="cacheLookups" :value="formatPercent(cacheHitRate)" /><template v-else>—</template></dd></div>
                 <div><dt class="ui-lbl ui-dots"><span>平均延迟</span><span v-if="speed">{{ speed.period }}</span></dt><dd><template v-if="speed"><UiNumber :value="speed.average.figure" /> <small>{{ speed.average.unit }}</small></template><template v-else>—</template></dd></div>
               </dl>
-              <!-- 曲线贴着卡片的左右和底边；正在进行的这一小时画成虚线 / The curve runs to the card's left, right and bottom edges; the hour in progress is dashed -->
+              <!-- 曲线贴着卡片的左右和底边；没攒满的最后一个桶（正在进行的这一小时，或停下之前那一段）画成虚线 / The curve runs to the card's left, right and bottom edges; an unfinished last bucket (the hour in progress, or the part before a stop) is dashed -->
               <div v-if="spark" class="overview-spark-box">
                 <svg class="overview-spark" :viewBox="`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`" preserveAspectRatio="none" role="img" :aria-label="trendWindow + '请求量趋势'">
                   <defs><linearGradient id="overview-spark-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".22" /><stop offset="1" stop-color="currentColor" stop-opacity="0" /></linearGradient></defs>
@@ -855,8 +864,8 @@ onBeforeUnmount(() => {
               <p v-else class="overview-spark-pending">{{ trendPending }}</p>
             </section>
 
-            <!-- 每小时查询：同一份采样按桶画柱；最后一根是正在进行的这一小时，画淡。卡片撑到和右栏一样高，柱图跟着长高
-                 Hourly queries: the same samples drawn as one bar per bucket; the last bar is the hour in progress, drawn faint. The card stretches to the right column's height and the chart grows with it -->
+            <!-- 每小时查询：同一份采样按桶画柱；最后一根没攒满（正在进行的这一小时，或停下之前那一段）时画淡。卡片撑到和右栏一样高，柱图跟着长高
+                 Hourly queries: the same samples drawn as one bar per bucket; an unfinished last bar (the hour in progress, or the part before a stop) is drawn faint. The card stretches to the right column's height and the chart grows with it -->
             <section class="ui-card overview-card overview-card--bars" :aria-label="barsTitle">
               <div class="overview-card-head">
                 <h2 class="ui-card__label">{{ barsTitle }}</h2>
@@ -1085,7 +1094,10 @@ onBeforeUnmount(() => {
 /* 组件库让卡片里的 div 伸展；这里只有柱图那块该伸展 / The kit lets a card's divs grow; here only the chart block should */
 .overview-card { position: relative; padding: var(--ov-pad-top) var(--ov-pad) var(--ov-pad); }
 .overview-card > div, .overview-card > dl, .overview-card > p { flex: 0 0 auto; }
-.overview-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+/* 标题不让：右边的说明放不下时整句换到标题下面一行（手机上前一天的快照「截至 MM/DD HH:MM 的…」），不再把「查询量 · 启动以来」挤成几行、
+   折掉中间的点 / The title never gives way: a note that does not fit moves whole to the line under it (a snapshot from the day
+   before on a phone, 「截至 MM/DD HH:MM 的…」), instead of squeezing 查询量 · 启动以来 onto several lines and folding away its dot */
+.overview-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-1) var(--s-3); }
 .overview-card-head h2 { min-width: 0; }
 .overview-card-note { color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .overview-card-note b { color: var(--l-ink-2); font-weight: var(--w-medium); }

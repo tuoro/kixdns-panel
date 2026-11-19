@@ -70,6 +70,13 @@ describe('上游健康与分布', () => {
     expect(recentWindowLabel(null, true)).toBe('启动以来')
   })
 
+  it('查询排行的 6、24 小时窗口按小时说，快照一样从快照往前说', () => {
+    expect(recentWindowLabel(21_600)).toBe('最近 6 小时')
+    expect(recentWindowLabel(86_400)).toBe('最近 24 小时')
+    expect(recentWindowLabel(21_600, true)).toBe('快照前 6 小时')
+    expect(recentWindowLabel(86_400, true)).toBe('快照前 24 小时')
+  })
+
   it('成功率按页面上写出来的那一位小数判断：写着 99.0% 就够健康，写着 95.0% 就不算异常', () => {
     // 9,899 ÷ 10,000 = 98.99%，页面写 99.0% / 9,899 ÷ 10,000 = 98.99%, shown as 99.0%
     const shown99 = { ...base, attempts: 10_000, success: 9_899, errors: 101, aborted: 0, avg_latency_ms: 20 }

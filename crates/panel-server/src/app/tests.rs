@@ -2550,6 +2550,83 @@ fn ignores_samples_that_did_not_advance_in_time() {
 
     assert_eq!(trend.total, 0);
     assert!(trend.points.is_empty());
+    // 什么也没画：也就没有「采到哪一刻」可说 / Nothing drawn, so no moment the samples run to
+    assert_eq!(trend.sampled_until_unix, None);
+}
+
+#[test]
+fn names_the_moment_the_samples_run_to_after_sampling_stopped() {
+    // 采样 50 分钟前停了（KixDNS 停了、读不到）。桶从「现在」往回切，最后一个桶的末尾就是现在，
+    // 页面拿它当「截至」会说出 50 分钟并不存在的数据；趋势要自己报出最后一次采样在哪一刻。
+    // Sampling stopped 50 minutes ago (KixDNS stopped or unreadable). The buckets are cut back from now, so the last one ends now;
+    // a page taking that as 截至 would claim 50 minutes of data that do not exist, so the trend reports its last sample itself
+    let samples: Vec<MetricSample> = (0..=10)
+        .map(|step| sample(50 + (10 - step) * 60, 1, 1_000 + step * 600))
+        .collect();
+    let trend = build_request_trend(&samples, NOW);
+    assert_eq!(trend.sampled_until_unix, Some(NOW - 50 * 60));
+    let last = trend.points.last().expect("停之前的十个小时画得出来");
+    assert!(
+        last.start_unix + trend.bucket_seconds > NOW - 50 * 60,
+        "最后一个桶越过了最后一次采样，这正是不能拿桶的末尾当「截至」的原因"
+    );
+
+    // 三分钟以后再读（定时刷新）：桶跟着现在挪，「采到哪一刻」不动 / Read again three minutes later (the timed refresh): the buckets
+    // follow now, the moment the samples run to does not move
+    let later = build_request_trend(&samples, NOW + 3 * 60);
+    assert_eq!(later.sampled_until_unix, Some(NOW - 50 * 60));
+
+    // 接口里就叫这个名字，页面按它读 / The API carries it under this name, and the page reads it so
+    let json = serde_json::to_value(&trend).unwrap();
+    assert_eq!(json["sampled_until_unix"], NOW - 50 * 60);
+}
+
+#[test]
+fn names_the_latest_sample_while_sampling_goes_on() {
+    // 还在采：最后一次采样就在半分钟前 / Still sampling: the last sample was half a minute ago
+    let samples = [
+        sample(120, 1, 100),
+        sample(61, 1, 400),
+        MetricSample {
+            captured_at: NOW - 30,
+            kernel_started_at: 1,
+            requests_total: 900,
+        },
+    ];
+    let trend = build_request_trend(&samples, NOW);
+    assert_eq!(trend.sampled_until_unix, Some(NOW - 30));
+
+    // 系统时钟往回拨过：最后一次采样记在「现在」之后。画出来的只到现在，就说到现在 / The system clock was set back: the last sample is
+    // stamped after now. What is drawn ends now, so that is the moment named
+    let ahead = [
+        sample(120, 1, 100),
+        MetricSample {
+            captured_at: NOW + 90,
+            kernel_started_at: 1,
+            requests_total: 900,
+        },
+    ];
+    assert_eq!(
+        build_request_trend(&ahead, NOW).sampled_until_unix,
+        Some(NOW)
+    );
+}
+
+#[test]
+fn has_no_sample_moment_without_samples() {
+    // 刚装上、一次也没采到 / Freshly installed, nothing sampled yet
+    let trend = build_request_trend(&[], NOW);
+    assert!(trend.points.is_empty());
+    assert_eq!(trend.sampled_until_unix, None);
+    let json = serde_json::to_value(&trend).unwrap();
+    assert!(json["sampled_until_unix"].is_null());
+
+    // 采样全在 24 小时窗口之前（停了一天多）：窗口里什么也没画，也就不说采到哪一刻 / Every sample predates the 24-hour window (stopped for
+    // over a day): nothing is drawn in the window, so no moment is named
+    let stale = [sample(30 * 60, 1, 100), sample(26 * 60, 1, 400)];
+    let trend = build_request_trend(&stale, NOW);
+    assert!(trend.points.is_empty());
+    assert_eq!(trend.sampled_until_unix, None);
 }
 
 // ---------------------------------------------------------------------------
