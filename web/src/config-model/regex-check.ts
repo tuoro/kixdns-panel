@@ -2,7 +2,7 @@ import { shallowReactive } from 'vue'
 
 // 编辑器里的正则照内核读：内核用 Rust 的 regex 库编译域名和 TXT 的正则，和浏览器的正则不是一套写法（标志可以写在中间、\pL、字符组的
 // 集合运算、a++ 内核收；[a-\d] 浏览器收、内核不收），编译出来都限 1 MB；内核在解析之前先看长度，域名的超过 16384 字节、TXT 的超过 1000
-// 字节都不收。
+// 字节都不收。域名的正则里 \w、\d、\s、\b 按 ASCII 理解（kixdns #232，\w{50} 编得出），TXT 的照旧按 Unicode。
 // 所以页面不自己猜，请面板服务端用内核的那个库、同样的上限编译一遍（POST /api/v1/config/regex-check，见
 // crates/panel-server/src/regex_check.rs），每个正则带上它用在哪儿（kind），按 (kind, 正则) 记下回答。用到正则的地方照常同步地问
 // （grammar.ts kernelRegexOk）：问过的直接给回答；没问过的排队，一会儿里要问的合成一次请求，回答来了用到它的地方跟着变（回答放在响应式的
@@ -10,7 +10,8 @@ import { shallowReactive } from 'vue'
 // 超过长度上限的不问：内核只看长度就不收，页面照内核的原话自己回答，不必送过去
 // The editor reads regexes as the kernel does: the kernel compiles name and TXT regexes with Rust's regex library, whose syntax is not
 // the browser's (flags mid-pattern, \pL, class set operations and a++ the kernel takes; [a-\d] the browser takes and the kernel refuses),
-// and either may compile to 1 MB; before parsing, the kernel refuses a name regex over 16384 bytes long and a TXT one over 1000.
+// and either may compile to 1 MB; before parsing, the kernel refuses a name regex over 16384 bytes long and a TXT one over 1000. In a
+// name regex \w, \d, \s and \b read as ASCII (kixdns #232, so \w{50} compiles); a TXT one stays Unicode.
 // So the page does not guess: it asks the panel server to compile them with the kernel's library and limits (POST
 // /api/v1/config/regex-check, see crates/panel-server/src/regex_check.rs), each regex with where it is used (kind), and keeps the
 // answers by (kind, regex). Places that use a regex ask synchronously as before (grammar.ts kernelRegexOk): an answer in hand is given
