@@ -24,7 +24,7 @@ import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
-import { sparkline, trendEnd, trendIsLive } from '../trend'
+import { lastBucketUnfinished, sparkline, trendEnd, trendIsLive } from '../trend'
 import { softBreakParts } from '../ui/soft-breaks'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
 import GlueText from '../config-v2/GlueText.vue'
@@ -558,19 +558,25 @@ const spark = computed(() => {
   return sparkline(points.map((point) => point.requests), SPARK_WIDTH, SPARK_HEIGHT)
 })
 // 最后一个桶是不是正在进行的这一小时：按 KixDNS 在不在跑和最后一次采样在哪一刻说，不按最后一个桶离现在多远（见 trendIsLive）；
-// 「截至」、两张图的读屏说法、柱图右端、最后一根柱子和最后一段曲线都跟着它
+// 「截至」、两张图的读屏说法、柱图右端都跟着它
 // Whether the last bucket is the hour still in progress: told from whether KixDNS runs and when the last sample was, not from how old the
-// last bucket is (see trendIsLive); 截至, both charts' labels, the bar chart's right end, and the last bar and curve segment follow it
+// last bucket is (see trendIsLive); 截至, both charts' labels and the bar chart's right end follow it
 const lastIsNow = computed(() => {
   const view = displayOverview.value
   return Boolean(view) && trendIsLive(view!.trend, runtimeState.value === 'live', view!.captured_at_unix)
 })
-// 正在进行的这一小时还没攒满，最后一段画成虚线，读者不会把它读成流量骤降
-// The hour in progress is not full yet, so the last segment is dashed and never reads as traffic collapsing
+// 最后一个桶还没攒满（正在进行的这一小时，或者停了以后只采到停下之前那一段）：最后一段画成虚线、最后一根柱子画淡，读者不会把它读成
+// 流量骤降（见 lastBucketUnfinished）
+// The last bucket is not full yet (the hour in progress, or after a stop only the part before it): the last segment is dashed and the
+// last bar faint, so it never reads as traffic collapsing (see lastBucketUnfinished)
+const lastUnfinished = computed(() => {
+  const view = displayOverview.value
+  return Boolean(view) && lastBucketUnfinished(view!.trend, lastIsNow.value)
+})
 const sparkPaths = computed(() => {
   const curve = spark.value?.curve ?? ''
   const parts = curve.split(' C')
-  if (!lastIsNow.value || parts.length < 3) return { solid: curve, live: '' }
+  if (!lastUnfinished.value || parts.length < 3) return { solid: curve, live: '' }
   const end = parts.at(-2)!.match(/-?[\d.]+/g)!.slice(-2)
   return { solid: parts.slice(0, -1).join(' C'), live: `M${end[0]},${end[1]} C${parts.at(-1)}` }
 })
@@ -602,7 +608,7 @@ const barScale = computed(() => {
 const bars = computed(() => (displayOverview.value?.trend.points ?? []).map((point, index, points) => ({
   key: point.start_unix,
   share: barScale.value.top ? point.requests / barScale.value.top : 0,
-  live: lastIsNow.value && index === points.length - 1,
+  live: lastUnfinished.value && index === points.length - 1,
   title: `${clock(point.start_unix * 1000, false)} 起 ${formatNumber(point.requests)} 次`,
 })))
 // 网格的刻度值按万、亿缩写：这里只标量级，精确的数在柱子的提示和上面的卡里
@@ -845,7 +851,7 @@ onBeforeUnmount(() => {
                 <div><dt class="ui-lbl">缓存命中</dt><dd><UiNumber v-if="cacheLookups" :value="formatPercent(cacheHitRate)" /><template v-else>—</template></dd></div>
                 <div><dt class="ui-lbl ui-dots"><span>平均延迟</span><span v-if="speed">{{ speed.period }}</span></dt><dd><template v-if="speed"><UiNumber :value="speed.average.figure" /> <small>{{ speed.average.unit }}</small></template><template v-else>—</template></dd></div>
               </dl>
-              <!-- 曲线贴着卡片的左右和底边；正在进行的这一小时画成虚线 / The curve runs to the card's left, right and bottom edges; the hour in progress is dashed -->
+              <!-- 曲线贴着卡片的左右和底边；没攒满的最后一个桶（正在进行的这一小时，或停下之前那一段）画成虚线 / The curve runs to the card's left, right and bottom edges; an unfinished last bucket (the hour in progress, or the part before a stop) is dashed -->
               <div v-if="spark" class="overview-spark-box">
                 <svg class="overview-spark" :viewBox="`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`" preserveAspectRatio="none" role="img" :aria-label="trendWindow + '请求量趋势'">
                   <defs><linearGradient id="overview-spark-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".22" /><stop offset="1" stop-color="currentColor" stop-opacity="0" /></linearGradient></defs>
@@ -858,8 +864,8 @@ onBeforeUnmount(() => {
               <p v-else class="overview-spark-pending">{{ trendPending }}</p>
             </section>
 
-            <!-- 每小时查询：同一份采样按桶画柱；最后一根是正在进行的这一小时，画淡。卡片撑到和右栏一样高，柱图跟着长高
-                 Hourly queries: the same samples drawn as one bar per bucket; the last bar is the hour in progress, drawn faint. The card stretches to the right column's height and the chart grows with it -->
+            <!-- 每小时查询：同一份采样按桶画柱；最后一根没攒满（正在进行的这一小时，或停下之前那一段）时画淡。卡片撑到和右栏一样高，柱图跟着长高
+                 Hourly queries: the same samples drawn as one bar per bucket; an unfinished last bar (the hour in progress, or the part before a stop) is drawn faint. The card stretches to the right column's height and the chart grows with it -->
             <section class="ui-card overview-card overview-card--bars" :aria-label="barsTitle">
               <div class="overview-card-head">
                 <h2 class="ui-card__label">{{ barsTitle }}</h2>

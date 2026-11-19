@@ -30,6 +30,21 @@ export function trendIsLive(trend: RequestTrend, live: boolean, readAtUnix: numb
   return live && until != null && readAtUnix - until <= 3 * SAMPLE_INTERVAL_SECONDS
 }
 
+/**
+ * 最后一个桶是不是还没攒满：还在采时它就是正在进行的那一小时；停了以后最后一次采样落在它中间，它只有停下之前那一段。两种都照没攒满
+ * 画（柱子淡、曲线最后一段虚线），不读成流量骤降；停下那一刻正好在桶的末尾时它是满的
+ * Whether the last bucket is not yet full: while sampling it is the hour in progress; after a stop the last sample falls inside it and
+ * it holds only the part before the stop. Both are drawn as not yet full (a faint bar, a dashed last curve segment), never read as a
+ * drop; a stop right at the bucket's end leaves it full
+ */
+export function lastBucketUnfinished(trend: RequestTrend, live: boolean): boolean {
+  const last = trend.points.at(-1)
+  if (!last) return false
+  if (live) return true
+  const until = trend.sampled_until_unix
+  return until != null && until < last.start_unix + (trend.bucket_seconds || 3600)
+}
+
 export interface Sparkline {
   /** 折线路径 */
   line: string

@@ -845,10 +845,11 @@ for (const [which, overviewLive, statsLive] of [['概览是快照', false, true]
   })
 }
 
-// 停了还不到一个半桶：最后一个桶看着还「新」，但采样已经停了，趋势不能还说「最近」、把最后一小时画成正在进行、右端写「现在」。
-// KixDNS 读不到（服务还是 active）时走同一条路
-// Stopped less than a bucket and a half ago: the last bucket still looks recent, but sampling has stopped, so the trend must not say 最近,
-// draw the last hour as in progress, or write 现在 at the right end. KixDNS unreadable (the service still active) takes the same path
+// 停了还不到一个半桶：最后一个桶看着还「新」，但采样已经停了，趋势不能还说「最近」、右端写「现在」。最后一个桶只采到停下那一刻，
+// 照没攒满的样子画（见下一条）。KixDNS 读不到（服务还是 active）时走同一条路
+// Stopped less than a bucket and a half ago: the last bucket still looks recent, but sampling has stopped, so the trend must not say 最近
+// or write 现在 at the right end. The last bucket runs only to the stop and is drawn as not yet full (see the next test). KixDNS
+// unreadable (the service still active) takes the same path
 for (const [state, active] of [['已停止', false], ['读不到', true]] as const) {
   test(`停了 20 分钟（${state}）：趋势照停下的那一刻说，不当成还在采`, async ({ page }) => {
     await wrapClient(page, `stopped-20-${active}-original`, stoppedTrend(20 * 60, active))
@@ -859,12 +860,53 @@ for (const [state, active] of [['已停止', false], ['读不到', true]] as con
     await expect(page.locator('.overview-trend-label')).toContainText(`截至 ${ended} 的 24 小时`)
     await expect(page.locator('.overview-bars')).toHaveAttribute('aria-label', `截至 ${ended} 的 24 小时每小时查询量`)
     await expect(page.locator('.overview-bars-axis .is-end')).toHaveText(ended)
-    // 最后一根柱子、最后一段曲线不画成正在进行 / The last bar and the curve's last segment are not drawn as in progress
+    // 最后一个桶只采到停下那一刻：只有最后一根柱子、最后一段曲线画成没攒满 / The last bucket runs only to the stop: only the last bar and
+    // the curve's last segment are drawn as not yet full
     await expect(page.locator('.overview-bars-cols > i')).toHaveCount(24)
-    await expect(page.locator('.overview-bars-cols > i.is-live')).toHaveCount(0)
-    await expect(page.locator('.overview-spark-line--live')).toHaveCount(0)
+    await expect(page.locator('.overview-bars-cols > i.is-live')).toHaveCount(1)
+    await expect(page.locator('.overview-bars-cols > i').last()).toHaveClass(/is-live/)
+    await expect(page.locator('.overview-spark-line--live')).toHaveCount(1)
   })
 }
+
+// 停了以后最后一个桶只采到一部分：和还在采时正在进行的那一小时一样画（柱子淡、曲线最后一段虚线），不读成流量骤降；停下那一刻正好在
+// 桶的末尾时最后一个桶是满的，画成实的。读屏说法照旧是「截至（停下那一刻）的…」
+// After a stop the last bucket is only partly sampled: drawn like the hour in progress while sampling (a faint bar, a dashed last curve
+// segment), never read as a drop; a stop right at a bucket's end leaves the last bucket full, drawn solid. The screen-reader label stays
+// 「截至 (the stop) 的…」
+test('停了以后最后一个桶没采满：最后一根柱子和最后一段曲线照没攒满画，采满了才画成实的 @responsive', async ({ page }) => {
+  await wrapClient(page, 'partial-original', stoppedTrend(6 * 3600 + 23 * 60))
+  await page.goto('/')
+  const bars = page.locator('.overview-bars-cols > i')
+  await expect(bars).toHaveCount(18)
+  await expect(page.locator('.overview-bars-cols > i.is-live')).toHaveCount(1)
+  await expect(bars.last()).toHaveClass(/is-live/)
+  await expect(page.locator('.overview-spark-line--live')).toHaveCount(1)
+  const ended = await clockText(page, await trendEnd(page))
+  await expect(page.locator('.overview-bars')).toHaveAttribute('aria-label', `截至 ${ended} 的 18 小时每小时查询量`)
+  // 画出来是淡的：和还在采时那一根同一个样式 / Drawn faint: the same style as the bar of the hour in progress
+  expect(await bars.last().evaluate((bar) => getComputedStyle(bar).opacity)).toBe('0.35')
+  expect(await bars.first().evaluate((bar) => getComputedStyle(bar).opacity)).toBe('1')
+})
+
+test('停下那一刻正好在桶的末尾：最后一个桶是满的，画成实的 @responsive', async ({ page }) => {
+  // 桶从停下那一刻往回切，最后一个桶正好到停下那一刻为止 / Buckets cut back from the stop, so the last one ends right at it
+  await wrapClient(page, 'full-original', `
+    const stopAt = Math.floor(Date.now() / 1000) - 6 * 3600;
+    const points = Array.from({ length: 18 }, (_, k) => ({ start_unix: stopAt - (18 - k) * 3600, requests: 4000 + (k % 5) * 500 }));
+    export async function apiRequest(path, init) {
+      const result = await original(path, init);
+      if (path === '/api/v1/service') return { ...result, active_state: 'inactive', sub_state: 'dead', main_pid: 0 };
+      if (path === '/api/v1/overview') return { ...result, live: false, service_active: false, captured_at_unix: stopAt, trend: { bucket_seconds: 3600, points, total: points.reduce((s, p) => s + p.requests, 0), sampled_until_unix: stopAt } };
+      return result;
+    }
+  `)
+  await page.goto('/')
+  await expect(page.locator('.overview-bars-cols > i')).toHaveCount(18)
+  await expect(page.locator('.overview-trend-label')).toHaveText(/^截至 /)
+  await expect(page.locator('.overview-bars-cols > i.is-live')).toHaveCount(0)
+  await expect(page.locator('.overview-spark-line--live')).toHaveCount(0)
+})
 
 // 前一天的快照：趋势说明带着日期，最长。手机上标题「查询量 · 启动以来」照样一行写完，说明换到标题下面一行；宽屏上两个仍在同一行
 // A snapshot from the day before: the trend note carries the date and is at its longest. On phones the title 查询量 · 启动以来 still

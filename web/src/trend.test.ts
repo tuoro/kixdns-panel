@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RequestTrend } from './api/types'
-import { sparkline, trendEnd, trendIsLive } from './trend'
+import { lastBucketUnfinished, sparkline, trendEnd, trendIsLive } from './trend'
 
 describe('趋势采到哪一刻、还在不在采', () => {
   // 读取在 READ；桶从 READ 往回切，最后一个桶的末尾就是 READ / Read at READ; buckets are cut back from it, so the last one ends at READ
@@ -35,6 +35,27 @@ describe('趋势采到哪一刻、还在不在采', () => {
 
   it('没有采样就谈不上在采', () => {
     expect(trendIsLive(trend(null), true, READ)).toBe(false)
+  })
+
+  // 最后一个桶 [READ - 3600, READ) / The last bucket is [READ - 3600, READ)
+  it('停了以后最后一个桶只采到一部分：和正在进行的那一小时一样画成没攒满', () => {
+    expect(lastBucketUnfinished(trend(20 * 60), false)).toBe(true)
+    expect(lastBucketUnfinished(trend(59 * 60), false)).toBe(true)
+  })
+
+  it('最后一个桶采满了才画成实的', () => {
+    expect(lastBucketUnfinished(trend(0), false)).toBe(false)
+    expect(lastBucketUnfinished({ ...trend(0), points: trend(0).points.slice(0, 1) }, false)).toBe(false)
+  })
+
+  it('还在采时最后一个桶照旧是正在进行的那一小时', () => {
+    expect(lastBucketUnfinished(trend(30), true)).toBe(true)
+    expect(lastBucketUnfinished(trend(0), true)).toBe(true)
+  })
+
+  it('不知道采到哪一刻、没有数据点时不说没攒满', () => {
+    expect(lastBucketUnfinished(trend(null), false)).toBe(false)
+    expect(lastBucketUnfinished({ ...trend(20 * 60), points: [] }, false)).toBe(false)
   })
 })
 
