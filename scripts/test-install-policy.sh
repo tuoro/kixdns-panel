@@ -1290,6 +1290,102 @@ assert_contains "${output}" "ORIGINAL=original 604" "迁移失败后原配置的
 assert_contains "${output}" "PARENT=751" "迁移失败后原配置所在目录的权限不变"
 assert_not_contains "${output}" "COPY-LEFT" "迁移失败应删掉副本和它的目录"
 
+# 回滚删掉这次运行新建的配置目录，连同它上面同样是新建的几层，里面有什么都删：只会是这次运行写的（安装器写的配置，或者刚起来的
+# 面板写到一半的临时文件）。回归：回滚只 rmdir 配置目录本身，面板留下的临时文件让它删不掉，新建的上层目录也留着；重新运行时
+# #288 把这个「已经存在」的目录当成别人的，拒绝安装。
+# Rollback removes the config directory this run created, along with the levels above it that are new too, whatever they
+# hold: only what this run wrote can be there (the config the installer wrote, or a temporary file the panel had just begun
+# writing). Regression: rollback only rmdir-ed the config directory itself, which a temporary file the panel left made
+# impossible, and the new levels above it stayed; a rerun then saw an existing directory and #288 refused it as someone else's.
+new_config_directory_rollback() {
+  local root="${WORK}/new-config-directory"
+  rm -rf -- "${root}"
+  mkdir -p "${root}/backup" "${root}/existing"
+  # 参数：配置路径，回滚备份目录 / Arguments: the config path, the rollback backup directory
+  new_config_round() {
+    (
+      KIXDNS_CONFIG_PATH=$1
+      BACKUP_ROOT=$2
+      mkdir -p "${BACKUP_ROOT}"
+      backup_managed_config
+      mkdir -p "$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+      printf '{}\n' > "${KIXDNS_CONFIG_PATH}"
+      : > "$(dirname -- "${KIXDNS_CONFIG_PATH}")/.kixdns-panel-Ab12Cd"
+      restore_path() { :; }
+      restore_panel_database() { :; }
+      systemctl() { :; }
+      chown() { :; }
+      chmod() { :; }
+      INSTALL_MODE=managed
+      INSTALL_KIND=fresh
+      EXISTING_PANEL=false
+      KIXDNS_BINARY_CHANGED=false
+      KIXDNS_UNIT_CHANGED=false
+      RESOLVED_CHANGED=false
+      rollback_install 1
+    ) > /dev/null 2>&1 || true
+  }
+  new_config_round "${root}/srv/dns/pipeline.json" "${root}/backup"
+  : > "${root}/existing/keep.json"
+  new_config_round "${root}/existing/pipeline.json" "${root}/backup-existing"
+  rm -f -- "${root}/existing/.kixdns-panel-Ab12Cd"
+  [[ ! -e ${root}/srv ]] || printf 'NEW-LEFT %s\n' "$(cd "${root}" && find srv | sort | tr '\n' ' ')"
+  [[ -f ${root}/existing/keep.json && ! -e ${root}/existing/pipeline.json ]] || printf 'EXISTING-CHANGED\n'
+}
+output="$(new_config_directory_rollback)"
+assert_not_contains "${output}" "NEW-LEFT" "回滚应删掉这次新建的配置目录和它上面新建的几层"
+assert_not_contains "${output}" "EXISTING-CHANGED" "原来就有的配置目录回滚后只删这次写的配置，别的不动"
+
+# 回滚删掉这次运行建的账号，原来就有的不动。回归：回滚以后 kixdns 和 kixdns-panel 账号、kixdns 组都还留着。
+# Rollback removes the accounts this run created and leaves the ones that were there. Regression: after a rollback the
+# kixdns and kixdns-panel accounts and the kixdns group were all still there.
+accounts_rollback() {
+  local existing=$1
+  (
+    calls="${WORK}/accounts-calls"
+    : > "${calls}"
+    BACKUP_ROOT="$(command mktemp -d "${WORK}/accounts-rollback.XXXXXX")"
+    mktemp() { printf '%s\n' "${BACKUP_ROOT}"; }
+    accounts_exist() { [[ ${existing} == true || -f ${WORK}/accounts-created ]]; }
+    rm -f -- "${WORK}/accounts-created"
+    id() { accounts_exist; }
+    getent() { [[ $1 == group && $2 == systemd-journal ]] && return 2; accounts_exist && printf '%s:x:990:\n' "$2"; }
+    groupadd() { printf 'groupadd %s\n' "$*" >> "${calls}"; : > "${WORK}/accounts-created"; }
+    useradd() { printf 'useradd %s\n' "$*" >> "${calls}"; : > "${WORK}/accounts-created"; }
+    usermod() { :; }
+    userdel() { printf 'userdel %s\n' "$*" >> "${calls}"; }
+    groupdel() { printf 'groupdel %s\n' "$*" >> "${calls}"; }
+    backup_path() { :; }
+    backup_managed_config() { :; }
+    restore_path() { :; }
+    restore_managed_config() { :; }
+    record_new_directory() { :; }
+    systemctl() { :; }
+    INSTALL_MODE=managed
+    INSTALL_KIND=fresh
+    EXISTING_PANEL=false
+    KIXDNS_BINARY_CHANGED=false
+    KIXDNS_UNIT_CHANGED=false
+    RESOLVED_CHANGED=false
+    prepare_rollback
+    create_accounts
+    rollback_install 1
+  ) > /dev/null 2>&1 || true
+  grep -E '^(userdel|groupdel) ' "${WORK}/accounts-calls" | tr '\n' ';'
+}
+assert_equals "$(accounts_rollback false)" "userdel kixdns-panel;userdel kixdns;groupdel kixdns;" "回滚应删掉这次建的账号和组"
+assert_equals "$(accounts_rollback true)" "" "原来就有的账号和组回滚时不能删"
+# 回滚要在建账号、建目录之前就挂上：否则这之间的失败不回滚，账号和目录照样留下。
+# Rollback must be armed before accounts and directories are created; otherwise a failure in between rolls nothing back and
+# they stay behind all the same.
+main_body="$(declare -f main)"
+rollback_line="$(grep -n 'prepare_rollback' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+accounts_line="$(grep -n 'create_accounts' <<< "${main_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${rollback_line} && -n ${accounts_line} && ${rollback_line} -lt ${accounts_line} ]] || {
+  printf '断言失败：回滚应在建账号之前挂上（rollback=%s accounts=%s）\n' "${rollback_line}" "${accounts_line}" >&2
+  exit 1
+}
+
 # ---------------------------------------------------------------------------
 # 配置所在的目录 / The config's directory
 # ---------------------------------------------------------------------------

@@ -41,6 +41,19 @@ KIXDNS_HIDDEN_DIRECTORIES=(/home /root /run/user /tmp /var/tmp)
 # the install result names them.
 PANEL_UNREADABLE_FILES=""
 PANEL_SERVER_BINARY=/usr/local/bin/kixdns-panel-server
+# 安装器会建的目录：面板状态目录（和 uninstall.sh 同一个）、在线更新状态目录、前端与自带 GeoSite 的目录、helper 所在的目录。
+# The directories the installer creates: the panel's state directory (the same as uninstall.sh's), the online update status
+# directory, the directory of the web assets and bundled GeoSite, and the one holding the helper.
+PANEL_STATE_DIRECTORY=/var/lib/kixdns-panel
+PANEL_UPDATE_DIRECTORY=/var/lib/kixdns-panel-update
+PANEL_SHARE_DIRECTORY=/usr/share/kixdns-panel
+LIBEXEC_DIRECTORY=/usr/local/libexec
+# 这次运行开始时这几个账号和组在不在；回滚只删这次建的。默认当作在，没记下来时什么也不删。
+# Whether these accounts and the group existed when this run began; rollback removes only those it created. They count as
+# existing by default, so nothing is removed unless recorded.
+PANEL_USER_EXISTED=true
+KIXDNS_USER_EXISTED=true
+KIXDNS_GROUP_EXISTED=true
 GITHUB_TOKEN_FILE=/var/lib/kixdns-panel/github-token
 # 与 uninstall.sh 相同的固定位置：面板 unit 只允许写 /var/lib/kixdns-panel。
 # The same fixed location uninstall.sh uses: the panel unit may only write /var/lib/kixdns-panel.
@@ -1147,12 +1160,12 @@ rollback_install() {
   fi
   restore_path "${PANEL_SERVER_BINARY}" panel-server
   restore_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
-  restore_path /usr/local/libexec/kixdns-panel-one-click-install panel-one-click-install
-  restore_path /usr/local/libexec/kixdns-panel-online-update panel-online-update
-  restore_path /usr/share/kixdns-panel/web web
-  restore_path /usr/share/kixdns-panel/geo builtin-geo
+  restore_path "${LIBEXEC_DIRECTORY}/kixdns-panel-one-click-install" panel-one-click-install
+  restore_path "${LIBEXEC_DIRECTORY}/kixdns-panel-online-update" panel-online-update
+  restore_path "${PANEL_SHARE_DIRECTORY}/web" web
+  restore_path "${PANEL_SHARE_DIRECTORY}/geo" builtin-geo
   restore_path /etc/systemd/system/kixdns-panel.service panel-service
-  restore_path /usr/local/libexec/kixdns-panel-helper panel-helper
+  restore_path "${LIBEXEC_DIRECTORY}/kixdns-panel-helper" panel-helper
   restore_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
   restore_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   restore_path "${PANEL_ENV}" panel-env
@@ -1194,6 +1207,11 @@ rollback_install() {
     read -r host port < <(panel_probe_address)
     wait_for_service_stable kixdns-panel.service "${host}" "${port}" || panel_running=false
   fi
+  # 最后才删这次新建的目录和账号：上面放回 resolv.conf 等还要读状态目录里的记录。
+  # The directories and accounts this run created go last: restoring resolv.conf and the rest above still reads records in
+  # the state directory.
+  remove_new_directories
+  remove_new_accounts
   rm -rf -- "${BACKUP_ROOT}"
   [[ ${reason} != interrupted ]] || outcome=安装被中断
   if [[ ${panel_running} == true ]]; then
@@ -1205,6 +1223,44 @@ rollback_install() {
   exit "${status}"
 }
 
+# 这次运行要建的目录还不存在时，把不存在的最上面那一层记下来（install -d 会把上面缺的几层一起建出来）。回滚最后整个删掉它：
+# 里面只会有这次运行写的东西，安装器写的，或者刚起来的面板写的，比如写到一半的临时文件。
+# When a directory this run will create does not exist yet, record its topmost missing level (install -d creates the missing
+# levels above it too). Rollback removes it whole at the end: only what this run wrote can be in it, by the installer or by
+# the panel that had just started, such as a temporary file it was half way through writing.
+record_new_directory() {
+  local directory=$1
+  local missing=""
+  while [[ ! -e ${directory} && ! -L ${directory} ]]; do
+    missing=${directory}
+    directory="$(dirname -- "${directory}")"
+  done
+  [[ -z ${missing} ]] || printf '%s\n' "${missing}" >> "${BACKUP_ROOT}/new-directories"
+}
+
+remove_new_directories() {
+  local directory
+  [[ -f ${BACKUP_ROOT}/new-directories ]] || return 0
+  while IFS= read -r directory; do
+    [[ ${directory} == /?* ]] || continue
+    rm -rf -- "${directory}"
+  done < "${BACKUP_ROOT}/new-directories"
+}
+
+# 记下这次运行开始时账号和组在不在，回滚时只删这次建的。/ Record whether the accounts and the group existed when this run
+# began, so rollback removes only the ones it created.
+record_existing_accounts() {
+  getent group "${KIXDNS_GROUP}" >/dev/null || KIXDNS_GROUP_EXISTED=false
+  id -u "${KIXDNS_USER}" >/dev/null 2>&1 || KIXDNS_USER_EXISTED=false
+  id -u "${PANEL_USER}" >/dev/null 2>&1 || PANEL_USER_EXISTED=false
+}
+
+remove_new_accounts() {
+  [[ ${PANEL_USER_EXISTED} == true ]] || userdel "${PANEL_USER}" 2>/dev/null || true
+  [[ ${KIXDNS_USER_EXISTED} == true ]] || userdel "${KIXDNS_USER}" 2>/dev/null || true
+  [[ ${KIXDNS_GROUP_EXISTED} == true ]] || groupdel "${KIXDNS_GROUP}" 2>/dev/null || true
+}
+
 backup_managed_config() {
   local config_parent
   local metadata
@@ -1214,7 +1270,7 @@ backup_managed_config() {
     metadata="$(stat -c '%u %g %a' -- "${config_parent}")"
     printf '%s\n' "${metadata}" > "${BACKUP_ROOT}/kixdns-config-directory.meta"
   else
-    : > "${BACKUP_ROOT}/kixdns-config-directory.missing"
+    record_new_directory "${config_parent}"
   fi
 }
 
@@ -1229,12 +1285,12 @@ restore_managed_config() {
     install -d -- "${config_parent}"
     cp -a -- "${BACKUP_ROOT}/kixdns-config" "${KIXDNS_CONFIG_PATH}"
   fi
+  # 这次新建的配置目录在回滚最后和别的新目录一起删（remove_new_directories）
+  # A config directory this run created goes at the end of the rollback with the other new ones (remove_new_directories)
   if [[ -f ${BACKUP_ROOT}/kixdns-config-directory.meta ]]; then
     read -r owner group mode < "${BACKUP_ROOT}/kixdns-config-directory.meta"
     chown "${owner}:${group}" -- "${config_parent}"
     chmod "${mode}" -- "${config_parent}"
-  elif [[ -f ${BACKUP_ROOT}/kixdns-config-directory.missing ]]; then
-    rmdir --ignore-fail-on-non-empty -- "${config_parent}" 2>/dev/null || true
   fi
 }
 
@@ -1277,7 +1333,16 @@ preserve_external_install() {
 }
 
 prepare_rollback() {
+  local directory
   BACKUP_ROOT="$(mktemp -d /var/tmp/kixdns-panel-install.XXXXXX)"
+  # 回滚要能删掉这次建的一切，所以在建账号、建目录之前记下哪些原来就有 / Rollback must be able to remove everything this run
+  # creates, so record what was there before any account or directory is created
+  record_existing_accounts
+  for directory in "${PANEL_CONFIG_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
+    "${PANEL_STATE_DIRECTORY}/geo" "${PANEL_UPDATE_DIRECTORY}" "${PANEL_SHARE_DIRECTORY}/web" "${PANEL_SHARE_DIRECTORY}/geo" \
+    "${LIBEXEC_DIRECTORY}"; do
+    record_new_directory "${directory}"
+  done
   if [[ ${INSTALL_KIND} != panel-only ]]; then
     backup_path "${MANAGED_KIXDNS_BINARY}" kixdns
     backup_path /var/lib/kixdns-panel/bundle bundled-metadata
@@ -1286,16 +1351,40 @@ prepare_rollback() {
   fi
   backup_path "${PANEL_SERVER_BINARY}" panel-server
   backup_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
-  backup_path /usr/local/libexec/kixdns-panel-one-click-install panel-one-click-install
-  backup_path /usr/local/libexec/kixdns-panel-online-update panel-online-update
-  backup_path /usr/share/kixdns-panel/web web
-  backup_path /usr/share/kixdns-panel/geo builtin-geo
+  backup_path "${LIBEXEC_DIRECTORY}/kixdns-panel-one-click-install" panel-one-click-install
+  backup_path "${LIBEXEC_DIRECTORY}/kixdns-panel-online-update" panel-online-update
+  backup_path "${PANEL_SHARE_DIRECTORY}/web" web
+  backup_path "${PANEL_SHARE_DIRECTORY}/geo" builtin-geo
   backup_path /etc/systemd/system/kixdns-panel.service panel-service
-  backup_path /usr/local/libexec/kixdns-panel-helper panel-helper
+  backup_path "${LIBEXEC_DIRECTORY}/kixdns-panel-helper" panel-helper
   backup_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
   backup_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   backup_path "${PANEL_ENV}" panel-env
   arm_rollback
+}
+
+# 账号以外、这次运行要建的目录：面板状态目录和它下面的几个、在线更新状态目录、helper 所在的目录。
+# The directories this run creates besides the accounts: the panel's state directory and those under it, the online update
+# status directory, and the one holding the helper.
+create_panel_directories() {
+  install -d -o root -g root -m 0755 "${LIBEXEC_DIRECTORY}"
+  install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
+    "${PANEL_STATE_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
+    "${PANEL_STATE_DIRECTORY}/geo"
+  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 "${PANEL_UPDATE_DIRECTORY}"
+}
+
+# 改动主机之前确认要写的目标都不是符号链接：install 和 mv 会顺着链接写到别处。
+# Before the host is touched, make sure no target to be written is a symlink: install and mv would write through it.
+require_regular_targets() {
+  [[ ! -L ${PANEL_UPDATE_DIRECTORY} ]] || fail "在线更新状态目录不能是符号链接"
+  if [[ ${INSTALL_KIND} != panel-only ]]; then
+    [[ ! -L ${MANAGED_KIXDNS_BINARY} ]] || fail "KixDNS 二进制目标不能是符号链接"
+  fi
+  [[ ! -L ${PANEL_SERVER_BINARY} ]] || fail "面板二进制目标不能是符号链接"
+  [[ ! -L /usr/local/bin/kixdns-panel-uninstall ]] || fail "卸载命令目标不能是符号链接"
+  [[ ! -L ${LIBEXEC_DIRECTORY}/kixdns-panel-one-click-install ]] || fail "一键安装器目标不能是符号链接"
+  [[ ! -L ${LIBEXEC_DIRECTORY}/kixdns-panel-online-update ]] || fail "在线更新器目标不能是符号链接"
 }
 
 # 出错就回滚，回滚只在这个 shell 里做（rollback_install 里说了为什么）
@@ -1314,7 +1403,7 @@ arm_rollback() {
 # the panel uses it on a fresh install's first start or when the user presses 导入, then updates follow the source and schedule
 # the user chose, and a panel upgrade never replaces the user's data.
 install_builtin_geo() {
-  local target=/usr/share/kixdns-panel/geo
+  local target=${PANEL_SHARE_DIRECTORY}/geo
   local staged="${target}.new"
   local previous="${target}.previous"
   rm -rf -- "${staged}"
@@ -1343,7 +1432,7 @@ request_builtin_geosite_import() {
 }
 
 install_web() {
-  local target=/usr/share/kixdns-panel/web
+  local target=${PANEL_SHARE_DIRECTORY}/web
   local staged="${target}.new"
   local previous="${target}.previous"
   rm -rf -- "${staged}"
@@ -1801,25 +1890,16 @@ main() {
   require_dedicated_config_directory
   plan_kixdns_changes
   plan_port53
+  require_regular_targets
   [[ ${INSTALL_KIND} != reclaim ]] || print_reclaim_plan
 
   printf '正在安装文件与服务…\n'
-  create_accounts
-  install -d -o root -g root -m 0755 /usr/local/libexec
-  install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
-    /var/lib/kixdns-panel /var/lib/kixdns-panel/bin /var/lib/kixdns-panel/versions \
-    /var/lib/kixdns-panel/geo
-  adopt_github_token
-  [[ ! -L /var/lib/kixdns-panel-update ]] || fail "在线更新状态目录不能是符号链接"
-  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 /var/lib/kixdns-panel-update
-  if [[ ${INSTALL_KIND} != panel-only ]]; then
-    [[ ! -L ${MANAGED_KIXDNS_BINARY} ]] || fail "KixDNS 二进制目标不能是符号链接"
-  fi
-  [[ ! -L ${PANEL_SERVER_BINARY} ]] || fail "面板二进制目标不能是符号链接"
-  [[ ! -L /usr/local/bin/kixdns-panel-uninstall ]] || fail "卸载命令目标不能是符号链接"
-  [[ ! -L /usr/local/libexec/kixdns-panel-one-click-install ]] || fail "一键安装器目标不能是符号链接"
-  [[ ! -L /usr/local/libexec/kixdns-panel-online-update ]] || fail "在线更新器目标不能是符号链接"
+  # 从这里起出错或被中断都回滚，连这次建的账号和目录一起删掉 / From here on an error or interruption rolls back, removing
+  # the accounts and directories this run created too
   prepare_rollback
+  create_accounts
+  create_panel_directories
+  adopt_github_token
   preserve_external_install
   systemctl stop kixdns-panel.service 2>/dev/null || true
   backup_panel_database
