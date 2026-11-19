@@ -25,10 +25,10 @@ updates:
         update-types:
           - minor
           - patch
-    # 编辑器里的正则由面板照内核编译（crates/panel-server/src/regex_check.rs），这三个要和捆绑的内核的 Cargo.lock 一样
-    # （CI 每次比一遍，scripts/check-kernel-regex-versions.py），只跟着内核一起改。
+    # 编辑器里的正则由面板照内核编译（crates/panel-server/src/regex_check.rs），这三个要和最新的内核（tuoro/kixdns 的 main）
+    # 的 Cargo.lock 一样（CI 每次比一遍，scripts/check-kernel-regex-versions.py），只跟着内核一起改。
     # The panel compiles the editor's regexes as the kernel does (crates/panel-server/src/regex_check.rs), so these three
-    # must equal those in the bundled kernel's Cargo.lock (CI compares them on every run,
+    # must equal those in the latest kernel's (tuoro/kixdns main) Cargo.lock (CI compares them on every run,
     # scripts/check-kernel-regex-versions.py); they move only together with the kernel.
     ignore:
       - dependency-name: regex

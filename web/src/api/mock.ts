@@ -1238,7 +1238,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       if (kind === 'txt' && bytes > TXT_REGEX_BYTES) return { verdict: 'refused', cause: 'too-long', error: `regex pattern too long: ${bytes} bytes (max ${TXT_REGEX_BYTES})` }
       if (kind === 'domain' && bytes > REGEX_CHECK_MAX_BYTES) return { verdict: 'unchecked' }
       if (refused.has(pattern) || regexSurelyRefused(pattern)) return { verdict: 'refused', cause: 'syntax', error: 'regex parse error' }
-      if (tooBig.has(pattern)) return { verdict: 'refused', cause: 'too-big', error: `Compiled regex exceeds size limit of ${kind === 'txt' ? 1000 : 1000000} bytes.` }
+      if (tooBig.has(pattern)) return { verdict: 'refused', cause: 'too-big', error: 'Compiled regex exceeds size limit of 1000000 bytes.' }
       return { verdict: 'compiles' }
     }
     return { answers: patterns.map(answer) } as T

@@ -5,11 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RegexAnswer, RegexItem, RegexKind } from './regex-check'
 
 // 编辑器里的正则照内核读：面板服务端拿内核用的那个 regex 库、同样的上限编译一遍（POST /api/v1/config/regex-check），页面按 (用在哪儿, 正则)
-// 记下回答。域名的正则和 TXT 的上限不一样（TXT 的只有 1000 字节）。回答来之前、服务端连不上时，页面只拦内核一定不收的那几种（前后断言、反向引用、
+// 记下回答。编译出来都限 1 MB，TXT 的内核还先看长度（超过 1000 字节不收）。回答来之前、服务端连不上时，页面只拦内核一定不收的那几种（前后断言、反向引用、
 // Rust 不认的转义、没写完的括号……），别的不标红，保存时内核自己还会再查一遍
 // The editor reads regexes as the kernel does: the panel server compiles them with the regex library and limits the kernel uses (POST
-// /api/v1/config/regex-check) and the page keeps the answers by (where it is used, regex). Name and TXT regexes have different limits (only
-// 1000 bytes for TXT). Before an answer, or while the server cannot be reached, the page stops only what the kernel surely refuses
+// /api/v1/config/regex-check) and the page keeps the answers by (where it is used, regex). Both compile within 1 MB, and the kernel refuses a
+// TXT one over 1000 bytes long first. Before an answer, or while the server cannot be reached, the page stops only what the kernel surely refuses
 // (lookaround, backreferences, escapes Rust does not know, unclosed brackets…) and marks nothing else; the kernel checks once more on save
 
 interface Case { kind: RegexKind; pattern: string; error: string | null }
@@ -40,13 +40,15 @@ async function load() {
 afterEach(() => { vi.useRealTimers() })
 
 describe('正则照内核读 / regexes read as the kernel reads them', () => {
-  it('服务端回答以后，每一条的结果都是内核的，TXT 的照 TXT 的上限', async () => {
+  it('服务端回答以后，每一条的结果都是内核的，TXT 的先看长度', async () => {
     const { check, grammar } = await load()
     check.setRegexChecker(async (items) => items.map(kernelAnswer))
     await check.checkKernelRegexes(KERNEL.map(({ kind, pattern }) => ({ kind, pattern })))
     expect(KERNEL.filter((c) => grammar.kernelRegexOk(c.kind, c.pattern) !== (c.error === null)).map((c) => `${c.kind} ${c.pattern}`)).toEqual([])
-    // 同一个正则，域名的收、TXT 的不收 / The same regex taken as a name regex and refused as a TXT one
-    expect([grammar.kernelRegexOk('domain', 'google-site-verification=.*'), grammar.kernelRegexOk('txt', 'google-site-verification=.*')]).toEqual([true, false])
+    // 编译的上限一样：.*、\d+ 两处都收；1001 字节的正则域名里收，TXT 里不收 / The same compile limit: .* and \d+ are taken in both; a
+    // regex of 1001 bytes is taken for names and refused for TXT
+    expect(['google-site-verification=.*', '\\d+', '.*'].flatMap((p) => [grammar.kernelRegexOk('domain', p), grammar.kernelRegexOk('txt', p)]).every(Boolean)).toBe(true)
+    expect([grammar.kernelRegexOk('domain', 'a'.repeat(1001)), grammar.kernelRegexOk('txt', 'a'.repeat(1001))]).toEqual([true, false])
   })
 
   it('规则条件、回答条件、TXT、高级规则、拦截列表自己写的规则都用这个回答，各问各的那一种', async () => {
@@ -56,7 +58,9 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
       asked.push(...items)
       return items.map(({ kind, pattern }): RegexAnswer => {
         if (pattern.includes('a-\\d')) return { verdict: 'refused', cause: 'syntax', error: 'invalid range boundary' }
-        if (pattern === '\\w{60}' || (kind === 'txt' && pattern.includes('\\w'))) return { verdict: 'refused', cause: 'too-big', error: 'Compiled regex exceeds size limit' }
+        if (pattern === '\\w{60}') return { verdict: 'refused', cause: 'too-big', error: 'Compiled regex exceeds size limit of 1000000 bytes.' }
+        // 只是个替身：按种类回答得不一样，看得出每一处问的是哪一种 / Only a stand-in: answering by kind shows which kind each place asks with
+        if (kind === 'txt' && pattern === '\\w+') return { verdict: 'refused', cause: 'syntax', error: 'stand-in for a TXT refusal' }
         return { verdict: 'compiles' }
       })
     })
@@ -65,7 +69,7 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
     const regex = { regex: true }
     expect([model.FIELD.domain.valid!('a++', regex), model.FIELD.domain.valid!('[a-\\d]', regex), model.FIELD.domain.valid!('\\w+', regex)]).toEqual([true, false, true])
     expect([model.RESPONSE_FIELD.request_domain.valid!('a++', regex), model.RESPONSE_FIELD.request_domain.valid!('[a-\\d]', regex)]).toEqual([true, false])
-    // TXT 问的是 TXT 的上限：\w+ 域名里收，TXT 里不收 / TXT asks by the TXT limits: \w+ is taken for names and refused for TXT
+    // TXT 的条件问的是 TXT 的那一种 / A TXT condition asks with the TXT kind
     const txt = { txtMode: 'regex' }
     expect([model.RESPONSE_FIELD.txt.valid!('a++', txt), model.RESPONSE_FIELD.txt.valid!('[a-\\d]', txt), model.RESPONSE_FIELD.txt.valid!('\\w+', txt)]).toEqual([true, false, false])
     for (const [type, scope] of [['domain_regex', 'request'], ['domain_regex', 'selector'], ['request_domain_regex', 'response']] as const) {
@@ -73,12 +77,14 @@ describe('正则照内核读 / regexes read as the kernel reads them', () => {
       expect(fields.matcherFieldErrors({ type, operator: 'and', value: '[a-\\d]' }, scope)).toEqual({ value: SYNTAX })
       expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\w+' }, scope)).toEqual({})
       // 编译后太大说的是大小，不是写法 / Too big once compiled is said as size, not syntax
-      expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\w{60}' }, scope)).toEqual({ value: grammar.regexCauseText('domain', 'too-big') })
+      expect(fields.matcherFieldErrors({ type, operator: 'and', value: '\\w{60}' }, scope)).toEqual({ value: grammar.regexCauseText('too-big') })
     }
     const txtField = (value: string) => fields.matcherFieldErrors({ type: 'response_txt_content', operator: 'and', mode: 'regex', value }, 'response')
     expect(txtField('[a-\\d]')).toEqual({ value: SYNTAX })
-    expect(txtField('\\w+')).toEqual({ value: grammar.regexCauseText('txt', 'too-big') })
-    expect(grammar.regexCauseText('txt', 'too-big')).toContain('1000 字节')
+    expect(txtField('\\w+')).toEqual({ value: SYNTAX })
+    // TXT 编译后太大说的也是 1 MB / Too big once compiled is 1 MB for TXT too
+    expect(txtField('\\w{60}')).toEqual({ value: grammar.regexCauseText('too-big') })
+    expect(grammar.regexCauseText('too-big')).toContain('1 MB')
     // TXT 先看长度，和内核一样 / A TXT regex's length comes first, as in the kernel
     expect(txtField(`(?=x)${'a'.repeat(1000)}`)).toEqual({ value: 'TXT 的正则最长 1000 字节' })
     // 不是正则模式的 TXT 不问 / A TXT condition not in regex mode is not asked about

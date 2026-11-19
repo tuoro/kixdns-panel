@@ -172,17 +172,15 @@ export function kernelRegexCause(kind: RegexKind, regex: string): RegexCause | n
 }
 /** 内核读不读得了这个正则 / Whether the kernel can read this regex */
 export const kernelRegexOk = (kind: RegexKind, regex: string): boolean => kernelRegexCause(kind, regex) === null
-/** 编辑器里怎么说内核为什么不收 / How the editor says why the kernel refuses a regex */
-export function regexCauseText(kind: RegexKind, cause: RegexCause): string {
+/** 编辑器里怎么说内核为什么不收：域名的和 TXT 的正则编译的上限一样，都是 1 MB；只有 TXT 另有 1000 字节的长度上限 / How the editor says
+ * why the kernel refuses a regex: name and TXT regexes compile within the same 1 MB; only a TXT one also has a 1000-byte length limit */
+export function regexCauseText(cause: RegexCause): string {
   if (cause === 'too-long') return `TXT 的正则最长 ${TXT_REGEX_BYTES} 字节`
-  if (cause === 'too-big') {
-    return kind === 'txt'
-      ? `正则编译出来超过 KixDNS 给 TXT 正则的 ${TXT_REGEX_BYTES} 字节：.、\\w、\\d 和 {n} 都放不下，能用「开头是」就用它`
-      : '正则编译出来超过 KixDNS 的 1 MB 上限：\\w、\\pL 配上 {n} 最占地方'
-  }
+  if (cause === 'too-big') return '正则编译出来超过 KixDNS 的 1 MB 上限：\\w、\\pL 配上 {n} 最占地方'
   return '正则写得不对，或者用了 KixDNS 不认的写法，比如前后断言、反向引用'
 }
-/** TXT 内容的正则最长 1000 字节 / A TXT content regex is at most 1000 bytes */
+/** TXT 内容的正则最长 1000 字节（内核先看长度，再按 1 MB 编译） / A TXT content regex is at most 1000 bytes (the kernel looks at the
+ * length first, then compiles within 1 MB) */
 export const TXT_REGEX_BYTES = 1000
 
 // ---------- 长度和数 / lengths and numbers ----------

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""面板编辑器里的正则照内核编译（crates/panel-server/src/regex_check.rs），回答要和内核一样，就得用同一版正则库：比一比面板和
-要捆绑的内核两份 Cargo.lock 里 regex、regex-automata、regex-syntax 的版本，有一个不同就失败。
+"""面板编辑器里的正则照内核编译（crates/panel-server/src/regex_check.rs），回答要和最新的内核（tuoro/kixdns 的 main）一样，就得
+用同一版正则库：比一比面板和内核两份 Cargo.lock 里 regex、regex-automata、regex-syntax 的版本，有一个不同就失败。
 The panel compiles the editor's regexes as the kernel does (crates/panel-server/src/regex_check.rs), and its answers match the
-kernel's only with the same regex library: compares the versions of regex, regex-automata and regex-syntax in the panel's
-Cargo.lock and in that of the kernel to be bundled, failing if any differs.
+latest kernel's (tuoro/kixdns main) only with the same regex library: compares the versions of regex, regex-automata and
+regex-syntax in the panel's Cargo.lock and in the kernel's, failing if any differs.
 
 用法 / usage: python3 -I scripts/check-kernel-regex-versions.py <面板 Cargo.lock / panel> <内核 Cargo.lock / kernel>
 """

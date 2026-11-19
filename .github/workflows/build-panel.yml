@@ -105,23 +105,6 @@ jobs:
           done
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
-      # 编辑器里的正则由面板照内核编译一遍（crates/panel-server/src/regex_check.rs），回答要和内核一样，正则库就得是这次
-      # 捆绑的内核用的那一版：比一比两份 Cargo.lock 里的 regex、regex-automata、regex-syntax。
-      # The panel compiles the editor's regexes as the kernel does (crates/panel-server/src/regex_check.rs); to answer as the
-      # kernel does, the regex crates must be the ones the kernel bundled in this run uses: compare regex, regex-automata and
-      # regex-syntax in the two Cargo.lock files.
-      - name: Verify the regex crates match the bundled kernel
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          python3 -I scripts/test-kernel-regex-versions.py
-          commit="$(cat dist/kernel-x86_64/KIXDNS_BUILD_COMMIT)"
-          [[ $commit =~ ^[0-9a-f]{40}$ ]]
-          gh api -H 'Accept: application/vnd.github.raw' \
-            "repos/${KIXDNS_KERNEL_REPOSITORY}/contents/Cargo.lock?ref=${commit}" > "$RUNNER_TEMP/kernel-Cargo.lock"
-          python3 -I scripts/check-kernel-regex-versions.py Cargo.lock "$RUNNER_TEMP/kernel-Cargo.lock"
-
   geosite:
     name: Pick built-in GeoSite
     runs-on: ubuntu-24.04
@@ -181,6 +164,24 @@ jobs:
           cargo fmt --all -- --check
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # 编辑器里的正则由面板照内核编译一遍（crates/panel-server/src/regex_check.rs），回答要和最新的内核（tuoro/kixdns 的 main）
+      # 一样，正则库就得是它用的那一版：取 main 此刻的提交，比一比两份 Cargo.lock 里的 regex、regex-automata、regex-syntax。
+      # The panel compiles the editor's regexes as the kernel does (crates/panel-server/src/regex_check.rs); to answer as the
+      # latest kernel (tuoro/kixdns main) does, the regex crates must be the ones it uses: take main's commit at this moment and
+      # compare regex, regex-automata and regex-syntax in the two Cargo.lock files.
+      - name: Verify the regex crates match the latest kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 -I scripts/test-kernel-regex-versions.py
+          commit="$(gh api "repos/${KIXDNS_KERNEL_REPOSITORY}/commits/main" --jq .sha)"
+          [[ $commit =~ ^[0-9a-f]{40}$ ]]
+          printf '最新的内核（main）/ latest kernel (main): %s\n' "$commit"
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${KIXDNS_KERNEL_REPOSITORY}/contents/Cargo.lock?ref=${commit}" > "$RUNNER_TEMP/kernel-Cargo.lock"
+          python3 -I scripts/check-kernel-regex-versions.py Cargo.lock "$RUNNER_TEMP/kernel-Cargo.lock"
 
       # 这里平时靠 rust-cache 里的 ~/.cargo/bin 跳过编译，Cargo.lock 一变缓存失效就要重编约 2 分 45 秒；
       # 预编译包让两种情况都只需几秒，版本不变并校验 SHA-256。

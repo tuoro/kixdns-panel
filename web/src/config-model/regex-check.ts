@@ -1,7 +1,7 @@
 import { shallowReactive } from 'vue'
 
 // 编辑器里的正则照内核读：内核用 Rust 的 regex 库编译域名和 TXT 的正则，和浏览器的正则不是一套写法（标志可以写在中间、\pL、字符组的
-// 集合运算、a++ 内核收；[a-\d] 浏览器收、内核不收），上限也看用在哪儿：域名的正则编译出来可以到 1 MB，TXT 的只有 1000 字节，\w+、.* 都放不下。
+// 集合运算、a++ 内核收；[a-\d] 浏览器收、内核不收），编译出来都限 1 MB，TXT 的还先看长度（超过 1000 字节不收）。
 // 所以页面不自己猜，请面板服务端用内核的那个库、同样的上限编译一遍（POST /api/v1/config/regex-check，见
 // crates/panel-server/src/regex_check.rs），每个正则带上它用在哪儿（kind），按 (kind, 正则) 记下回答。用到正则的地方照常同步地问
 // （grammar.ts kernelRegexOk）：问过的直接给回答；没问过的排队，一会儿里要问的合成一次请求，回答来了用到它的地方跟着变（回答放在响应式的
@@ -9,7 +9,7 @@ import { shallowReactive } from 'vue'
 // 超过 16 KiB 的不问：服务端不编译那么长的（只是展开成语法树就要几十 MB），回答也只会是「不下结论」
 // The editor reads regexes as the kernel does: the kernel compiles name and TXT regexes with Rust's regex library, whose syntax is not
 // the browser's (flags mid-pattern, \pL, class set operations and a++ the kernel takes; [a-\d] the browser takes and the kernel refuses),
-// and the limits depend on the place: a name regex may compile to 1 MB, a TXT one to only 1000 bytes, too little for \w+ or .*.
+// and either may compile to 1 MB, a TXT one being refused first when over 1000 bytes long.
 // So the page does not guess: it asks the panel server to compile them with the kernel's library and limits (POST
 // /api/v1/config/regex-check, see crates/panel-server/src/regex_check.rs), each regex with where it is used (kind), and keeps the
 // answers by (kind, regex). Places that use a regex ask synchronously as before (grammar.ts kernelRegexOk): an answer in hand is given
@@ -19,7 +19,8 @@ import { shallowReactive } from 'vue'
 // Over 16 KiB nothing is asked: the server does not compile one that long (spelling it out as a syntax tree alone takes tens of MB), so
 // its answer could only be no verdict
 
-/** 正则用在哪儿：域名的、TXT 内容的，内核给的上限不一样 / Where a regex is used: names or TXT content, with different kernel limits */
+/** 正则用在哪儿：域名的、TXT 内容的；TXT 的内核先看长度，不收的原话也不一样 / Where a regex is used: names or TXT content; the kernel
+ * looks at a TXT one's length first and words its refusal its own way */
 export type RegexKind = 'domain' | 'txt'
 /** 内核为什么不收：写法不对、编译出来太大、比 TXT 正则的长度上限长 / Why the kernel refuses it: written wrong, too big once compiled,
  * longer than a TXT regex may be */
