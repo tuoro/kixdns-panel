@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1090,SC1091,SC2034,SC2317,SC2329
 set -Eeuo pipefail
+# 临时目录和 CI 一样只有自己能写（R1、R4 见 test-install-policy.sh）/ Scratch directories writable by their owner alone, as in
+# CI (R1, R4: see test-install-policy.sh)
+umask 022
 
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 UNINSTALLER="${PACKAGE_ROOT}/scripts/uninstall.sh"
@@ -99,6 +102,13 @@ help="$(bash "${UNINSTALLER}" --help)"
 [[ ${help} == *"--purge"* ]]
 
 source "${UNINSTALLER}"
+# 停面板账号的进程（R2）在临时主机上一律当作已经没有进程 / On scratch hosts no panel-account process is left (R2)
+account_signal() { [[ $3 != 0 ]]; }
+# 直接放在 /tmp 里的夹具（/tmp 谁都能写）当作 root 的 panel.env；临时主机（uninstall_scratch_host）里照真的查（R4）
+# Fixtures right in /tmp (writable by anyone) count as root's panel.env; scratch hosts (uninstall_scratch_host) check for
+# real (R4)
+eval "real_panel_env_trusted() $(declare -f panel_env_trusted | tail -n +2)"
+panel_env_trusted() { return 0; }
 
 # 测试里的 systemd 只回答卸载器会问的 `show --property=名字 --value unit`，按临时目录里的 unit 文件作答，不碰开发机上真实的服务：
 # 先找 SYSTEMD_UNIT_DIRECTORY（相当于 /etc/systemd/system），再找 OTHER_UNIT_DIRECTORY（相当于 /usr/local/lib/systemd/system）。
@@ -223,13 +233,17 @@ choose_config_action
 (
   work="$(mktemp -d)"
   trap 'rm -rf -- "${work}"' EXIT
-  EXTERNAL_BACKUP="${work}/external-backup"
+  ROOT_RECORDS="${work}/records"
+  EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+  ROOT_UID="$(command id -u)"
+  ROOT_CHAIN_TOP=${work}
   mkdir -p "${EXTERNAL_BACKUP}"
-  printf 'KIXDNS_BINARY=%s\n' /usr/local/bin/kixdns > "${EXTERNAL_BACKUP}/install.env"
+  chmod 0700 "${ROOT_RECORDS}"
+  printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_BINARY=%s\n' /usr/local/bin/kixdns > "${EXTERNAL_BACKUP}/install.env"
   external_backup_present || { printf '断言失败：原来的 KixDNS 的备份应当算数\n' >&2; exit 1; }
-  printf 'KIXDNS_BINARY=%s\n' "${PANEL_STATE_DIRECTORY}/bin/kixdns" > "${EXTERNAL_BACKUP}/install.env"
+  printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_BINARY=%s\n' "${PANEL_STATE_DIRECTORY}/bin/kixdns" > "${EXTERNAL_BACKUP}/install.env"
   ! external_backup_present || { printf '断言失败：面板自带 KixDNS 的备份不能当成原来的 KixDNS\n' >&2; exit 1; }
-  rm -f -- "${EXTERNAL_BACKUP}/install.env"
+  rm -rf -- "${EXTERNAL_BACKUP}"
   ! external_backup_present || { printf '断言失败：没有备份时不能当成有\n' >&2; exit 1; }
 )
 
@@ -251,7 +265,10 @@ managed_by_unit() {
     PANEL_ENV="${work}/panel.env"
     SYSTEMD_UNIT_DIRECTORY="${work}/units"
     OTHER_UNIT_DIRECTORY="${work}/other-units"
-    EXTERNAL_BACKUP="${work}/external-backup"
+    ROOT_RECORDS="${work}/records"
+    EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+    ROOT_UID="$(command id -u)"
+    ROOT_CHAIN_TOP=${work}
     mkdir -p "${SYSTEMD_UNIT_DIRECTORY}" "${OTHER_UNIT_DIRECTORY}"
     unit_directory=${SYSTEMD_UNIT_DIRECTORY}
     [[ ${where} == etc ]] || unit_directory=${OTHER_UNIT_DIRECTORY}
@@ -259,6 +276,7 @@ managed_by_unit() {
     printf '[Service]\nExecStart=%s run --config /etc/kixdns/pipeline.json\n' "${exec_start}" > "${unit_directory}/kixdns.service"
     if [[ ${with_backup} == true ]]; then
       mkdir -p "${EXTERNAL_BACKUP}"
+      chmod 0700 "${ROOT_RECORDS}"
       printf 'KIXDNS_SERVICE_UNIT=kixdns.service\nKIXDNS_BINARY=/usr/local/bin/kixdns\nKIXDNS_WAS_ACTIVE=true\nKIXDNS_WAS_ENABLED=true\n' > "${EXTERNAL_BACKUP}/install.env"
     fi
     KIXDNS_MANAGED=false
@@ -345,10 +363,16 @@ resolved_uninstall() {
   local work
   work="$(mktemp -d)"
   (
-    RESOLVED_STATE="${work}/state"
+    # 和真的卸载器一样，记录在只有 root 能进的目录里（R1）/ As in the real uninstaller, the record lives in the root-only
+    # directory (R1)
+    ROOT_RECORDS="${work}/records"
+    RESOLVED_STATE="${ROOT_RECORDS}/resolved-stub"
+    ROOT_UID="$(command id -u)"
+    ROOT_CHAIN_TOP=${work}
     RESOLVED_DROPIN="${work}/resolved.conf.d/kixdns-panel.conf"
     RESOLV_CONF="${work}/resolv.conf"
     mkdir -p "${RESOLVED_STATE}" "$(dirname -- "${RESOLVED_DROPIN}")"
+    chmod 0700 "${ROOT_RECORDS}" "${RESOLVED_STATE}"
     printf '[Resolve]\nDNSStubListener=no\n' > "${RESOLVED_DROPIN}"
     ln -s /run/systemd/resolve/resolv.conf "${RESOLV_CONF}"
     if [[ ${kind} == symlink ]]; then
@@ -410,8 +434,9 @@ repeated_keep_uninstall() {
     PANEL_STATE_DIRECTORY="${work}/var/lib/kixdns-panel"
     SYSTEMD_UNIT_DIRECTORY="${work}/etc/systemd/system"
     PANEL_ENV="${PANEL_CONFIG_DIRECTORY}/panel.env"
-    EXTERNAL_BACKUP="${PANEL_STATE_DIRECTORY}/external-backup"
-    RESOLVED_STATE="${PANEL_STATE_DIRECTORY}/resolved-stub"
+    ROOT_RECORDS="${work}/records"
+    EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+    RESOLVED_STATE="${ROOT_RECORDS}/resolved-stub"
     mkdir -p "${PANEL_CONFIG_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
       "${SYSTEMD_UNIT_DIRECTORY}"
     printf 'KIXDNS_SERVICE_UNIT=kixdns.service\n' > "${PANEL_ENV}"
@@ -490,8 +515,9 @@ dead_unit_uninstall() {
     PANEL_STATE_DIRECTORY="${work}/var/lib/kixdns-panel"
     SYSTEMD_UNIT_DIRECTORY="${work}/etc/systemd/system"
     PANEL_ENV="${PANEL_CONFIG_DIRECTORY}/panel.env"
-    EXTERNAL_BACKUP="${PANEL_STATE_DIRECTORY}/external-backup"
-    RESOLVED_STATE="${PANEL_STATE_DIRECTORY}/resolved-stub"
+    ROOT_RECORDS="${work}/records"
+    EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
+    RESOLVED_STATE="${ROOT_RECORDS}/resolved-stub"
     mkdir -p "${SYSTEMD_UNIT_DIRECTORY}"
     case ${kind} in
       panel-documentation)
@@ -583,9 +609,10 @@ INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 # exactly: when one side changes without the other, this fails.
 for shared_function in wait_for_service_stable port_accepts_connection owner_and_mode hand_back_directory \
   unit_service_setting original_config_access hand_back_original_config panel_written_config_file \
-  ensure_root_records genuine_root_record secure_root_records put_back_root_records account_has_processes \
-  original_unit_files panel_owned; do
-  installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}")"
+  ensure_root_records root_only_path record_problem same_filesystem quarantine_record refuse_record trusted_record \
+  old_records_present adopt_old_records secure_root_records panel_process_uids account_signal quiesce_panel_account \
+  panel_env_trusted managed_unit_config original_unit_files panel_owned; do
+  installer_copy="$(bash -c "source '${INSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   uninstaller_copy="$(bash -c "source '${UNINSTALLER}'; declare -f ${shared_function}" 2>/dev/null || true)"
   [[ -n ${installer_copy} && ${installer_copy} == "${uninstaller_copy}" ]] || {
     printf '断言失败：安装器和卸载器的 %s 不一样\n' "${shared_function}" >&2
@@ -642,6 +669,7 @@ migrate_scratch_host() {
     ROOT_RECORDS=\"\${root}/records\"
     EXTERNAL_BACKUP=\"\${ROOT_RECORDS}/external-backup\"
     ROOT_UID=\"\$(id -u)\"
+    ROOT_CHAIN_TOP=\"\${root}\"
     # 安装器把已有的旧备份先挪进回滚备份 / The installer first moves an old backup already there into the rollback backup
     BACKUP_ROOT=\"\$(mktemp -d \"\${root}/rollback.XXXXXX\")\"
     systemctl() {
@@ -714,10 +742,13 @@ uninstall_scratch_host() {
     # The scratch host's files belong to the user running the test, who stands in for root; with FORGED_RECORDS=true root
     # is someone else, so records the panel wrote are not root's
     ROOT_UID="$(command id -u)"
-    [[ ${FORGED_RECORDS:-} != true ]] || ROOT_UID=0
-    RECORDS_MOVED=()
-    RECORDS_DIRECTORY_CREATED=false
-    RECORDS_SETTLED=false
+    panel_env_trusted() { real_panel_env_trusted; }
+    if [[ ${FORGED_RECORDS:-} == true ]]; then
+      ROOT_UID=0
+      # 只冒充记录：panel.env 照样是 root 的 / Only the records are forged: panel.env is root's as ever
+      panel_env_trusted() { return 0; }
+    fi
+    ROOT_CHAIN_TOP=${root}
     KIXDNS_RUNTIME_DIRECTORY="${root}/run-kixdns"
     KIXDNS_CONFIG_DIRECTORY="${root}/etc-kixdns"
     # SYSTEMCTL_LOG 非空时记下每个改动服务的 systemctl 调用；SYSTEMCTL_FAIL_START=true 时启动服务失败，像真的卸载器那样就此
@@ -1052,27 +1083,6 @@ ln "${host}/elsewhere/shadow" "${host}/state/geo/site-abc.dat"
 output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
 assert_not_contains "$(cat "${chown_log}")" "${host}/etc-kixdns/pipeline.json" "硬链接到别处的配置不能改属主"
 assert_not_contains "$(cat "${chown_log}")" "${host}/state/geo/site-abc.dat" "硬链接到别处的 Geo 文件不能改属主"
-# 面板账号的进程真的一个个停掉：/proc 里属主是它的进程都发 SIGKILL，停光才往下走；停不掉就不动面板的目录。这里 kill 只记下来，
-# 不会真的停开发机上的进程。
-# The panel account's processes are really stopped one by one: every process in /proc owned by it gets SIGKILL, and only
-# once none is left does the run go on; when they cannot be stopped, the panel's directories are left alone. kill is only
-# recorded here, so no process of the dev host is really stopped.
-panel_processes_stopped() {
-  (
-    killed="${scratch}/killed-processes"
-    rm -f -- "${killed}"
-    id() { command id -u; }
-    account_has_processes() { [[ ! -s ${killed} ]]; }
-    kill() { printf '%s\n' "$*" >> "${killed}"; }
-    sleep() { :; }
-    fail() { printf 'FAILED %s\n' "$*"; return 1; }
-    stop_panel_processes && printf 'STOPPED\n'
-    [[ ! -s ${killed} ]] || printf 'KILL %s\n' "$(head -n 1 "${killed}" | cut -d' ' -f1)"
-  ) 2>&1 || true
-}
-output="$(panel_processes_stopped)"
-assert_contains "${output}" "STOPPED" "面板账号的进程停光以后应往下走"
-assert_contains "${output}" "KILL -KILL" "面板账号的进程应发 SIGKILL 停掉"
 run_body="$(declare -f run_uninstall)"
 components_line="$(grep -n 'remove_panel_components' <<< "${run_body}" | head -n 1 | cut -d: -f1 || true)"
 stop_line="$(grep -n 'stop_panel_processes' <<< "${run_body}" | head -n 1 | cut -d: -f1 || true)"
@@ -1306,18 +1316,22 @@ assert_contains "${output}" "不是 root 建的" "拒绝时应说明备份不是
 assert_not_contains "$(cat "${systemctl_log}")" "pwn.service" "不能启动面板写的备份里的 unit"
 [[ -f ${host}/units/kixdns.service && -x ${host}/state/bin/kixdns ]] ||
   { printf '断言失败：拒绝时不能动主机上的 KixDNS\n' >&2; exit 1; }
-[[ -f ${host}/records/external-backup/install.env && ! -e ${host}/state/external-backup ]] ||
-  { printf '断言失败：拒绝时可疑的备份应关在只有 root 能进的目录里\n' >&2; exit 1; }
-# 旧版留在状态目录里的、root 建的备份：挪进只有 root 能进的目录照常用；还没真的开始卸载就退出（比如取消），放回原处，旧版的
-# 卸载器还找得到它。
-# A backup an older version left in the state directory, root's own: moved into the root-only directory and used as
-# usual; leaving before the uninstall really starts (cancelling, say) puts it back, so an older uninstaller still finds it.
+[[ ! -e ${host}/records/external-backup && ! -e ${host}/state/external-backup ]] ||
+  { printf '断言失败：拒绝时可疑的备份不能还留在会被信的名字上\n' >&2; exit 1; }
+[[ -n "$(find "${host}/records/quarantine" -mindepth 1 -maxdepth 1 -name 'external-backup.*' -print -quit 2>/dev/null)" ]] ||
+  { printf '断言失败：拒绝时可疑的备份应挪进只有 root 能进的 quarantine\n' >&2; exit 1; }
+# 旧版留在状态目录里的、root 建的备份：面板停了以后验过、挪进只有 root 能进的目录照常用；就算没真的开始卸载就退出，也留在那里：
+# 放回去就又成了面板能换掉的东西（安装器和卸载器要一起换成新的，见 PR）。
+# A backup an older version left in the state directory, root's own: checked once the panel has stopped, moved into the
+# root-only directory and used as usual; it stays there even when the run ends before the uninstall really starts:
+# putting it back would make it something the panel can replace again (installer and uninstaller ship together, see the PR).
 inplace_host "${host}"
 (
   PANEL_STATE_DIRECTORY="${host}/state"
   ROOT_RECORDS="${host}/records"
   EXTERNAL_BACKUP="${ROOT_RECORDS}/external-backup"
   ROOT_UID="$(id -u)"
+  ROOT_CHAIN_TOP=${host}
   install() {
     local arguments=()
     while [[ $# -gt 0 ]]; do
@@ -1331,8 +1345,8 @@ inplace_host "${host}"
   [[ -f ${host}/records/external-backup/install.env ]] && printf 'MOVED\n'
 ) > "${scratch}/records.out" 2>&1 || true
 assert_contains "$(cat "${scratch}/records.out")" "MOVED" "root 建的旧备份应挪进只有 root 能进的目录"
-[[ -f ${host}/state/external-backup/install.env && ! -e ${host}/records ]] ||
-  { printf '断言失败：没开始卸载就退出时，挪走的备份应放回原处\n' >&2; exit 1; }
+[[ -f ${host}/records/external-backup/install.env && ! -e ${host}/state/external-backup ]] ||
+  { printf '断言失败：挪进只有 root 能进的目录的备份不能再放回面板能写的地方\n' >&2; exit 1; }
 output="$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
 assert_contains "${output}" "原来的 KixDNS 已恢复" "旧位置的 root 备份挪过来以后照常恢复"
 [[ ! -e ${host}/state/external-backup && ! -e ${host}/records/external-backup ]] ||
@@ -1506,6 +1520,104 @@ assert_contains "${output}" "这台机器的 KixDNS 不归面板管理" "systemd
 assert_not_contains "$(cat "${systemctl_log}")" "kixdns.service" "旧版卸载器之后再卸载也不能停用户自己的 KixDNS"
 [[ -f ${other_units}/kixdns.service && -f ${host}/etc-kixdns/own.json ]] ||
   { printf '断言失败：旧版卸载器之后再卸载也不能删用户的 unit 和配置\n' >&2; exit 1; }
+# ---------------------------------------------------------------------------
+# 第三轮审查：root 照着做事的规则（R1–R4，写在 uninstall.sh 开头），每一处都照做
+# Third review: the rules for what root acts on (R1–R4, at the top of uninstall.sh), and every site follows them
+# ---------------------------------------------------------------------------
+
+# 回归（M-A，R1）：面板在状态目录里种一份备份，第一次卸载拒绝了它，却把它「关」在只有 root 能进的目录里、名字不变；第二次卸载就照
+# 它装上、启动了面板写的 unit。现在拒绝的记录挪出会被信的名字，以后不再用；再卸载一次就当作没有备份。
+# Regression (M-A, R1): the panel planted a backup in its state directory; the first uninstall refused it but "locked" it
+# in the root-only directory under the same name, and the second one installed and started the unit the panel wrote. Now
+# a refused record leaves every trusted name and is never used again; uninstalling again treats the host as having none.
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+plant_backup
+: > "${systemctl_log}"
+output="$(FORGED_RECORDS=true SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_contains "${output}" "${host}/state/external-backup 不能信（它不是 root 建的），不会照它做事。" "第一次卸载应拒绝面板写的备份"
+[[ ! -e ${host}/records/external-backup && ! -e ${host}/state/external-backup ]] ||
+  { printf '断言失败：拒绝的备份不能还留在会被信的名字上\n' >&2; exit 1; }
+output="$(SYSTEMCTL_LOG=${systemctl_log} uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)"
+assert_not_contains "${output}" "RUN-FAILED" "再卸载一次应当作没有备份接着卸载"
+[[ ! -e ${host}/units/pwn.service ]] || { printf '断言失败：第二次卸载也不能照面板写的备份装 unit\n' >&2; exit 1; }
+assert_not_contains "$(cat "${systemctl_log}")" "pwn.service" "第二次卸载也不能启动面板写的 unit"
+
+# R2：卸载器先停面板和它账号的所有进程（以面板账号的身份 kill -1），之后才动面板的目录，也才挪旧位置的记录。
+# R2: the uninstaller stops the panel and every process of its account first (kill -1 as the panel account), and only then
+# touches the panel's directories or moves records from the old place.
+run_body="$(declare -f run_uninstall)"
+components_body="$(declare -f remove_panel_components)"
+assert_contains "${components_body}" "stop_panel_processes" "停掉面板的服务以后应停光面板账号的进程"
+stop_unit_line="$(grep -n 'stop_unit kixdns-panel-helper.service' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
+quiesce_line="$(grep -n 'stop_panel_processes' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
+first_rm_line="$(grep -n 'rm -' <<< "${components_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${quiesce_line} && ${stop_unit_line} -lt ${quiesce_line} && ${quiesce_line} -lt ${first_rm_line} ]] || {
+  printf '断言失败：停掉面板以后、删东西之前要停光面板账号的进程（stop=%s quiesce=%s rm=%s）\n' \
+    "${stop_unit_line}" "${quiesce_line}" "${first_rm_line}" >&2
+  exit 1
+}
+quiesce_body="$(declare -f stop_panel_processes)"
+assert_contains "${quiesce_body}" "quiesce_panel_account" "卸载器应以面板账号的身份停它的进程"
+records_quiesce="$(declare -f quiesce_for_records)"
+assert_contains "${records_quiesce}" "stop_panel_processes" "挪旧位置的记录之前应停光面板账号的进程"
+
+# 回归（S-G）：删除面板数据时，交还的路径以前写成「UNKNOWN:kixdns」：先删了面板账号，才读改之前的样子。现在先交还、后删账号。
+# Regression (S-G): removing the panel data used to show the paths handed back as "UNKNOWN:kixdns": the panel account was
+# deleted before the before-values were read. Now the hand-back comes first and the account goes after.
+state_body="$(declare -f remove_panel_state)"
+config_line="$(grep -n 'remove_panel_kixdns_config' <<< "${state_body}" | head -n 1 | cut -d: -f1 || true)"
+account_line="$(grep -n 'remove_account kixdns-panel' <<< "${state_body}" | head -n 1 | cut -d: -f1 || true)"
+[[ -n ${config_line} && -n ${account_line} && ${config_line} -lt ${account_line} ]] || {
+  printf '断言失败：要先交还 /etc/kixdns 再删面板账号（config=%s account=%s）\n' "${config_line}" "${account_line}" >&2
+  exit 1
+}
+
+# 回归（#4）：unit 的配置参数看不出指着哪里（写成变量、相对路径）时，/etc/kixdns 整个留着，归面板的改归 root，并说明。
+# Regression (#4): when a unit's config argument cannot be told (a variable, a relative path), /etc/kixdns stays whole,
+# what the panel owns goes to root, and this is said.
+# shellcheck disable=SC2016 # 就是要 unit 里写着没展开的变量 / The unit is meant to hold the unexpanded variable
+for unclear_option in '-c ${KIXDNS_CONFIG}' '--config=pipeline.json'; do
+  fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+  assert_not_contains "$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)" "RUN-FAILED" "先移除面板的 KixDNS 不应失败"
+  printf '[Service]\nExecStart=/usr/local/bin/kixdns run %s\n' "${unclear_option}" > "${host}/units/kixdns.service"
+  : > "${chown_log}"
+  output="$(PANEL_OWNED=true CHOWN_LOG=${chown_log} ACCOUNTS_PRESENT=true \
+    uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+  [[ -f ${host}/etc-kixdns/pipeline.json ]] ||
+    { printf '断言失败：看不出 unit 用哪份配置时 /etc/kixdns 要整个留着（%s）\n' "${unclear_option}" >&2; exit 1; }
+  assert_contains "${output}" "看不出它用的是哪份配置，${host}/etc-kixdns 整个留着" "看不出时应说明（${unclear_option}）"
+  assert_contains "$(cat "${chown_log}")" "chown -h root:root -- ${host}/etc-kixdns/pipeline.json" "留着的配置应改归 root（${unclear_option}）"
+done
+
+# 回归（#5）：保留 KixDNS、删除面板数据时，以前凡是配置里写着的状态目录里的路径都留下（比如 panel.db），还交给 kixdns 组读。现在
+# 只留它真要读的 Geo 数据（状态目录的 geo 里的），面板的数据一律删掉。
+# Regression (#5): keeping KixDNS and removing the panel data used to keep any state-directory path the config named (such
+# as panel.db) and hand it to the kixdns group. Now only the Geo data it really reads (in the state directory's geo) stays;
+# the panel's data always goes.
+kept_host "${host}"
+printf '{"settings":{"geosite_data_paths":["%s"],"other":"%s"}}\n' "${host}/state/geo/site-abc.dat" "${host}/state/panel.db" \
+  > "${host}/etc-kixdns/pipeline.json"
+output="$(PANEL_OWNED=true ACCOUNTS_PRESENT=true uninstall_scratch_host "${host}" --keep-kixdns --remove-config --yes)"
+[[ ! -e ${host}/state/panel.db ]] || { printf '断言失败：配置里写着 panel.db 也不能把面板的数据库留下\n' >&2; exit 1; }
+[[ -f ${host}/state/geo/site-abc.dat ]] || { printf '断言失败：保留的 KixDNS 要读的 GeoSite 应留下\n' >&2; exit 1; }
+
+# 回归（S-D，R4）：panel.env 所在的目录面板能写时，它记的归属、待删的账号都不能信：照 KixDNS 的 unit 认，认不出的就保留，不删。
+# Regression (S-D, R4): when panel.env's directory is writable by the panel, what it records about ownership and accounts
+# left to remove cannot be trusted: the KixDNS unit decides, and what cannot be told is kept, not removed.
+fresh_host "${host}" "${host}/etc-kixdns/pipeline.json"
+assert_not_contains "$(uninstall_scratch_host "${host}" --remove-kixdns --keep-config --yes)" "RUN-FAILED" "先移除面板的 KixDNS 不应失败"
+chmod 0777 "${host}/panel-etc"
+: > "${account_log}"
+output="$(ACCOUNTS_PRESENT=true ACCOUNT_LOG=${account_log} uninstall_scratch_host "${host}" --remove-kixdns --remove-config --yes)"
+assert_contains "${output}" "${host}/panel-etc/panel.env 面板能改，它记的不能信" "panel.env 不能信时应说明"
+assert_equals "$(account_calls)" "userdel kixdns-panel;" "不能信的 panel.env 里记的待删账号不能删"
+[[ -f ${host}/etc-kixdns/pipeline.json ]] || { printf '断言失败：不能信的 panel.env 不能让卸载器删 /etc/kixdns\n' >&2; exit 1; }
+
+# 规则写在脚本开头 / The rules are written at the top of the script
+for rule in R1 R2 R3 R4; do
+  assert_contains "$(head -n 60 "${UNINSTALLER}")" "# ${rule}：" "uninstall.sh 开头应写明规则 ${rule}"
+done
+
 rm -rf -- "${scratch}"
 
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"

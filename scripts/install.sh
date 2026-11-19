@@ -1,6 +1,41 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# 威胁模型：kixdns-panel 账号当作攻击者，它不能变成 root，也不能左右 root 做什么。root 碰到面板能写的路径、读面板能影响的数据时，
+# 都照下面四条（每一处在哪、怎么照做，列在 PR 的清单里）。uninstall.sh 开头是同样的四条。
+# Threat model: the kixdns-panel account is treated as an attacker; it must never become root nor steer what root does.
+# Wherever root touches a path the panel can write or reads data the panel can influence, these four rules hold (every site
+# and how it complies is listed in the PR's inventory). uninstall.sh starts with the same four.
+# R1：root 照着做事的记录（迁移前的备份 external-backup、关掉 resolved 监听的记录 resolved-stub，连同里面的 restore-incomplete、
+#     *_CREATED，和 /var/lib/kixdns-panel-backup 里的一切）每读一次都先过同一个函数 trusted_record：放记录的目录和它上面每一层都归
+#     root、不是符号链接，放记录的目录是 0700；记录里只有归 root 的普通文件，每个只有一个链接。验不过的马上挪出会被信的名字（挪进
+#     只有 root 能进的 quarantine，名字带时间），这次和以后都不再用；拒绝时说清是哪一份、为什么、接下来怎么办。
+# R1: a record root acts on (the pre-migration backup external-backup, the record of turning resolved's stub off
+#     resolved-stub, with the restore-incomplete marker and *_CREATED entries in them, and anything under
+#     /var/lib/kixdns-panel-backup) goes through one function, trusted_record, at every read: the records directory and
+#     every level above it root's and no symlink, the records directory 0700; the record holding only regular root-owned
+#     files with one link each. One that fails leaves every trusted name at once (into the root-only quarantine, its name
+#     stamped with the time) and is never used by this run or a later one; the refusal names the copy, the reason and
+#     what to do.
+# R2：面板账号还有任何进程时，root 不碰它能写的路径。先停面板，再以它的身份 kill -KILL -1，一直到 kill -0 -1 说一个都不剩（换 PID、
+#     改成不可转储都躲不掉）；面板一直停着，直到这些路径上的事全做完，回滚也一样：放回文件和属主、删这次建的目录和账号，都在重启旧
+#     面板之前。在线更新（--panel-only-update）走同一条路。
+# R2: root never touches a path the panel account can write while any process of that account exists. The panel is
+#     stopped, then kill -KILL -1 runs as the account until kill -0 -1 says none is left (changing PIDs or turning
+#     non-dumpable does not escape it); the panel stays stopped until every root operation on such paths is finished,
+#     the rollback included: files and owners put back, this run's directories and accounts removed, all before the old
+#     panel restarts. The online update (--panel-only-update) takes the same path.
+# R3：面板能写的路径上，root 从不跟着符号链接走：chown 用 -h；chmod 只用在照 R2 停了以后、lstat 查过不是符号链接的目录或普通文件上；
+#     已有的、面板能写的目录不用 install -d；这些路径上的重定向、sed -i、cp、mv、rm -rf、find -exec 都要先这样查过。
+# R3: on panel-writable paths root never follows a symlink: chown with -h; chmod only on a directory or regular file checked
+#     by lstat, under R2, to be no symlink; never install -d on an existing directory the panel can write; no redirection,
+#     sed -i, cp, mv, rm -rf, find -exec or tar on such paths without the same check.
+# R4：panel.env（和 root 读来定路径的别的东西）只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才
+#     能改的 KixDNS unit 认，对不上就停下，账号、归属这些照它做决定的项一律不认。
+# R4: panel.env (and anything else root reads to decide paths) is trusted only when it and every directory above it are
+#     root's and not writable by others; otherwise the KixDNS config path is taken from the KixDNS unit only root can
+#     change, a mismatch stops the run, and no key that decides accounts or ownership is taken from it.
+
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 PANEL_USER="kixdns-panel"
 KIXDNS_USER="kixdns"
@@ -121,11 +156,20 @@ EXTERNAL_BACKUP=${ROOT_RECORDS}/external-backup
 RESOLVED_STATE=${ROOT_RECORDS}/resolved-stub
 # root 的 UID；策略测试里换成跑测试的用户 / root's UID; the policy tests put the user running them here
 ROOT_UID=0
-# 这次从旧位置挪进来的记录；没到不能回头的那一步（RECORDS_SETTLED）就退出时放回去 / Records this run moved in from the old
-# place; leaving before the point of no return (RECORDS_SETTLED) puts them back
-RECORDS_MOVED=()
-RECORDS_DIRECTORY_CREATED=false
-RECORDS_SETTLED=false
+# R1、R4 查「上面每一层都只有 root 能写」查到这里为止；策略测试里换成临时目录 / R1 and R4 check "every level above is root's
+# alone" up to here; the policy tests put their scratch directory here
+ROOT_CHAIN_TOP=/
+# R4：panel.env 能不能信（panel_env_trusted）；不能信时它记的 KixDNS 配置和 unit 名是不是照 unit 对上了 / R4: whether panel.env
+# can be trusted (panel_env_trusted); when not, whether the KixDNS config and unit name it records matched the unit
+PANEL_ENV_TRUSTED=true
+PANEL_ENV_VERIFIED=false
+# R2：开头为了挪旧版的记录停了面板（PANEL_STOPPED_EARLY），在真的开始安装（ROOT_WORK_STARTED）之前就退出时照原样重启它
+# R2: the panel stopped at the start to move older records (PANEL_STOPPED_EARLY) is restarted as it was when the run ends
+# before the install really starts (ROOT_WORK_STARTED)
+PANEL_WAS_ACTIVE=false
+PANEL_STOPPED_EARLY=false
+ROOT_WORK_STARTED=false
+ROLLBACK_SHELL=""
 ONE_CLICK_URL="https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh"
 # 和 uninstall.sh 同一个：本地的卸载命令随面板删掉以后接着卸载用的 / The same as uninstall.sh's: what carries an uninstall on
 # once the local command is gone with the panel
@@ -226,10 +270,56 @@ validate_absolute_path() {
     fail "${label}必须是绝对路径，不含空白，也不含 .、.. 或空的一段（//）"
 }
 
+# panel.env 里的一项。R4：不能信的 panel.env 只给出显示用的几项，KixDNS 配置和 unit 名只在照 unit 对上以后才给，别的（账号、归属、
+# 程序和 Socket 的路径）一律不给。
+# A setting from panel.env. R4: an untrusted panel.env yields only the few shown in messages, the KixDNS config and unit name
+# only once they matched the unit, and nothing else (accounts, ownership, program and socket paths).
 environment_value() {
   local key=$1
   [[ -f ${PANEL_ENV} ]] || return 1
+  if [[ ${PANEL_ENV_TRUSTED} == false ]]; then
+    case ${key} in
+      KIXDNS_CONFIG | KIXDNS_SERVICE_UNIT) [[ ${PANEL_ENV_VERIFIED} == true ]] || return 1 ;;
+      KIXDNS_PANEL_BIND | KIXDNS_PANEL_INSTALLED_RELEASE | KIXDNS_PANEL_INSTALLED_COMMIT | KIXDNS_INSTALLED_COMMIT | \
+        KIXDNS_INSTALLED_SOURCE_ID | KIXDNS_INSTALLED_SOURCE) ;;
+      *) return 1 ;;
+    esac
+  fi
   awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${PANEL_ENV}"
+}
+
+# R4：panel.env 不能信时（panel_env_trusted），它记的 KixDNS 配置要和 root 才能改的 unit 里写的一样，才照它的配置路径和 unit 名做；
+# 对不上就在改动主机之前停下。没记配置的不用对，只说一声。
+# R4: when panel.env cannot be trusted (panel_env_trusted), its config path and unit name are acted on only when the
+# config it records equals the one in the unit only root can change; a mismatch stops the run before the host is
+# touched. One recording no config needs no match and is only mentioned.
+check_panel_env_trust() {
+  local unit
+  local recorded
+  local unit_file
+  local unit_config=""
+  [[ -e ${PANEL_ENV} || -L ${PANEL_ENV} ]] || return 0
+  ! panel_env_trusted || return 0
+  PANEL_ENV_TRUSTED=false
+  unit="$(state_file_value "${PANEL_ENV}" KIXDNS_SERVICE_UNIT || true)"
+  unit=${unit:-${KIXDNS_SERVICE_UNIT}}
+  recorded="$(state_file_value "${PANEL_ENV}" KIXDNS_CONFIG || true)"
+  unit_file="${SYSTEMD_UNIT_DIRECTORY}/${unit}"
+  if (KIXDNS_SERVICE_UNIT=${unit} && validate_unit) 2>/dev/null; then
+    unit_config="$(managed_unit_config "${unit_file}")"
+  fi
+  if [[ -z ${recorded} ]]; then
+    printf '%s 面板能改，它记的不能信：账号和归属这些项这次不照它做。\n' "${PANEL_ENV}"
+    return 0
+  fi
+  if [[ ${recorded} == "${unit_config}" ]]; then
+    PANEL_ENV_VERIFIED=true
+    printf '%s 面板能改，它记的不能都信：KixDNS 配置照 %s 认（%s），账号和归属这些项这次不照它做。\n' \
+      "${PANEL_ENV}" "${unit_file}" "${recorded}"
+    return 0
+  fi
+  fail "${PANEL_ENV} 面板能改，它记的不能信：它写的 KixDNS 配置 ${recorded} 和 ${unit_file} 里的 ${unit_config:-（没有写）} 对不上，安装器不会照它做事。
+查明 panel.env 是谁改的以后，把 KIXDNS_CONFIG 改成和 unit 里的一样再运行；现有安装未作修改。"
 }
 
 state_file_value() {
@@ -240,6 +330,8 @@ state_file_value() {
 }
 
 fail() {
+  # 改动主机以后的失败要回滚（abort_install）/ A failure once the host is being changed rolls back (abort_install)
+  [[ ${ROOT_WORK_STARTED} == false ]] || abort_install "$@"
   printf '安装失败：%s\n' "$*" >&2
   exit 1
 }
@@ -252,10 +344,13 @@ cancel_install() {
 }
 
 abort_install() {
-  # 回滚已经挂上之后的失败：fail 的 exit 不会触发 ERR，必须显式回滚。
-  # A failure once rollback is armed: fail's exit does not fire ERR, so roll back explicitly.
+  # 回滚已经挂上之后的失败：fail 的 exit 不会触发 ERR，必须显式回滚。只在挂回滚的那个 shell 里回滚：在子 shell 里（命令替换）只带着
+  # 失败退出，外面的 shell 收到失败再回滚（rollback_install 里说了为什么）。
+  # A failure once rollback is armed: fail's exit does not fire ERR, so roll back explicitly. Only the shell that armed the
+  # rollback rolls back: in a subshell (a command substitution) it just exits with the failure, and the outer shell rolls
+  # back on seeing it (rollback_install says why).
   printf '安装失败：%s\n' "$*" >&2
-  rollback_install 1
+  rollback_install 1 failed "${ROLLBACK_SHELL}"
 }
 
 refuse_legacy_panel() {
@@ -341,12 +436,22 @@ same_panel_version_installed() {
   [[ -n ${commit} && ${commit,,} == "${PANEL_BUILD_COMMIT,,}" ]]
 }
 
+# 这次运行开始时面板在不在运行：开头为了挪旧版的记录停了它的话，看停之前 / Whether the panel was running when this run
+# began: if it was stopped at the start to move older records, as it was before that
+panel_was_running() {
+  if [[ ${PANEL_STOPPED_EARLY} == true ]]; then
+    [[ ${PANEL_WAS_ACTIVE} == true ]]
+  else
+    systemctl is-active --quiet kixdns-panel.service 2>/dev/null
+  fi
+}
+
 skip_if_already_installed() {
   [[ ${REINSTALL} == false ]] || return 0
   same_panel_version_installed || return 0
   # 版本相同但面板没在运行，说明安装坏了；直接退出等于把它当成好的，改按 --reinstall 修复。
   # Same version but the panel is not running means a broken install; exiting would pass it off as fine, so repair as --reinstall.
-  if ! systemctl is-active --quiet kixdns-panel.service 2>/dev/null; then
+  if ! panel_was_running; then
     printf 'KixDNS 面板 %s 已安装，但面板没有在运行，现在按 --reinstall 重新安装以修复。\n' "$(package_panel_label)"
     REINSTALL=true
     return 0
@@ -488,62 +593,328 @@ ensure_root_records() {
     return 0
   fi
   install -d -o root -g root -m 0700 "${ROOT_RECORDS}"
-  RECORDS_DIRECTORY_CREATED=true
 }
 
-# 一份记录（目录）是 root 建的、没被换过：目录和里面每一项都归 root，都不是符号链接，文件都只有一个链接，目录别人写不进。
-# A record (a directory) root made and nobody replaced: the directory and every entry root's, no symlinks, every file with
-# one link, and the directory not writable by others.
-genuine_root_record() {
+# R1、R4：这个路径和它上面的每一层目录（到 ROOT_CHAIN_TOP 为止）都归 root、都不是符号链接、别人都写不进。
+# R1, R4: this path and every directory above it (up to ROOT_CHAIN_TOP) are root's, none is a symlink, and nobody else
+# can write any of them.
+root_only_path() {
+  local path=$1
+  while :; do
+    [[ -e ${path} && ! -L ${path} ]] || return 1
+    [[ $(stat -c '%u' -- "${path}") == "${ROOT_UID}" ]] || return 1
+    (((8#$(stat -c '%a' -- "${path}") & 8#022) == 0)) || return 1
+    [[ ${path} != "${ROOT_CHAIN_TOP}" && ${path} != / ]] || return 0
+    path="$(dirname -- "${path}")"
+  done
+}
+
+# R1：一份记录（目录）哪里不对，说成一句话；没问题时什么也不输出。记录是 root 建的：目录归 root、不是符号链接、别人写不进，里面
+# 只有归 root 的普通文件、每个只有一个链接，还有它该有的 install.env 和里面的那一项。参数：记录，记录的名字。
+# R1: what is wrong with a record (a directory), in one sentence; nothing when it is fine. A record is root's making: the
+# directory root's, no symlink, not writable by others, holding only regular root-owned files with one link each, and the
+# install.env it must have with the key it must hold. Arguments: the record, the record's name.
+record_problem() {
   local record=$1
+  local name=$2
   local entry
-  [[ -d ${record} && ! -L ${record} && $(stat -c '%u' -- "${record}") == "${ROOT_UID}" ]] || return 1
-  (((8#$(stat -c '%a' -- "${record}") & 8#022) == 0)) || return 1
+  local key=KIXDNS_SERVICE_UNIT
+  [[ ${name} != resolved-stub ]] || key=RESOLV_CONF_KIND
+  if [[ -L ${record} ]]; then
+    printf '它是符号链接\n'
+    return 0
+  fi
+  if [[ ! -d ${record} ]]; then
+    printf '它不是目录\n'
+    return 0
+  fi
+  if [[ $(stat -c '%u' -- "${record}") != "${ROOT_UID}" ]]; then
+    printf '它不是 root 建的\n'
+    return 0
+  fi
+  if (((8#$(stat -c '%a' -- "${record}") & 8#022) != 0)); then
+    printf '别人能往里写\n'
+    return 0
+  fi
   while IFS= read -r -d '' entry; do
-    [[ -f ${entry} && ! -L ${entry} && $(stat -c '%u %h' -- "${entry}") == "${ROOT_UID} 1" ]] || return 1
+    if [[ -L ${entry} || ! -f ${entry} ]]; then
+      printf '里面的 %s 不是普通文件\n' "${entry##*/}"
+      return 0
+    fi
+    if [[ $(stat -c '%u' -- "${entry}") != "${ROOT_UID}" ]]; then
+      printf '里面的 %s 不是 root 建的\n' "${entry##*/}"
+      return 0
+    fi
+    if [[ $(stat -c '%h' -- "${entry}") != 1 ]]; then
+      printf '里面的 %s 有别的硬链接\n' "${entry##*/}"
+      return 0
+    fi
   done < <(find "${record}" -mindepth 1 -print0)
+  if [[ ! -f ${record}/install.env ]]; then
+    printf '里面没有 install.env\n'
+  elif ! grep -q "^${key}=" -- "${record}/install.env"; then
+    printf 'install.env 里没有 %s\n' "${key}"
+  fi
 }
 
-# 旧版把 root 以后要照着做事的记录（迁移前的备份、关掉 resolved 监听时的记录）放在面板的状态目录里，面板账号能把它们换成自己写的。
-# 先把它们挪进只有 root 能进的 ROOT_RECORDS（一次 rename，挪进来以后面板就碰不到了），再验是不是 root 建的；不是就关在那里，
-# 拒绝照它们做事。还没到不能回头的那一步就退出时（取消、失败、回滚），把挪走的放回原处，旧版的卸载器还找得到它们。
-# Older versions kept the records root acts on later (the pre-migration backup, the record of turning resolved's stub off)
-# in the panel's state directory, where the panel account could replace them with its own. Move them into the root-only
-# ROOT_RECORDS first (one rename, after which the panel cannot touch them), then check root made them; if not, they stay
-# locked away there and nothing is done by them. Leaving before the point of no return (a cancel, a failure, a rollback)
-# puts what was moved back where it was, so an older uninstaller still finds it.
-secure_root_records() {
+# 两个目录在不在同一个文件系统：在才能一次 rename 挪过去。/ Whether two directories are on one filesystem: only then can one
+# rename move a thing across.
+same_filesystem() {
+  [[ $(stat -c '%d' -- "$1") == "$(stat -c '%d' -- "$2")" ]]
+}
+
+# R1：一份不能信的记录挪出所有会被信的名字：挪进只有 root 能进的 ROOT_RECORDS/quarantine，名字带上时间；和它不在同一个文件系统时
+# 直接删掉。输出挪到了哪里，删掉时输出空行。参数：记录，记录的名字。
+# R1: a record that cannot be trusted leaves every name that is trusted: it moves into the root-only
+# ROOT_RECORDS/quarantine, its name stamped with the time; on another filesystem it is deleted instead. Prints where it
+# went, or an empty line when deleted. Arguments: the record, the record's name.
+quarantine_record() {
+  local record=$1
+  local name=$2
+  local destination
+  # 输出的只有去处，别的都不往标准输出写 / Only the destination goes to standard output
+  ensure_root_records > /dev/null
+  [[ -d ${ROOT_RECORDS}/quarantine && ! -L ${ROOT_RECORDS}/quarantine ]] ||
+    install -d -o root -g root -m 0700 "${ROOT_RECORDS}/quarantine" > /dev/null
+  destination="${ROOT_RECORDS}/quarantine/${name}.$(date -u +%Y%m%dT%H%M%SZ).$$"
+  if same_filesystem "$(dirname -- "${record}")" "${ROOT_RECORDS}/quarantine"; then
+    mv -T -- "${record}" "${destination}"
+    printf '%s\n' "${destination}"
+  else
+    rm -rf -- "${record}"
+    printf '\n'
+  fi
+}
+
+# R1：拒绝一份不能信的记录：先把它挪走（quarantine_record），再停下，说清是哪一份、为什么、它去了哪里、接下来怎么办。参数：记录，
+# 记录的名字，哪里不对。
+# R1: refuse a record that cannot be trusted: move it away first (quarantine_record), then stop, saying which copy, why,
+# where it went and what to do next. Arguments: the record, the record's name, what is wrong.
+refuse_record() {
+  local destination
+  local where
+  destination="$(quarantine_record "$1" "$2")"
+  if [[ -n ${destination} ]]; then
+    where="已经挪到只有 root 能进的 ${destination}，这次和以后都不会再用；查看以后确认不要了就删掉：sudo rm -rf ${destination}"
+  else
+    where="已经删掉，这次和以后都不会再用"
+  fi
+  fail "$1 不能信（$3），不会照它做事。它${where}。
+这台主机就当作没有这份记录：确认以后再运行一次，会接着做下去，不再照它恢复。"
+}
+
+# R1：用一份记录之前都走这里。返回 0：记录在、能信；返回 1：没有这份记录。放记录的目录不是只有 root 能进的、或者记录本身不能信
+# 时，挪走并停下（refuse_record），不会返回。参数：记录的名字（external-backup 或 resolved-stub）。
+# R1: every use of a record goes through here. Returns 0: the record is there and can be trusted; 1: there is no such
+# record. When the records directory is not root-only, or the record itself cannot be trusted, it is moved away and the
+# run stops (refuse_record), never returning. Argument: the record's name (external-backup or resolved-stub).
+trusted_record() {
+  local name=$1
+  local record=${ROOT_RECORDS}/${name}
+  local problem
+  [[ -e ${record} || -L ${record} ]] || return 1
+  if ! root_only_path "${ROOT_RECORDS}" || [[ $(stat -c '%a' -- "${ROOT_RECORDS}") != 700 ]]; then
+    fail "${ROOT_RECORDS} 不是只有 root 能进的目录（它或它上面的目录不归 root、别人能写，或者是符号链接），里面的记录都不能信；先查看它是怎么来的"
+  fi
+  problem="$(record_problem "${record}" "${name}")"
+  [[ -n ${problem} ]] || return 0
+  refuse_record "${record}" "${name}" "${problem}"
+}
+
+# 旧版把记录放在面板的状态目录里 / Older versions kept the records in the panel's state directory
+old_records_present() {
+  [[ -e ${PANEL_STATE_DIRECTORY}/external-backup || -L ${PANEL_STATE_DIRECTORY}/external-backup ||
+    -e ${PANEL_STATE_DIRECTORY}/resolved-stub || -L ${PANEL_STATE_DIRECTORY}/resolved-stub ]]
+}
+
+# R1、R2：把旧版留在面板状态目录里的记录挪进只有 root 能进的 ROOT_RECORDS。要在面板停了、它的进程都没了以后调用（R2），这时
+# 面板改不了它们：先在原地验（record_problem），能信才挪；同一个文件系统一次 rename，不同的就复制、验过复制的那份再删原来的。
+# 不能信的挪走（quarantine_record）：只有 root 能进的目录里已经有一份能信的，就照用那份、说一声；没有就停下（refuse_record）。
+# 两处都是能信的、内容又一样，删掉旧的；不一样就停下，让人决定。放记录的目录只在验过以后才建。
+# R1, R2: move the records older versions left in the panel's state directory into the root-only ROOT_RECORDS. Call it
+# once the panel has stopped and its processes are gone (R2), so the panel cannot change them: checked in place first
+# (record_problem), moved only when they can be trusted; one rename on the same filesystem, otherwise a copy, checked, and
+# then the original removed. One that cannot be trusted is moved away (quarantine_record): with a trusted copy already in
+# the root-only directory, that one is used and this is said; without, the run stops (refuse_record). Both trusted and the
+# same: the old one goes; different: the run stops for a person to decide. The records directory is only created after
+# the checks pass.
+adopt_old_records() {
   local name
   local old
   local new
+  local problem
+  local destination
   for name in external-backup resolved-stub; do
     old=${PANEL_STATE_DIRECTORY}/${name}
     new=${ROOT_RECORDS}/${name}
     [[ -e ${old} || -L ${old} ]] || continue
-    [[ ! -e ${new} && ! -L ${new} ]] ||
-      fail "${old} 和 ${new} 都在，分不清该用哪份；查看以后删掉不要的那份再运行"
+    problem="$(record_problem "${old}" "${name}")"
+    if [[ -n ${problem} ]]; then
+      if trusted_record "${name}"; then
+        destination="$(quarantine_record "${old}" "${name}")"
+        printf '%s 不能信（%s），没有用它（%s）；用的是只有 root 能进的 %s。\n' "${old}" "${problem}" \
+          "${destination:+挪到了 ${destination}}${destination:-已删掉}" "${new}"
+        continue
+      fi
+      refuse_record "${old}" "${name}" "${problem}"
+    fi
+    if [[ -e ${new} || -L ${new} ]]; then
+      trusted_record "${name}"
+      if diff -r -q -- "${old}" "${new}" >/dev/null 2>&1; then
+        rm -rf -- "${old}"
+        continue
+      fi
+      fail "${old} 和 ${new} 都是 root 建的，内容不一样，分不清该用哪份；查看以后删掉不要的那份再运行"
+    fi
     ensure_root_records
-    [[ $(stat -c '%d' -- "${PANEL_STATE_DIRECTORY}") == "$(stat -c '%d' -- "${ROOT_RECORDS}")" ]] ||
-      fail "${PANEL_STATE_DIRECTORY} 和 ${ROOT_RECORDS} 不在同一个文件系统，没法一步挪走 ${old}"
-    mv -T -- "${old}" "${new}"
-    genuine_root_record "${new}" ||
-      fail "${old} 不是 root 建的（属主、类型或链接数不对），可能被换过，不会照它做事。它已经挪到只有 root 能进的 ${new}；查看以后确认不要了就删掉：sudo rm -rf ${new}"
-    RECORDS_MOVED+=("${name}")
-    trap put_back_root_records EXIT
+    if same_filesystem "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}"; then
+      mv -T -- "${old}" "${new}"
+    else
+      rm -rf -- "${new}.incoming"
+      cp -a -- "${old}" "${new}.incoming"
+      problem="$(record_problem "${new}.incoming" "${name}")"
+      if [[ -n ${problem} ]]; then
+        rm -rf -- "${new}.incoming"
+        fail "复制 ${old} 到 ${new} 时出了问题（${problem}），没有挪；现有安装未作修改"
+      fi
+      mv -T -- "${new}.incoming" "${new}"
+      rm -rf -- "${old}"
+    fi
+    trusted_record "${name}" || fail "${new} 挪过来以后不见了"
+    printf '旧版放在 %s 的记录已验过，挪到只有 root 能进的 %s。\n' "${old}" "${new}"
   done
 }
 
-put_back_root_records() {
-  local name
-  [[ ${RECORDS_SETTLED} == false ]] || return 0
-  for name in "${RECORDS_MOVED[@]}"; do
-    if [[ -e ${ROOT_RECORDS}/${name} && ! -e ${PANEL_STATE_DIRECTORY}/${name} && -d ${PANEL_STATE_DIRECTORY} ]]; then
-      mv -T -- "${ROOT_RECORDS}/${name}" "${PANEL_STATE_DIRECTORY}/${name}"
-    fi
+# R1：旧版留在状态目录里的记录：有的话先让面板停下、它的进程都没了（quiesce_for_records，两个脚本各有一份），再验、再挪。
+# R1: records older versions left in the state directory: when there are any, first stop the panel and every process of
+# its account (quiesce_for_records, each script has its own), then check and move them.
+secure_root_records() {
+  old_records_present || return 0
+  quiesce_for_records
+  adopt_old_records
+}
+
+# R2：要停的进程的 UID：kixdns-panel 账号的，和这些面板能写的路径的属主里已经没有账号的（旧版卸载器删掉面板账号以后，它的进程
+# 可能还在，新建的账号也可能拿到同一个 UID）。参数：面板能写的路径。
+# R2: the UIDs whose processes must stop: the kixdns-panel account's, and any owner of these panel-writable paths that no
+# longer has an account (an older uninstaller deleted the panel account while its processes may live on, and a new account
+# may get the same UID). Arguments: the panel-writable paths.
+panel_process_uids() {
+  local uid
+  local path
+  local owner
+  local -A uids=()
+  uid="$(id -u kixdns-panel 2>/dev/null || true)"
+  [[ -z ${uid} || ${uid} == 0 ]] || uids[${uid}]=1
+  for path in "$@"; do
+    [[ -e ${path} || -L ${path} ]] || continue
+    owner="$(stat -c '%u' -- "${path}" 2>/dev/null || true)"
+    [[ -n ${owner} && ${owner} != 0 && ${owner} != "${ROOT_UID}" ]] || continue
+    ! getent passwd "${owner}" >/dev/null 2>&1 || continue
+    uids[${owner}]=1
   done
-  if [[ ${RECORDS_DIRECTORY_CREATED} == true ]]; then
-    rmdir -- "${ROOT_RECORDS}" 2>/dev/null || true
+  printf '%s\n' "${!uids[@]}"
+}
+
+# R2：以这个 UID 的身份给它的进程发信号：kill -1 由内核一次发给它所有的进程，换 PID、改成不可转储都躲不掉；信号 0 只看还有没有。
+# 参数：UID，GID，信号。
+# R2: signal a UID's processes as that UID: kill -1 has the kernel send it to all of them at once, so changing PIDs or
+# turning non-dumpable does not escape it; signal 0 only asks whether any is left. Arguments: UID, GID, signal.
+account_signal() {
+  setpriv --reuid="$1" --regid="$2" --clear-groups -- bash -c "kill -$3 -1" 2>/dev/null
+}
+
+# R2：面板停了以后，把面板账号（和旧面板账号留下的 UID）的进程一个不留地停掉，停光才返回。停不掉就用第一个参数（fail 或
+# abort_install）停下：那些进程还能改面板目录里的文件，root 这时不碰它们。参数：怎么停下，面板能写的路径。
+# R2: once the panel has stopped, stop every process of the panel account (and of UIDs an old panel account left), and
+# return only when none is left. When they cannot be stopped, stop with the first argument (fail or abort_install): those
+# processes could still change files in the panel's directories, so root keeps away from them. Arguments: how to stop,
+# the panel-writable paths.
+quiesce_panel_account() {
+  local refuse=$1
+  local uid
+  local gid
+  local attempt
+  local status=0
+  shift
+  gid="$(getent group kixdns 2>/dev/null | cut -d: -f3 || true)"
+  for uid in $(panel_process_uids "$@"); do
+    for ((attempt = 0; attempt < 50; attempt++)); do
+      account_signal "${uid}" "${gid:-65534}" 0 || continue 2
+      account_signal "${uid}" "${gid:-65534}" KILL || true
+      sleep 0.1
+    done
+    "${refuse}" "面板账号（UID ${uid}）还有停不掉的进程；它们还能改面板目录里的文件，这时不动这些目录" || status=1
+  done
+  return "${status}"
+}
+
+# R4：panel.env 能不能信：它和它上面的每一层目录都归 root、别人写不进、不是符号链接。/ R4: whether panel.env can be
+# trusted: it and every directory above it are root's, not writable by others, and no symlink.
+panel_env_trusted() {
+  root_only_path "${PANEL_ENV}"
+}
+
+# R4：unit 文件里 ExecStart 跑面板的 KixDNS 程序时写的 --config；不是这样的 unit 什么也不输出。只认 root 才能改的 unit 文件：它和
+# 它所在的目录都归 root、不是符号链接、别人写不进。再往上不查：v4.3.4 把 /etc 交给了面板的主机，正要靠这次升级交还。
+# R4: the --config an ExecStart running the panel's KixDNS program names in a unit file; nothing for any other unit. Only a
+# unit file root alone can change counts: it and its directory are root's, no symlink, and not writable by others. Nothing
+# further up is checked: on hosts where v4.3.4 gave /etc to the panel, this very upgrade is what hands it back.
+managed_unit_config() {
+  local file=$1
+  local path
+  for path in "${file}" "$(dirname -- "${file}")"; do
+    [[ -e ${path} && ! -L ${path} && $(stat -c '%u' -- "${path}") == "${ROOT_UID}" ]] || return 0
+    (((8#$(stat -c '%a' -- "${path}") & 8#022) == 0)) || return 0
+  done
+  [[ -f ${file} ]] || return 0
+  awk -v binary="${PANEL_STATE_DIRECTORY}/bin/kixdns" '
+    /^ExecStart=/ {
+      line = $0
+      sub(/^ExecStart=/, "", line)
+      count = split(line, words, " ")
+      if (words[1] != binary && words[1] != "/var/lib/kixdns-panel/bin/kixdns") next
+      for (i = 2; i < count; i++) if (words[i] == "--config") config = words[i + 1]
+    }
+    END { if (config != "") print config }
+  ' "${file}"
+}
+
+# 「属主:属组 权限」，权限写成四位八进制；账号或组已经删掉的写成「已删除的面板账号（UID n）」「已删除的组（GID n）」。
+# "owner:group mode", the mode as four octal digits; a deleted account or group reads 「已删除的面板账号（UID n）」 or
+# 「已删除的组（GID n）」.
+owner_and_mode() {
+  local mode
+  local owner
+  local group
+  mode="$(stat -c '%a' -- "$1")"
+  owner="$(stat -c '%U' -- "$1")"
+  [[ ${owner} != UNKNOWN ]] || owner="已删除的面板账号（UID $(stat -c '%u' -- "$1")）"
+  group="$(stat -c '%G' -- "$1")"
+  [[ ${group} != UNKNOWN ]] || group="已删除的组（GID $(stat -c '%g' -- "$1")）"
+  printf '%s:%s %04o\n' "${owner}" "${group}" "$((8#${mode}))"
+}
+
+# R1：开头挪旧版的记录之前，照 R2 先停面板和它账号的所有进程；在真的开始安装之前退出时照原样重启面板。
+# R1: before records are moved from the old place at the start, stop the panel and every process of its account first (R2);
+# when the run ends before the install really starts, the panel is restarted as it was.
+quiesce_for_records() {
+  [[ ${PANEL_STOPPED_EARLY} == false ]] || return 0
+  if systemctl is-active --quiet kixdns-panel.service 2>/dev/null; then
+    PANEL_WAS_ACTIVE=true
   fi
+  printf '旧版把记录放在面板能写的 %s 里：先停下面板和它账号的所有进程，验过以后挪到只有 root 能进的 %s。\n' \
+    "${PANEL_STATE_DIRECTORY}" "${ROOT_RECORDS}"
+  systemctl stop kixdns-panel.service 2>/dev/null || true
+  PANEL_STOPPED_EARLY=true
+  trap restart_panel_after_early_stop EXIT
+  stop_panel_processes fail
+}
+
+restart_panel_after_early_stop() {
+  # 回滚挂上以后由回滚管重启 / Once rollback is armed, restarting is the rollback's business
+  [[ -z ${ROLLBACK_SHELL} && ${PANEL_STOPPED_EARLY} == true && ${PANEL_WAS_ACTIVE} == true ]] || return 0
+  systemctl start kixdns-panel.service 2>/dev/null || true
 }
 
 # 主机上已有的 KixDNS 是上次卸载时保留下来的面板自带的那个：它跑的是面板状态目录里的程序。这不是外部安装，没有要迁移的。
@@ -557,7 +928,7 @@ existing_kixdns_is_panels_own() {
 # The backup of the KixDNS from before migration; as in uninstall.sh's function of the same name, one an older reinstall made
 # of the panel's own KixDNS does not count.
 external_backup_present() {
-  [[ -f ${EXTERNAL_BACKUP}/install.env ]] || return 1
+  trusted_record external-backup || return 1
   [[ $(state_file_value "${EXTERNAL_BACKUP}/install.env" KIXDNS_BINARY || true) != "${MANAGED_KIXDNS_BINARY}" ]]
 }
 
@@ -634,6 +1005,7 @@ refuse_unfinished_restore() {
   local marker=${EXTERNAL_BACKUP}/restore-incomplete
   local options
   local unit
+  trusted_record external-backup || return 0
   [[ -f ${marker} ]] || return 0
   options="$(head -n 1 -- "${marker}")"
   [[ ${options} =~ ^--(keep|remove)-config$ ]] || options=--keep-config
@@ -754,13 +1126,6 @@ plan_config_conversion() {
 # 下面这几个函数和 uninstall.sh 的同名函数一字不差（scripts/test-uninstall-policy.sh 校对）：卸载器单独分发，不能 source 安装器。
 # The functions below are identical to uninstall.sh's of the same names (checked by scripts/test-uninstall-policy.sh): the
 # uninstaller ships on its own and cannot source the installer.
-
-# 「属主:属组 权限」，权限写成四位八进制 / "owner:group mode", the mode as four octal digits
-owner_and_mode() {
-  local mode
-  mode="$(stat -c '%a' -- "$1")"
-  printf '%s %04o\n' "$(stat -c '%U:%G' -- "$1")" "$((8#${mode}))"
-}
 
 # 这个路径还归面板账号，或者已经归了一个没有账号的 UID（旧版卸载器删掉面板账号以后留下的）。
 # The path still belongs to the panel account, or already to a UID with no account (left once an older uninstaller removed
@@ -1308,7 +1673,9 @@ disable_resolved_stub() {
   fi
   dropin_directory="$(dirname -- "${RESOLVED_DROPIN}")"
   ensure_root_records
-  install -d -o root -g root -m 0700 "${RESOLVED_STATE}"
+  # 已经有一份的话先验（R1）：能信就照旧写进去，不能信的挪走、停下 / One already there is checked first (R1): written into as
+  # before when it can be trusted, moved away with the run stopped when not
+  trusted_record resolved-stub || install -d -o root -g root -m 0700 "${RESOLVED_STATE}"
   # 先记下原样再动手，回滚和卸载都按这份记录恢复。
   # Record the original first; rollback and uninstall both restore from this record.
   {
@@ -1353,7 +1720,7 @@ restore_resolved_stub() {
   local state=${RESOLVED_STATE}/install.env
   local kind
   local target
-  [[ -f ${state} ]] || return 0
+  trusted_record resolved-stub || return 0
   kind="$(state_file_value "${state}" RESOLV_CONF_KIND || true)"
   target="$(state_file_value "${state}" RESOLV_CONF_TARGET || true)"
   rm -f -- "${RESOLVED_DROPIN}"
@@ -1543,6 +1910,7 @@ rollback_install() {
   [[ -z ${3:-} || ${BASHPID} == "$3" ]] || exit "${status}"
   local outcome=安装未完成
   local panel_running=true
+  local quiesced=true
   local host
   local port
   trap - ERR
@@ -1550,22 +1918,33 @@ rollback_install() {
   # A second Ctrl-C or hangup must not abort the rollback half way and leave the host worse off.
   trap '' INT TERM HUP
   set +e
+  # 回滚途中的失败不再回滚 / A failure during the rollback does not roll back again
+  ROOT_WORK_STARTED=false
+  # R2：先停这次的面板、停光面板账号的所有进程，面板能写的路径上的事全做完，最后才重启旧面板
+  # R2: stop this run's panel and every process of the panel account first, finish everything on panel-writable paths, and
+  # restart the old panel last
   if [[ ${EXISTING_PANEL} == false ]]; then
     systemctl disable --now kixdns-panel.service kixdns-panel-helper.service 2>/dev/null
   else
     systemctl stop kixdns-panel.service 2>/dev/null
   fi
+  stop_panel_processes rollback_cannot_quiesce || quiesced=false
   if kixdns_replaced; then
     systemctl stop "${KIXDNS_SERVICE_UNIT}" 2>/dev/null
-    [[ ${KIXDNS_BINARY_CHANGED} == false ]] || restore_path "${MANAGED_KIXDNS_BINARY}" kixdns
     [[ ${KIXDNS_UNIT_CHANGED} == false ]] ||
       restore_path "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}" kixdns-service
   fi
-  [[ ${INSTALL_KIND} == panel-only ]] || restore_path /var/lib/kixdns-panel/bundle bundled-metadata
-  if [[ ${INSTALL_KIND} != panel-only || -n ${CONFIG_CONVERSION} ]]; then
-    restore_managed_config
+  if [[ ${quiesced} == true ]]; then
+    [[ ${KIXDNS_BINARY_CHANGED} == false ]] || restore_path "${MANAGED_KIXDNS_BINARY}" kixdns
+    [[ ${INSTALL_KIND} == panel-only ]] || restore_path /var/lib/kixdns-panel/bundle bundled-metadata
+    if [[ ${INSTALL_KIND} != panel-only || -n ${CONFIG_CONVERSION} ]]; then
+      restore_managed_config
+    fi
+    restore_original_config
+    restore_panel_database
+    restore_owners
+    sweep_new_panel_files
   fi
-  restore_original_config
   restore_path "${PANEL_SERVER_BINARY}" panel-server
   restore_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
   restore_path "${LIBEXEC_DIRECTORY}/kixdns-panel-one-click-install" panel-one-click-install
@@ -1577,8 +1956,11 @@ rollback_install() {
   restore_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
   restore_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   restore_path "${PANEL_ENV}" panel-env
-  restore_panel_database
   [[ ${RESOLVED_CHANGED} == false ]] || restore_resolved_stub
+  if [[ ${quiesced} == true ]]; then
+    remove_new_directories
+    remove_new_accounts
+  fi
   systemctl daemon-reload
   [[ ${EXISTING_PANEL} == false ]] || systemctl restart kixdns-panel-helper.service 2>/dev/null
   if [[ ${CREATED_EXTERNAL_BACKUP} == true ]]; then
@@ -1605,6 +1987,7 @@ rollback_install() {
   # it lives only in the rollback backup and would be deleted with it.
   if [[ -e ${BACKUP_ROOT}/external-backup || -L ${BACKUP_ROOT}/external-backup ]]; then
     rm -rf -- "${EXTERNAL_BACKUP}"
+    [[ -d ${ROOT_RECORDS} ]] || install -d -o root -g root -m 0700 "${ROOT_RECORDS}"
     mv -- "${BACKUP_ROOT}/external-backup" "${EXTERNAL_BACKUP}"
   fi
   if [[ ${EXISTING_PANEL} == true ]]; then
@@ -1615,14 +1998,11 @@ rollback_install() {
     read -r host port < <(panel_probe_address)
     wait_for_service_stable kixdns-panel.service "${host}" "${port}" || panel_running=false
   fi
-  # 最后才放回属主、删这次新建的目录和账号：上面放回 resolv.conf 等还要读记录。
-  # Owners are put back and the directories and accounts this run created removed last: restoring resolv.conf and the rest
-  # above still reads records.
-  restore_owners
-  remove_new_directories
-  remove_new_accounts
   rm -rf -- "${BACKUP_ROOT}"
   [[ ${reason} != interrupted ]] || outcome=安装被中断
+  if [[ ${quiesced} == false ]]; then
+    printf '面板账号还有停不掉的进程，面板目录里的文件、属主和这次建的目录、账号都没有放回或删掉（R2）；停掉那些进程以后重新运行安装器。\n' >&2
+  fi
   if [[ ${panel_running} == true ]]; then
     printf '%s，已恢复原有程序和服务。\n' "${outcome}" >&2
   else
@@ -1630,6 +2010,13 @@ rollback_install() {
       "${outcome}" >&2
   fi
   exit "${status}"
+}
+
+# 回滚时面板账号的进程停不掉：说一声，面板能写的路径上的事跳过 / The panel account's processes cannot be stopped during the
+# rollback: say so, and skip what would touch panel-writable paths
+rollback_cannot_quiesce() {
+  printf '%s\n' "$*" >&2
+  return 1
 }
 
 # 这次运行要建的目录还不存在时，把不存在的最上面那一层记下来（install -d 会把上面缺的几层一起建出来）。回滚最后整个删掉它：
@@ -1661,8 +2048,10 @@ remove_new_directories() {
 # what really exists and is no symlink is recorded.
 record_owner() {
   local path=$1
+  local kind=file
   [[ -e ${path} && ! -L ${path} ]] || return 0
-  printf '%s\t%s\n' "${path}" "$(stat -c '%u %g %a' -- "${path}")" >> "${BACKUP_ROOT}/owners"
+  [[ ! -d ${path} ]] || kind=directory
+  printf '%s\t%s %s\n' "${path}" "$(stat -c '%u %g %a' -- "${path}")" "${kind}" >> "${BACKUP_ROOT}/owners"
 }
 
 restore_owners() {
@@ -1671,13 +2060,42 @@ restore_owners() {
   local owner
   local group
   local mode
+  local kind
   [[ -f ${BACKUP_ROOT}/owners ]] || return 0
   while IFS=$'\t' read -r path meta; do
-    [[ -e ${path} && ! -L ${path} ]] || continue
-    read -r owner group mode <<< "${meta}"
+    read -r owner group mode kind <<< "${meta}"
+    # 照 R2 停了以后、lstat 查过还是同一种东西才放回（R3）/ Put back only under R2, onto what lstat still finds to be the
+    # same kind of thing (R3)
+    [[ ! -L ${path} ]] || continue
+    if [[ ${kind} == directory ]]; then
+      [[ -d ${path} ]] || continue
+    else
+      [[ -f ${path} ]] || continue
+    fi
     chown -h "${owner}:${group}" -- "${path}"
     chmod "${mode}" -- "${path}"
   done < "${BACKUP_ROOT}/owners"
+}
+
+# 回滚时删掉这次运行在状态目录和 KixDNS 配置目录里新写的东西（比如刚起来的面板做数据库迁移时留下的备份）：record_panel_paths 记下
+# 了原来有什么。要照 R2 停了以后调用。
+# On rollback, remove what this run newly wrote in the state directory and the KixDNS config directory (the backup the
+# panel that had just started made while migrating its database, say): record_panel_paths recorded what was there. Call it
+# under R2.
+sweep_new_panel_files() {
+  local tree
+  local path
+  local -A preexisting=()
+  [[ -f ${BACKUP_ROOT}/preexisting ]] || return 0
+  while IFS= read -r -d '' path; do
+    preexisting[${path}]=1
+  done < "${BACKUP_ROOT}/preexisting"
+  for tree in "${PANEL_STATE_DIRECTORY}" "$(dirname -- "${KIXDNS_CONFIG_PATH}")"; do
+    [[ -d ${tree} && ! -L ${tree} ]] || continue
+    while IFS= read -r -d '' path; do
+      [[ -n ${preexisting[${path}]:-} ]] || rm -rf -- "${path}"
+    done < <(find "${tree}" -xdev -mindepth 1 -depth -print0)
+  done
 }
 
 # 面板账号能写的目录树：状态目录、配置所在的目录、面板配置目录、在线更新状态目录、运行目录。
@@ -1775,7 +2193,7 @@ restore_managed_config() {
   config_parent="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
   rm -f -- "${KIXDNS_CONFIG_PATH}"
   if [[ -e ${BACKUP_ROOT}/kixdns-config || -L ${BACKUP_ROOT}/kixdns-config ]]; then
-    install -d -- "${config_parent}"
+    [[ -e ${config_parent} || -L ${config_parent} ]] || install -d -- "${config_parent}"
     cp -a -- "${BACKUP_ROOT}/kixdns-config" "${KIXDNS_CONFIG_PATH}"
   fi
   # 这次新建的配置目录在回滚最后和别的新目录一起删（remove_new_directories）
@@ -1794,6 +2212,7 @@ restore_managed_config() {
 # backup this run added the copy to.
 backup_original_config() {
   local directory
+  [[ ${CONFIG_CONVERSION} != legacy ]] || trusted_record external-backup || fail "迁移前的备份不见了"
   [[ -n ${CONFIG_CONVERSION} ]] || return 0
   directory="$(dirname -- "${ORIGINAL_KIXDNS_CONFIG_PATH}")"
   backup_path "${ORIGINAL_KIXDNS_CONFIG_PATH}" original-config
@@ -1835,7 +2254,7 @@ preserve_external_install() {
   # ones remove it once restored), and describes the host before an older migration; the one to restore is the external
   # KixDNS on the host now, so it is replaced. The old one moves into the rollback backup first and goes back as it was if
   # the migration fails.
-  if [[ -e ${EXTERNAL_BACKUP} || -L ${EXTERNAL_BACKUP} ]]; then
+  if trusted_record external-backup; then
     mv -- "${EXTERNAL_BACKUP}" "${BACKUP_ROOT}/external-backup"
   fi
   CREATED_EXTERNAL_BACKUP=true
@@ -1910,16 +2329,12 @@ prepare_rollback() {
   # 回滚要能删掉这次建的一切，所以在建账号、建目录之前记下哪些原来就有 / Rollback must be able to remove everything this run
   # creates, so record what was there before any account or directory is created
   record_existing_accounts
-  for directory in "${ROOT_RECORDS}" "${PANEL_CONFIG_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
-    "${PANEL_STATE_DIRECTORY}/geo" "${PANEL_UPDATE_DIRECTORY}" "${PANEL_SHARE_DIRECTORY}/web" "${PANEL_SHARE_DIRECTORY}/geo" \
+  # 这里只记 root 自己的目录；面板能写的，等它的进程都没了以后再记（record_panel_paths，R2）/ Only root's own directories are
+  # recorded here; the panel-writable ones wait until its processes are gone (record_panel_paths, R2)
+  for directory in "${ROOT_RECORDS}" "${PANEL_UPDATE_DIRECTORY}" "${PANEL_SHARE_DIRECTORY}/web" "${PANEL_SHARE_DIRECTORY}/geo" \
     "${LIBEXEC_DIRECTORY}"; do
     record_new_directory "${directory}"
   done
-  for directory in "${PANEL_STATE_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
-    "${PANEL_STATE_DIRECTORY}/geo" "${PANEL_UPDATE_DIRECTORY}" "${PANEL_CONFIG_DIRECTORY}" "${GITHUB_TOKEN_FILE}"; do
-    record_owner "${directory}"
-  done
-  [[ ${PANEL_USER_EXISTED} == true ]] || record_preexisting_paths
   # 仅更新面板也会在换配置位置时改 KixDNS 的 unit / A panel-only update changes the KixDNS unit too when the config moves
   if [[ ${INSTALL_KIND} != panel-only || -n ${CONFIG_CONVERSION} ]]; then
     backup_path "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}" kixdns-service
@@ -1938,6 +2353,24 @@ prepare_rollback() {
   arm_rollback
 }
 
+# R2：面板停了、它账号的进程都没了以后，记下面板能写的路径原来的样子：哪些目录这次要新建、要改属主的原来的属主和权限、这些目录树里
+# 原来有什么（回滚据此删掉这次建的、放回改过的）。
+# R2: once the panel has stopped and its account's processes are gone, record how the panel-writable paths were: which
+# directories this run creates, the owners and modes of what it re-owns, and what these trees held (rollback removes what
+# this run made and puts back what it changed by these).
+record_panel_paths() {
+  local directory
+  for directory in "${PANEL_CONFIG_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
+    "${PANEL_STATE_DIRECTORY}/geo"; do
+    record_new_directory "${directory}"
+  done
+  for directory in "${PANEL_STATE_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
+    "${PANEL_STATE_DIRECTORY}/geo" "${PANEL_UPDATE_DIRECTORY}" "${PANEL_CONFIG_DIRECTORY}" "${GITHUB_TOKEN_FILE}"; do
+    record_owner "${directory}"
+  done
+  record_preexisting_paths
+}
+
 # 面板账号能写的东西的备份：面板停了、它的进程都没了以后才做，备份的就是它最后的样子，之后也不会被换掉。回滚只放回备份过的
 # （restore_path），在这之前回滚不会动它们。
 # Backups of what the panel account can write: taken once the panel has stopped and its processes are gone, so they are
@@ -1954,50 +2387,48 @@ backup_panel_state() {
   backup_original_config
 }
 
-# 面板停了，可 kixdns-panel 账号可能还有别的进程。它们还能改面板目录里的东西，所以一个不留地停掉，之后 root 在这些目录里查过
-# 再做的事才不会被半路换掉。
-# The panel has stopped, but the kixdns-panel account may have other processes, which could still change things in the
-# panel's directories. Stop every one, so what root then checks and does there cannot be swapped half way.
+# R2：面板停了，可 kixdns-panel 账号（和旧面板账号留下的 UID）可能还有别的进程，它们还能改面板目录里的东西：一个不留地停掉
+# （quiesce_panel_account），之后 root 在这些目录里查过再做的事才不会被半路换掉。参数：停不掉时怎么停下，默认 abort_install。
+# R2: the panel has stopped, but the kixdns-panel account (and UIDs an old panel account left) may have other processes,
+# which could still change things in the panel's directories: stop every one (quiesce_panel_account), so what root then
+# checks and does there cannot be swapped half way. Argument: how to stop when they cannot be stopped, abort_install by
+# default.
 stop_panel_processes() {
-  local attempt
-  local uid
-  local entry
-  uid="$(id -u "${PANEL_USER}" 2>/dev/null)" || return 0
-  for ((attempt = 0; attempt < 50; attempt++)); do
-    account_has_processes "${PANEL_USER}" || return 0
-    for entry in /proc/[0-9]*; do
-      if [[ $(stat -c '%u' -- "${entry}" 2>/dev/null) == "${uid}" ]]; then
-        kill -KILL "${entry#/proc/}" 2>/dev/null || true
-      fi
-    done
-    sleep 0.1
-  done
-  abort_install "kixdns-panel 账号还有停不掉的进程；它们还能改面板目录里的文件，安装器不在这时动这些目录"
+  quiesce_panel_account "${1:-abort_install}" "${PANEL_STATE_DIRECTORY}" "${PANEL_CONFIG_DIRECTORY}" \
+    "$(dirname -- "${KIXDNS_CONFIG_PATH}")" ${ORIGINAL_KIXDNS_CONFIG_PATH:+"$(dirname -- "${ORIGINAL_KIXDNS_CONFIG_PATH}")"}
 }
 
-# 这个账号还有进程在跑。不靠 pgrep：精简的系统上没有 procps。/proc 里每个进程目录的属主就是它的有效 UID。和 uninstall.sh 的
-# 同名函数一字不差。
-# The account still has processes running. pgrep is not relied on, as minimal systems lack procps: the owner of each
-# process directory in /proc is its effective UID. Identical to uninstall.sh's function of the same name.
-account_has_processes() {
-  local uid
-  local entry
-  uid="$(id -u "$1" 2>/dev/null)" || return 1
-  for entry in /proc/[0-9]*; do
-    [[ $(stat -c '%u' -- "${entry}" 2>/dev/null) != "${uid}" ]] || return 0
-  done
-  return 1
+# R3：面板能写的目录：没有就建（install -d），已经有就查过不是符号链接、确实是目录，再 chown -h、chmod，不用 install -d（它会顺着
+# 符号链接改目标，还会把已有目录改成 0755）。要照 R2 停了以后调用。参数：目录，属主，属组，权限。
+# R3: a directory the panel can write: created when missing (install -d); when there, checked to be a real directory and
+# no symlink, then chown -h and chmod, never install -d (which follows a symlink to its target and resets an existing
+# directory to 0755). Call it under R2. Arguments: the directory, owner, group, mode.
+ensure_directory() {
+  local path=$1
+  local owner=$2
+  local group=$3
+  local mode=$4
+  [[ ! -L ${path} ]] || abort_install "${path} 不能是符号链接"
+  if [[ -e ${path} ]]; then
+    [[ -d ${path} ]] || abort_install "${path} 应该是目录"
+    chown -h "${owner}:${group}" -- "${path}"
+    chmod "${mode}" -- "${path}"
+  else
+    install -d -o "${owner}" -g "${group}" -m "${mode}" "${path}"
+  fi
 }
 
 # 账号以外、这次运行要建的目录：面板状态目录和它下面的几个、在线更新状态目录、helper 所在的目录。
 # The directories this run creates besides the accounts: the panel's state directory and those under it, the online update
 # status directory, and the one holding the helper.
 create_panel_directories() {
+  local directory
   [[ -d ${LIBEXEC_DIRECTORY} ]] || install -d -o root -g root -m 0755 "${LIBEXEC_DIRECTORY}"
-  install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
-    "${PANEL_STATE_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
-    "${PANEL_STATE_DIRECTORY}/geo"
-  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 "${PANEL_UPDATE_DIRECTORY}"
+  for directory in "${PANEL_STATE_DIRECTORY}" "${PANEL_STATE_DIRECTORY}/bin" "${PANEL_STATE_DIRECTORY}/versions" \
+    "${PANEL_STATE_DIRECTORY}/geo"; do
+    ensure_directory "${directory}" "${PANEL_USER}" "${KIXDNS_GROUP}" 0750
+  done
+  ensure_directory "${PANEL_UPDATE_DIRECTORY}" root "${KIXDNS_GROUP}" 0750
 }
 
 # 改动主机之前确认要写的目标都不是符号链接：install 和 mv 会顺着链接写到别处。
@@ -2024,7 +2455,8 @@ require_regular_targets() {
     [[ ! -e ${directory} || -d ${directory} ]] || "${refuse}" "${directory} 应该是目录"
   done
   # 面板能写的目录里、安装器要读、改属主或权限的文件 / Files in the panel's directories the installer reads or re-owns
-  for path in "${MANAGED_KIXDNS_BINARY}" "${KIXDNS_CONFIG_PATH}" ${ORIGINAL_KIXDNS_CONFIG_PATH:+"${ORIGINAL_KIXDNS_CONFIG_PATH}"}; do
+  for path in "${MANAGED_KIXDNS_BINARY}" "${KIXDNS_CONFIG_PATH}" ${ORIGINAL_KIXDNS_CONFIG_PATH:+"${ORIGINAL_KIXDNS_CONFIG_PATH}"} \
+    "${PANEL_ENV}"; do
     [[ -e ${path} || -L ${path} ]] || continue
     [[ ! -L ${path} ]] || "${refuse}" "${path} 不能是符号链接"
     [[ -f ${path} ]] || "${refuse}" "${path} 应该是普通文件"
@@ -2035,6 +2467,7 @@ require_regular_targets() {
 # 出错就回滚，回滚只在这个 shell 里做（rollback_install 里说了为什么）
 # Roll back on error, in this shell only (rollback_install says why)
 arm_rollback() {
+  ROLLBACK_SHELL=${BASHPID}
   # shellcheck disable=SC2064 # BASHPID 要在挂陷阱时展开，记下是哪个 shell 挂的 / BASHPID expands now, recording which shell set the trap
   trap "rollback_install \$? failed ${BASHPID}" ERR
   # 只挂 ERR 时，Ctrl-C、SIGTERM 或 SSH 断线会直接杀掉 bash，已停掉的服务不会恢复。
@@ -2072,8 +2505,9 @@ install_builtin_geo() {
 # change routing, so the user decides.
 request_builtin_geosite_import() {
   [[ ${INSTALL_KIND} == fresh ]] || return 0
-  install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0640 /dev/null \
-    /var/lib/kixdns-panel/geo/.import-builtin-geosite
+  # 面板能写的目录里先删掉同名的东西再写（R3）/ In a panel-writable directory, whatever has the name goes first (R3)
+  rm -f -- "${PANEL_STATE_DIRECTORY}/geo/.import-builtin-geosite"
+  install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0640 /dev/null "${PANEL_STATE_DIRECTORY}/geo/.import-builtin-geosite"
 }
 
 install_web() {
@@ -2235,8 +2669,8 @@ update_panel_environment() {
 }
 
 install_configuration() {
-  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 "${PANEL_CONFIG_DIRECTORY}"
-  install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 "$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+  ensure_directory "${PANEL_CONFIG_DIRECTORY}" root "${KIXDNS_GROUP}" 0750
+  ensure_directory "$(dirname -- "${KIXDNS_CONFIG_PATH}")" "${PANEL_USER}" "${KIXDNS_GROUP}" 0750
   if [[ -n ${ORIGINAL_KIXDNS_CONFIG_PATH} && -f ${ORIGINAL_KIXDNS_CONFIG_PATH} ]]; then
     # 迁移：把原配置一字不差地复制给面板管理。原文件只读不写，属主和权限都不动。
     # Migration: copy the original config byte for byte for the panel to manage. The original is only read; its owner
@@ -2250,7 +2684,8 @@ install_configuration() {
     chmod 0640 -- "${KIXDNS_CONFIG_PATH}"
   fi
   hand_back_config_directory
-  if [[ ! -e ${PANEL_ENV} ]]; then
+  if [[ ! -e ${PANEL_ENV} || -L ${PANEL_ENV} ]]; then
+    rm -f -- "${PANEL_ENV}"
     sed -e "s/^KIXDNS_INSTALLED_SOURCE=.*/KIXDNS_INSTALLED_SOURCE=${KIXDNS_SOURCE}/" \
       -e "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${KIXDNS_BUILD_COMMIT}/" \
       -e "s/^KIXDNS_PANEL_INSTALLED_COMMIT=.*/KIXDNS_PANEL_INSTALLED_COMMIT=${PANEL_BUILD_COMMIT}/" \
@@ -2273,6 +2708,7 @@ hand_back_config_directory() {
   local unit_files=()
   case ${CONFIG_CONVERSION} in
     legacy)
+      trusted_record external-backup || fail "迁移前的备份不见了"
       mapfile -t unit_files < <(original_unit_files "${EXTERNAL_BACKUP}" "${KIXDNS_SERVICE_UNIT}")
       hand_back_original_config "${ORIGINAL_KIXDNS_CONFIG_PATH}" "${unit_files[@]}"
       temporary="$(mktemp "${EXTERNAL_BACKUP}/.install.env.XXXXXX")"
@@ -2297,7 +2733,7 @@ install_bundled_metadata() {
   local target=/var/lib/kixdns-panel/bundle
   local file
   [[ ${INSTALL_KIND} != panel-only ]] || return 0
-  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 "${target}"
+  ensure_directory "${target}" root "${KIXDNS_GROUP}" 0750
   # 旧安装包带的是补丁集构建的身份；换成 fork 发布版后这两份不再对应装上的内核，删掉免得混用。
   # Older packages carried a patchset build's identity; with a fork release these two no longer describe the installed
   # kernel, so remove them rather than let them mix.
@@ -2305,6 +2741,7 @@ install_bundled_metadata() {
   for file in KIXDNS_BUILD_COMMIT KIXDNS_SOURCE.json KIXDNS_ARTIFACT_ID \
     KIXDNS_ARTIFACT_NAME KIXDNS_ARTIFACT_DIGEST KIXDNS_BINARY_SHA256 \
     KIXDNS_CAPABILITIES.json; do
+    rm -f -- "${target:?}/${file}"
     install -o root -g "${KIXDNS_GROUP}" -m 0640 \
       "${PACKAGE_ROOT}/${file}" "${target}/${file}"
   done
@@ -2594,6 +3031,8 @@ main() {
 
   # 所有提问都在改动主机之前问完；之后的步骤要么全部完成，要么全部回滚。
   # Every question is asked before the host is touched; after that the run either completes or rolls back.
+  # R4：先看 panel.env 能不能信，之后读它都照这个 / R4: whether panel.env can be trusted comes first; every later read follows it
+  check_panel_env_trust
   refuse_legacy_panel
   # 先把旧版放在面板状态目录里的记录挪进只有 root 能进的地方、验过，再读它们 / First move the records older versions kept in
   # the panel's state directory into the root-only place and check them, then read them
@@ -2618,14 +3057,20 @@ main() {
   # 从这里起出错或被中断都回滚，连这次建的账号和目录一起删掉 / From here on an error or interruption rolls back, removing
   # the accounts and directories this run created too
   prepare_rollback
-  # 面板账号能写的目录里，root 做的每件事都等面板停了、它的进程都没了以后，再查一遍才做 / Everything root does in a directory
-  # the panel account can write waits until the panel has stopped and its processes are gone, then is checked once more
+  ROOT_WORK_STARTED=true
+  # R2：面板账号能写的目录里，root 做的每件事都等面板停了、它的进程都没了以后，再查一遍才做 / R2: everything root does in a
+  # directory the panel account can write waits until the panel has stopped and its processes are gone, then is checked once
+  # more
   systemctl stop kixdns-panel.service 2>/dev/null || true
   stop_panel_processes
+  record_panel_paths
   require_regular_targets abort_install
   backup_panel_state
   backup_panel_database
   create_accounts
+  # 新建的面板账号可能拿到旧账号空出来的 UID，那个 UID 的进程也要停光 / A new panel account may get a UID an old one freed,
+  # whose processes must be gone too
+  stop_panel_processes
   create_panel_directories
   adopt_github_token
   preserve_external_install
@@ -2641,6 +3086,7 @@ main() {
       systemctl stop "${KIXDNS_SERVICE_UNIT}"
     fi
     if [[ ${KIXDNS_BINARY_CHANGED} == true ]]; then
+      rm -f -- /var/lib/kixdns-panel/bin/.kixdns.new
       install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
         "${PACKAGE_ROOT}/bin/kixdns" /var/lib/kixdns-panel/bin/.kixdns.new
       mv -fT -- /var/lib/kixdns-panel/bin/.kixdns.new "${MANAGED_KIXDNS_BINARY}"
@@ -2668,8 +3114,7 @@ main() {
   fi
   install_services
   verify_services_started
-  # 装好了：挪进只有 root 能进的目录的记录留在那里 / Installed: records moved into the root-only directory stay there
-  RECORDS_SETTLED=true
+  ROOT_WORK_STARTED=false
   trap - ERR INT TERM HUP
   rm -rf -- "${BACKUP_ROOT}"
 

@@ -112,7 +112,7 @@ printf '%s  %s\n' "${DIGEST#sha256:}" kixdns-panel.zip | sha256sum --check -
 
 - 把原配置一字不差地复制到 `/etc/kixdns-panel/kixdns/pipeline.json`（路径写入 `panel.env`），面板只改这份副本。原配置文件和它所在的目录不动，属主和权限也不改；面板能写的只有副本所在的目录和 `/var/lib/kixdns-panel`
 - 用增强版替换 KixDNS 程序和 systemd unit
-- 把原 unit（连同它的 drop-in，不管放在哪）与运行、开机状态备份到 `/var/lib/kixdns-panel-backup/external-backup/`，这个目录只有 root 能进。卸载恢复成功后这份备份就删掉，以后再迁移按那时主机上的 KixDNS 重新备份。旧版把备份放在面板能写的 `/var/lib/kixdns-panel/external-backup/`；安装器和卸载器第一次运行时把它挪过来，挪之前查它是不是 root 建的（目录和每个文件都归 root、不是符号链接、没有别的硬链接），不是就拒绝并说明，不照它做任何事
+- 把原 unit（连同它的 drop-in，不管放在哪）与运行、开机状态备份到 `/var/lib/kixdns-panel-backup/external-backup/`，这个目录只有 root 能进。卸载恢复成功后这份备份就删掉，以后再迁移按那时主机上的 KixDNS 重新备份。旧版把备份放在面板能写的 `/var/lib/kixdns-panel/external-backup/`；安装器和卸载器第一次运行时先停下面板和它账号的所有进程，在原地查它是不是 root 建的（目录和每个文件都归 root、不是符号链接、没有别的硬链接），是才挪过来（不在同一个文件系统就复制过来、查过再删原来的）。不是 root 建的挪进只有 root 能进的 `/var/lib/kixdns-panel-backup/quarantine/`，这次和以后都不再用，并说明；只有 root 能进的那里已经有一份能信的，就照用那份。挪过来以后不再放回旧位置，所以新版的安装器和卸载器要一起用：旧版的卸载器看不到新位置的备份
 - 保持原来的运行状态：运行中的迁移后继续运行，已停止的保持停止；增强版起不来时整个安装回滚到迁移前，副本和它的目录一并删掉
 - 卸载面板时选择移除增强版，放回原 unit 并恢复原来的运行状态。原来的 KixDNS 用回迁移前的配置，副本随增强版删除；在面板里改过的配置不会带回去，需要的话卸载前先备份副本
 
@@ -200,6 +200,13 @@ sudo systemctl restart kixdns-panel.service
 | `kixdns-panel` | 写配置、SQLite 与受管 KixDNS 二进制；读管理 Socket 与 journal |
 
 面板进程不以 root 运行。启停 KixDNS 和面板自更新经由 root 运行的 `kixdns-panel-helper` 完成：它只监听权限 `0600` 的 Unix Socket 并用 `SO_PEERCRED` 核对调用方 UID，只接受 `start`、`stop`、`restart` 和固定的 `panel-update`，不执行 Shell、不接受 URL 或路径。
+
+**root 做事的规则**：安装器、卸载器把 `kixdns-panel` 账号当作攻击者：它不能变成 root，也不能左右 root 做什么。root 碰到面板能写的路径、读面板能影响的数据时都照下面四条（`scripts/install.sh` 和 `scripts/uninstall.sh` 开头写着同样的四条）：
+
+1. 迁移前的备份、关掉 systemd-resolved 监听时的记录，和 `/var/lib/kixdns-panel-backup/` 里的一切，每读一次都先验：这个目录和它上面每一层都归 root、不是符号链接，目录是 `0700`；记录里只有归 root 的普通文件，每个只有一个链接。验不过的挪进 `/var/lib/kixdns-panel-backup/quarantine/`（名字带时间），这次和以后都不再用，并说清是哪一份、为什么、接下来怎么办
+2. 面板账号还有进程时，root 不碰它能写的路径：先停面板，再以它的身份 `kill -KILL -1`，一直到一个都不剩；这些路径上的事全做完（安装失败的回滚也一样）才重新启动面板。在线更新走同一条路
+3. 面板能写的路径上不跟着符号链接走：`chown -h`；`chmod` 只用在停了面板以后查过不是符号链接的目录和普通文件上；已有的、面板能写的目录不用 `install -d`
+4. `panel.env` 只有它和上面每一层目录都归 root、别人写不进时才信；不然 KixDNS 配置的路径照 root 才能改的 KixDNS unit 认，对不上安装器就停下、卸载器就当作 KixDNS 不归面板管、全部保留，它记的账号和归属一律不认
 
 **日志页的权限边界**：日志页需要 `kixdns-panel` 属于 `systemd-journal` 组，而 journald 不支持按 unit 授权，所以该组能读宿主机全部 journal。不接受的话，把 `kixdns-panel` 移出该组并停用日志页；不要改用带通配符的 sudoers 规则，那会扩大命令执行范围。
 
