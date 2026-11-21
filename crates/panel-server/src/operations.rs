@@ -21,6 +21,14 @@ pub struct Operations {
     /// a fake one that answers from a file
     #[cfg_attr(not(unix), allow(dead_code))]
     systemctl: Arc<str>,
+    /// procd 环境下的服务 pid 文件；Some 时用它读状态，不再调 systemctl
+    /// The service pid file under procd; when Some, status is read from it instead of systemctl
+    #[cfg_attr(not(unix), allow(dead_code))]
+    service_pidfile: Option<PathBuf>,
+    /// procd 环境下的服务日志文件；Some 时日志页读它，不再调 journalctl
+    /// The service log file under procd; when Some, the log page reads it instead of journalctl
+    #[cfg_attr(not(unix), allow(dead_code))]
+    service_logfile: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -205,7 +213,22 @@ impl Operations {
             service_helper_socket,
             diagnostic_server,
             systemctl: Arc::from("systemctl"),
+            service_pidfile: None,
+            service_logfile: None,
         })
+    }
+
+    /// 切到 procd 后端：状态读 pid 文件、日志读日志文件（OpenWrt 上没有 systemd）
+    /// Switch to the procd backend: status from a pid file, logs from a log file (no systemd on `OpenWrt`)
+    #[must_use]
+    pub fn with_procd_service(
+        mut self,
+        pidfile: Option<PathBuf>,
+        logfile: Option<PathBuf>,
+    ) -> Self {
+        self.service_pidfile = pidfile;
+        self.service_logfile = logfile;
+        self
     }
 
     #[must_use]
@@ -216,6 +239,9 @@ impl Operations {
 
     #[cfg(unix)]
     pub async fn service_status(&self) -> Result<ServiceStatus, OperationError> {
+        if let Some(pidfile) = &self.service_pidfile {
+            return Ok(procd_service_status(self.service_unit.as_ref(), pidfile));
+        }
         let output = run_command(
             &self.systemctl,
             &[
@@ -332,6 +358,9 @@ impl Operations {
         level: Option<LogLevel>,
     ) -> Result<LogPage, OperationError> {
         let limit = limit.clamp(1, 500);
+        if let Some(logfile) = self.service_logfile.clone() {
+            return Ok(procd_logs(&logfile, limit, before_cursor, level));
+        }
         let arguments = journal_arguments(self.service_unit.as_ref(), limit, before_cursor, level);
         let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
         // unit 状态和日志本身并行查：多一次 systemctl 不该让日志页慢一倍。
@@ -489,6 +518,166 @@ async fn run_command(
     }
     String::from_utf8(output.stdout)
         .map_err(|_| OperationError::Failed(format!("{program} 输出不是 UTF-8")))
+}
+
+/// procd 后端的状态：pid 文件里的进程还活着就是 active，否则 inactive。
+/// procd status: active while the pid from the pid file still exists, inactive otherwise.
+#[cfg(unix)]
+fn procd_service_status(unit: &str, pidfile: &std::path::Path) -> ServiceStatus {
+    let pid = std::fs::read_to_string(pidfile)
+        .ok()
+        .and_then(|text| {
+            text.split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+        })
+        .filter(|pid| *pid > 0 && std::path::Path::new(&format!("/proc/{pid}")).exists());
+    let running = pid.is_some();
+    ServiceStatus {
+        unit: unit.to_owned(),
+        active_state: if running { "active" } else { "inactive" }.to_owned(),
+        sub_state: if running { "running" } else { "dead" }.to_owned(),
+        main_pid: pid.unwrap_or(0),
+        did_not_come_up: false,
+        restart_rollback: None,
+        pending_writable: None,
+    }
+}
+
+/// 从日志文件取一页，新的在前。游标是行的字节偏移：翻旧页时只取偏移更小的行。
+/// One page from the log file, newest first. The cursor is a line's byte offset:
+/// older pages only take lines with a smaller offset.
+#[cfg(unix)]
+fn procd_logs(
+    logfile: &std::path::Path,
+    limit: usize,
+    before_cursor: Option<&str>,
+    level: Option<LogLevel>,
+) -> LogPage {
+    // 日志文件按 8 MiB 截尾读，避免一个巨大的日志把内存吃光。
+    // Read at most the last 8 MiB so a huge log cannot eat the memory.
+    const MAX_READ: usize = 8 * 1024 * 1024;
+    let bytes = std::fs::read(logfile).unwrap_or_default();
+    let bytes = &bytes[bytes.len().saturating_sub(MAX_READ)..];
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut offset = 0usize;
+    for line in text.split('\n') {
+        lines.push((offset, line));
+        offset += line.len() + 1;
+    }
+    let cursor_offset = before_cursor.and_then(|value| value.parse::<usize>().ok());
+    let mut entries: Vec<(usize, LogEntry)> = lines
+        .into_iter()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .rev()
+        .filter(|(start, _)| cursor_offset.is_none_or(|cursor| *start < cursor))
+        .filter_map(|(start, line)| {
+            let (timestamp_unix_micros, priority, message) = parse_log_line(line);
+            if let Some(wanted) = level {
+                let matched = match wanted {
+                    LogLevel::Error => priority <= 3,
+                    LogLevel::Warning => priority == 4,
+                    LogLevel::Info => priority >= 5,
+                };
+                if !matched {
+                    return None;
+                }
+            }
+            Some((
+                start,
+                LogEntry {
+                    timestamp_unix_micros,
+                    priority,
+                    source: "kixdns".to_owned(),
+                    message: truncate(message, 4_096),
+                },
+            ))
+        })
+        .collect();
+    let has_more = entries.len() > limit;
+    entries.truncate(limit);
+    let next_cursor = has_more
+        .then(|| entries.last().map(|(start, _)| start.to_string()))
+        .flatten();
+    LogPage {
+        entries: entries.into_iter().map(|(_, entry)| entry).collect(),
+        next_cursor,
+        notice: None,
+    }
+}
+
+/// 解析 `2026-11-21T20:00:00.123456Z  INFO kixdns: ...` 这种 tracing 行；
+/// 认不出时间戳就记 0，级别按关键字粗判（tracing 的 INFO/WARN/ERROR）。
+/// Parses a tracing line like `2026-11-21T20:00:00.123456Z  INFO kixdns: ...`;
+/// an unparsable timestamp becomes 0 and the level is guessed from the keyword.
+#[cfg(unix)]
+fn parse_log_line(line: &str) -> (u64, u8, &str) {
+    let mut rest = line.trim_start();
+    let mut timestamp = 0u64;
+    if let Some((head, tail)) = rest.split_once(char::is_whitespace) {
+        timestamp = timestamp_micros(head);
+        if timestamp > 0 {
+            rest = tail.trim_start();
+        }
+    }
+    let priority = if rest.contains("ERROR") || rest.contains("error") {
+        3
+    } else if rest.contains("WARN") || rest.contains("warn") {
+        4
+    } else {
+        6
+    };
+    (timestamp, priority, rest)
+}
+
+/// `2026-11-21T20:00:00.123456Z` / `...123Z` / `...T20:00:00Z` → 微秒时间戳；失败返回 0。
+#[cfg(unix)]
+fn timestamp_micros(value: &str) -> u64 {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20 || bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') {
+        return 0;
+    }
+    let number = |range: std::ops::Range<usize>| -> Option<i64> {
+        value.get(range).and_then(|part| part.parse::<i64>().ok())
+    };
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        number(0..4),
+        number(5..7),
+        number(8..10),
+        number(11..13),
+        number(14..16),
+        number(17..19),
+    ) else {
+        return 0;
+    };
+    let mut micros_fraction = 0i64;
+    if let Some(dot) = value.find('.') {
+        let fraction = value[dot + 1..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .take(6)
+            .collect::<String>();
+        if !fraction.is_empty() {
+            let exponent = 6u32.saturating_sub(u32::try_from(fraction.len()).unwrap_or(6));
+            let scale = 10i64.pow(exponent);
+            micros_fraction = fraction.parse::<i64>().unwrap_or(0) * scale;
+        }
+    }
+    let days = days_from_civil(year, month, day);
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
+    u64::try_from(seconds * 1_000_000 + micros_fraction).unwrap_or(0)
+}
+
+/// Howard Hinnant 的 `days_from_civil`，避免为一行日志拉一个日期库。
+#[cfg(unix)]
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 #[cfg(unix)]
@@ -680,8 +869,10 @@ mod tests {
 
     use super::{
         LogLevel, OperationError, Operations, ServiceAction, helper_failure, journal_arguments,
-        parse_journal_page, parse_record_type, unit_log_notice,
+        parse_journal_page, parse_record_type, procd_logs, unit_log_notice,
     };
+    #[cfg(unix)]
+    use super::{procd_service_status, timestamp_micros};
 
     // 服务助手的失败不把协议记号和 systemctl 的英文原话交给页面，给出看原因的命令；别的原因照原样
     // A helper failure hands the page neither the protocol token nor systemctl's English original, but the command to see why; other reasons pass through
@@ -981,5 +1172,115 @@ mod tests {
 
         assert_eq!(result.server, server_address.to_string());
         assert_eq!(result.response_code, "No Error");
+    }
+
+    /// procd 后端：pid 文件里的进程还活着才算 active；文件没了、pid 死了、内容不是数字都算 inactive。
+    /// procd backend: active only while the pid in the pid file is alive; a missing file,
+    /// a dead pid or a non-numeric body all read as inactive.
+    #[cfg(unix)]
+    #[test]
+    fn procd_status_follows_the_pid_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let pidfile = directory.path().join("kixdns.pid");
+
+        let missing = procd_service_status("kixdns", &pidfile);
+        assert_eq!(missing.unit, "kixdns");
+        assert_eq!(missing.active_state, "inactive");
+        assert_eq!(missing.sub_state, "dead");
+        assert_eq!(missing.main_pid, 0);
+        assert!(!missing.did_not_come_up);
+
+        std::fs::write(&pidfile, format!("{}\n", std::process::id())).unwrap();
+        let alive = procd_service_status("kixdns", &pidfile);
+        assert_eq!(alive.active_state, "active");
+        assert_eq!(alive.sub_state, "running");
+        assert_eq!(alive.main_pid, std::process::id());
+
+        // procd 写的是裸 pid；进程退出后 pid 文件还在，这种残留不能当成 active。
+        // procd writes a bare pid; a stale file whose process is gone must not read as active.
+        std::fs::write(&pidfile, "4194304\n").unwrap();
+        assert_eq!(
+            procd_service_status("kixdns", &pidfile).active_state,
+            "inactive"
+        );
+
+        std::fs::write(&pidfile, "not a pid\n").unwrap();
+        assert_eq!(
+            procd_service_status("kixdns", &pidfile).active_state,
+            "inactive"
+        );
+    }
+
+    /// 日志页按行倒序给，游标是行首字节偏移；翻旧页只取偏移更小的行，并识别 tracing 的级别。
+    /// The log page is newest-first, the cursor is the line's byte offset: paging back only
+    /// takes smaller offsets, and the tracing level is recognised.
+    #[cfg(unix)]
+    #[test]
+    fn procd_logs_page_backwards_through_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let logfile = directory.path().join("kixdns.log");
+        std::fs::write(
+            &logfile,
+            "2026-11-21T00:00:01.000000Z  INFO kixdns: 第一行\n\
+             2026-11-21T00:00:02.000000Z  WARN kixdns: 第二行\n\
+             2026-11-21T00:00:03.000000Z ERROR kixdns: 第三行\n",
+        )
+        .unwrap();
+
+        let first = procd_logs(&logfile, 2, None, None);
+        assert_eq!(first.entries.len(), 2);
+        assert!(
+            first.entries[0].message.contains("第三行"),
+            "{:?}",
+            first.entries[0]
+        );
+        assert!(first.entries[1].message.contains("第二行"));
+        assert_eq!(
+            first.entries[0].timestamp_unix_micros,
+            1_795_219_203_000_000
+        );
+        assert_eq!(first.entries[0].priority, 3);
+        assert_eq!(first.entries[1].priority, 4);
+        assert!(first.notice.is_none());
+
+        let cursor = first.next_cursor.clone().expect("还有更旧的日志");
+        let older = procd_logs(&logfile, 2, Some(&cursor), None);
+        assert_eq!(older.entries.len(), 1);
+        assert!(older.entries[0].message.contains("第一行"));
+        assert!(older.next_cursor.is_none(), "第一页之后不该再给游标");
+
+        let errors = procd_logs(&logfile, 10, None, Some(LogLevel::Error));
+        assert_eq!(errors.entries.len(), 1);
+        assert!(errors.entries[0].message.contains("第三行"));
+        let warnings = procd_logs(&logfile, 10, None, Some(LogLevel::Warning));
+        assert_eq!(warnings.entries.len(), 1);
+        assert!(warnings.entries[0].message.contains("第二行"));
+
+        // 日志文件还没建出来时是空页，不是错误：进程刚起来就会有人看日志页。
+        // A log file that does not exist yet is an empty page, not an error.
+        let empty = procd_logs(&directory.path().join("missing.log"), 10, None, None);
+        assert!(empty.entries.is_empty());
+        assert!(empty.next_cursor.is_none());
+    }
+
+    /// `2026-11-21T00:00:00.123456Z` 这类 tracing 时间戳要能被认出来，认不出就记 0。
+    /// Tracing timestamps like `2026-11-21T00:00:00.123456Z` are parsed; nonsense becomes 0.
+    #[cfg(unix)]
+    #[test]
+    fn tracing_timestamps_parse_to_micros() {
+        assert_eq!(
+            timestamp_micros("2026-11-21T00:00:00Z"),
+            1_795_219_200_000_000
+        );
+        assert_eq!(
+            timestamp_micros("2024-02-29T12:34:56.123456Z"),
+            1_709_210_096_123_456
+        );
+        assert_eq!(
+            timestamp_micros("2000-01-01T00:00:00.5Z"),
+            946_684_800_500_000
+        );
+        assert_eq!(timestamp_micros("不是时间"), 0);
+        assert_eq!(timestamp_micros(""), 0);
     }
 }

@@ -1,0 +1,45 @@
+#!/bin/sh /etc/rc.common
+# KixDNS Enhanced 内核 —— OpenWrt procd 版本（由 fork 提供）
+# 与 systemd unit 的行为差异：没有 ProtectSystem/User，进程直接以 root 运行；
+# 日志写文件而非 journald，面板通过 KIXDNS_SERVICE_LOG 读这个文件。
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/kixdns
+CONF=/etc/kixdns/pipeline.json
+SOCK=/run/kixdns/admin.sock
+LOGFILE=/var/log/kixdns.log
+PIDFILE=/var/run/kixdns.pid
+
+start_service() {
+	mkdir -p /run/kixdns /var/log
+	# 只在文件过大时滚一次，避免 overlay 被日志吃满
+	if [ -f "$LOGFILE" ] && [ "$(wc -c <"$LOGFILE")" -gt 8388608 ]; then
+		mv -f "$LOGFILE" "$LOGFILE.1"
+	fi
+	touch "$LOGFILE"
+
+	procd_open_instance
+	# 用 sh -c exec 包一层，把内核 stdout/stderr 落到文件，面板日志页才读得到
+	procd_set_param command /bin/sh -c "exec $PROG run --config $CONF --admin-socket $SOCK >>$LOGFILE 2>&1"
+	procd_set_param env RUST_LOG="${RUST_LOG:-warn,kixdns=info}"
+	procd_set_param pidfile "$PIDFILE"
+	procd_set_param respawn 3600 5 5
+	procd_set_param limits nofile="65536"
+	procd_close_instance
+}
+
+stop_service() {
+	rm -f "$PIDFILE"
+}
+
+restart() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger kixdns
+}

@@ -5,7 +5,7 @@ mod linux {
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::time::Duration;
 
     use clap::Parser;
@@ -23,6 +23,11 @@ mod linux {
 
         #[arg(long)]
         allowed_uid: u32,
+
+        /// 没有 systemctl 时（OpenWrt/procd）用它启停：`脚本 start|stop|restart`。
+        /// Used instead of systemctl when there is none (OpenWrt/procd).
+        #[arg(long, default_value = "/etc/init.d/kixdns")]
+        init_script: PathBuf,
     }
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -93,17 +98,41 @@ mod linux {
         if action == ServiceAction::PanelUpdate {
             return launch_panel_update();
         }
-        let systemctl =
-            find_executable(&["/usr/bin/systemctl", "/bin/systemctl"]).ok_or("找不到 systemctl")?;
-        let mut command = Command::new(systemctl);
-        command.arg("--no-ask-password");
-        command.args(systemctl_arguments(action, &args.unit));
-        let output = command.output()?;
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("systemctl 执行失败: {}", detail.trim()).into());
+        // 有 systemd 时行为和以前完全一样：走 systemctl。
+        // With systemd present the behaviour is unchanged: go through systemctl.
+        if let Some(systemctl) = find_executable(&["/usr/bin/systemctl", "/bin/systemctl"]) {
+            let mut command = Command::new(systemctl);
+            command.arg("--no-ask-password");
+            command.args(systemctl_arguments(action, &args.unit));
+            let output = command.output()?;
+            if !output.status.success() {
+                let detail = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("systemctl 执行失败: {}", detail.trim()).into());
+            }
+            return Ok(());
         }
-        Ok(())
+        // 没有 systemd（OpenWrt/procd）时改用 init 脚本启停。
+        // Without systemd (OpenWrt/procd) fall back to the init script.
+        if args.init_script.is_file() {
+            let verb = match action {
+                ServiceAction::Start => "start",
+                ServiceAction::Stop => "stop",
+                ServiceAction::Restart => "restart",
+                ServiceAction::PanelUpdate => unreachable!("panel-update 在上方已返回"),
+            };
+            let output = Command::new(&args.init_script).arg(verb).output()?;
+            if !output.status.success() {
+                let detail = String::from_utf8_lossy(&output.stderr);
+                return Err(format!(
+                    "{} {verb} 执行失败: {}",
+                    args.init_script.display(),
+                    detail.trim()
+                )
+                .into());
+            }
+            return Ok(());
+        }
+        Err("找不到 systemctl，也没有可用的 init 脚本".into())
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,8 +174,17 @@ mod linux {
         {
             return Err("面板在线更新器权限无效".into());
         }
-        let systemd_run = find_executable(&["/usr/bin/systemd-run", "/bin/systemd-run"])
-            .ok_or("找不到 systemd-run")?;
+        // OpenWrt 上没有 systemd-run：直接把自己拉起来，脱离 helper 的生命周期。
+        // No systemd-run on OpenWrt: spawn the updater directly, detached from the helper.
+        let Some(systemd_run) = find_executable(&["/usr/bin/systemd-run", "/bin/systemd-run"])
+        else {
+            Command::new(UPDATER)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            return Ok(());
+        };
         let output = Command::new(systemd_run)
             .args([
                 "--quiet",
