@@ -1,0 +1,20 @@
+#!/bin/sh /etc/rc.common
+# 以 root 运行的面板服务控制 helper（procd 版）；面板本身也是 root，
+# 所以 allowed-uid 用 0 —— OpenWrt 上不存在 systemd 时代的独立 kixdns 用户。
+
+START=97
+STOP=04
+USE_PROCD=1
+
+start_service() {
+	mkdir -p /run/kixdns-panel
+	procd_open_instance
+	procd_set_param command /usr/libexec/kixdns-panel-helper \
+		--socket /run/kixdns-panel/control.sock \
+		--unit kixdns.service \
+		--allowed-uid 0 \
+		--init-script /etc/init.d/kixdns
+	procd_set_param respawn 3600 5 5
+	procd_set_param stderr 1
+	procd_close_instance
+}

@@ -41,6 +41,14 @@ struct Args {
     )]
     service_helper_socket: PathBuf,
 
+    /// procd 环境下读服务状态用的 pid 文件；给出时改用 procd 后端（OpenWrt 没有 systemd）。
+    #[arg(long, env = "KIXDNS_SERVICE_PIDFILE")]
+    service_pidfile: Option<PathBuf>,
+
+    /// procd 环境下读服务日志用的日志文件；给出时日志页读这个文件而不是 journalctl。
+    #[arg(long, env = "KIXDNS_SERVICE_LOG")]
+    service_log: Option<PathBuf>,
+
     /// DNS 诊断服务器地址；本机地址会自动跟随当前配置的 UDP 监听端口。
     #[arg(long, env = "KIXDNS_DIAGNOSTIC_SERVER", default_value = "127.0.0.1:53")]
     diagnostic_server: SocketAddr,
@@ -154,6 +162,8 @@ impl Args {
             control_socket: args.control_socket,
             service_unit: args.service_unit,
             service_helper_socket: args.service_helper_socket,
+            service_pidfile: args.service_pidfile,
+            service_log: args.service_log,
             diagnostic_server: args.diagnostic_server,
             kernel_repository: args.kernel_repository,
             installed_source: present(args.installed_source),

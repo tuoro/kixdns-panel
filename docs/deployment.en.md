@@ -7,6 +7,7 @@
 - Linux x86_64/ARM64 with systemd
 - GLIBC 2.35 or later: Ubuntu 22.04, Debian 12 or newer distributions
 - Requires `systemctl`, `sha256sum`, `getent`. One-line install and the download examples also need `curl`, `jq`, `unzip`
+- OpenWrt (procd, no systemd): no GLIBC needed, but you build the musl binaries yourself; see [OpenWrt / procd](#openwrt--procd-no-systemd). The official releases carry no such package
 
 The full package is published on the panel's [GitHub Releases](https://github.com/tuoro/kixdns-panel/releases). It contains KixDNS Enhanced, Panel Server, the frontend static assets, the service units and the install scripts.
 
@@ -133,6 +134,33 @@ KixDNS listens on `0.0.0.0:53` by default. Before changing the host, the install
 - **Held by systemd-resolved** (`127.0.0.53`, the Ubuntu default): with a terminal, the installer asks whether to turn off its local listener. The default is not to. If you agree, the installer writes `/etc/systemd/resolved.conf.d/kixdns-panel.conf` (`DNSStubListener=no`), repoints `/etc/resolv.conf` to `/run/systemd/resolve/resolv.conf` when it points at the local cache, restarts systemd-resolved, and confirms that the port is free and local name resolution still works. A failure at any step rolls back. The original `resolv.conf` is recorded in the root-only `/var/lib/kixdns-panel-backup/resolved-stub/`. Choosing to remove KixDNS at uninstall restores it (keeping KixDNS only gives the restore command, because KixDNS still uses this port)
 - **Declined or unattended**: nothing is changed, and the install result gives the commands to run by hand
 - **Held by another program**: reports the process name and PID and never touches it. If this install needs to restart a KixDNS that was running, the install halts before changing the host
+
+### OpenWrt / procd (no systemd)
+
+OpenWrt runs services under procd: there is no `systemctl` and no `journalctl`, and the distribution is musl rather than GLIBC, so the glibc packages in the official releases cannot run there. `deploy/openwrt/` in this repository holds what is needed: three init scripts, the panel's start-up settings, a sample `pipeline.json` and an install script.
+
+The panel gained a replaceable service backend for this. All three switches are opt-in; without them the behaviour is the unchanged systemd one:
+
+| With systemd | On OpenWrt | Switch |
+| --- | --- | --- |
+| `systemctl show --property=ActiveState,SubState,MainPID` for status | read the pid file, then check `/proc/<pid>` | `--service-pidfile` / `KIXDNS_SERVICE_PIDFILE` |
+| `journalctl -u kixdns -o json` for logs | read the log file, paging by byte offset | `--service-log` / `KIXDNS_SERVICE_LOG` |
+| helper calls `systemctl start|stop|restart` | when there is no `systemctl`, run the same action through the init script | `--init-script` (default `/etc/init.d/kixdns`) |
+
+The helper looks for `systemctl` first and uses it when found; only when it is missing does it fall back to the init script, and it errors only when it has neither. One binary therefore serves both Debian/Ubuntu and OpenWrt.
+
+Build from source and install:
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+cargo build --release --locked --target aarch64-unknown-linux-musl \
+  -p kixdns-panel-server -p kixdns-panel-helper
+cd web && npm ci && npm run build
+```
+
+Then copy the binaries, the frontend and the init scripts to `/usr/bin`, `/usr/share/kixdns-panel/web` and `/etc/init.d` as laid out in `deploy/openwrt/README.md`, and run `sh deploy/openwrt/install.sh` (`START_DNS=1` also starts the kernel).
+
+Differences from the systemd version: processes run as root with no `ProtectSystem` and no separate accounts, so the helper's `--allowed-uid` is 0; `/var` is a tmpfs on OpenWrt, so the database lives on the overlay (`/etc/kixdns-panel/`); the logs page guesses the level from the text of each line instead of using a structured priority; the self-update spawns the updater directly instead of using `systemd-run`; boot enablement belongs to the init script's `enable`/`disable`, which the panel's start/stop buttons drive as `start`/`stop`.
 
 ## First access
 

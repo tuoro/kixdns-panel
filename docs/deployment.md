@@ -7,6 +7,9 @@
 - 带 systemd 的 Linux x86_64/ARM64
 - GLIBC 2.35 及以上：Ubuntu 22.04、Debian 12 或更新发行版
 - 需要 `systemctl`、`sha256sum`、`getent`；一键安装和下载示例另需 `curl`、`jq`、`unzip`
+- OpenWrt（procd，没有 systemd）见下面的[「OpenWrt / procd」](#openwrt--procd没有-systemd)：不依赖 GLIBC，需要自己交叉编译 musl 静态二进制；正式 Release 不包含这种包
+
+以下是 systemd 发行版的安装方式；OpenWrt 直接看[「OpenWrt / procd」](#openwrt--procd没有-systemd)那一节。
 
 完整安装包在面板的 [GitHub Releases](https://github.com/tuoro/kixdns-panel/releases) 发布，包含 KixDNS Enhanced、Panel Server、前端静态资源、服务单元和安装脚本。
 
@@ -133,6 +136,39 @@ KixDNS 默认监听 `0.0.0.0:53`。安装器在改动主机之前按配置里的
 - **被 systemd-resolved 占用**（Ubuntu 默认的 `127.0.0.53`）：有终端时询问是否关闭它的本机监听，默认不关。同意后安装器写入 `/etc/systemd/resolved.conf.d/kixdns-panel.conf`（`DNSStubListener=no`），在 `/etc/resolv.conf` 指向本机缓存时把它改指向 `/run/systemd/resolve/resolv.conf`，重启 systemd-resolved，并确认端口已空出、本机域名解析仍正常；任何一步失败都会回滚。原来的 `resolv.conf` 记录在只有 root 能进的 `/var/lib/kixdns-panel-backup/resolved-stub/`，卸载时选择移除 KixDNS 会恢复原样（保留 KixDNS 时只给出恢复命令，因为它还在用这个端口）
 - **不同意或无人值守**：什么都不改，安装结果里给出手动执行的命令
 - **被其他程序占用**：报告进程名和 PID，从不动它；这次安装若要重启一个原本在运行的 KixDNS，会在改动主机之前停下
+
+### OpenWrt / procd（没有 systemd）
+
+OpenWrt 用 procd 管进程，没有 `systemctl`/`journalctl`，发行版是 musl 而不是 GLIBC，正式 Release 里的 glibc 包在它上面跑不起来。本仓库的 `deploy/openwrt/` 放了在这类系统上装面板的全部东西：三个 init 脚本、面板启动参数、示例 `pipeline.json` 和一个安装脚本。
+
+面板为此增加了可替换的服务后端，三个开关都只在显式给出时才生效，不给就是原来的 systemd 行为：
+
+| systemd 下的做法 | OpenWrt 上的替代 | 开关 |
+| --- | --- | --- |
+| `systemctl show --property=ActiveState,SubState,MainPID` 读状态 | 读 pid 文件，再看 `/proc/<pid>` 还在不在 | `--service-pidfile` / `KIXDNS_SERVICE_PIDFILE` |
+| `journalctl -u kixdns -o json` 读日志 | 直接读日志文件，按字节偏移翻页 | `--service-log` / `KIXDNS_SERVICE_LOG` |
+| helper 调 `systemctl start|stop|restart` | 没有 `systemctl` 时执行 init 脚本的同名动作 | `--init-script`（默认 `/etc/init.d/kixdns`） |
+
+helper 先找 `systemctl`，找到就照旧用它，找不到才用 init 脚本；两个都没有才报错。所以同一份二进制既能装在 Debian/Ubuntu 上，也能装在 OpenWrt 上。
+
+安装从源码交叉编译开始（以 aarch64 路由器为例；x86_64 换 target 即可）：
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+cargo build --release --locked --target aarch64-unknown-linux-musl \
+  -p kixdns-panel-server -p kixdns-panel-helper
+cd web && npm ci && npm run build
+```
+
+然后按 `deploy/openwrt/README.md` 把二进制、前端和 init 脚本放进 `/usr/bin`、`/usr/share/kixdns-panel/web`、`/etc/init.d`，再用 `sh deploy/openwrt/install.sh` 装面板（`START_DNS=1` 装完顺手启动内核）。
+
+与 systemd 版的差异：
+
+- 进程以 root 运行，没有 `ProtectSystem` 和独立运行账号；因此 helper 的 `--allowed-uid` 是 0
+- OpenWrt 的 `/var` 是 tmpfs，数据库必须放在 overlay 上（安装脚本放 `/etc/kixdns-panel/`），否则重启就丢
+- 日志页的级别是按行文本里有没有 `ERROR`/`WARN` 猜的，不像 journald 有结构化 priority
+- 面板自更新没有 `systemd-run` 可用，直接 spawn 更新器
+- 开机自启由 init 脚本的 `enable`/`disable` 决定，面板的「启动/停止」按钮对应它的 `start`/`stop`
 
 ## 首次访问
 
