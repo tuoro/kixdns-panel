@@ -818,7 +818,9 @@ fn parse_log_line(line: &str) -> (u64, u8, &str) {
     (timestamp, priority, rest)
 }
 
-/// `2026-11-21T20:00:00.123456Z` / `...123Z` / `...T20:00:00Z` → 微秒时间戳；失败返回 0。
+/// `2026-11-21T20:00:00.123456Z` / `...123Z` / `...T20:00:00Z`，以及带 `±HH:MM` 偏移的
+/// 本地时间（`LocalTime::rfc_3339()`）→ UTC 微秒时间戳；失败返回 0。
+/// A trailing `Z` or `±HH:MM` zone is honoured so local-time logs line up with UTC ones.
 #[cfg(unix)]
 fn timestamp_micros(value: &str) -> u64 {
     let bytes = value.as_bytes();
@@ -852,8 +854,36 @@ fn timestamp_micros(value: &str) -> u64 {
         }
     }
     let days = days_from_civil(year, month, day);
-    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
+    // 时间戳可能带时区：`Z`（UTC）或 `±HH:MM`（本地时间）。内核不接 journald 时写的是带
+    // 偏移的本地时间（LocalTime::rfc_3339()），要减掉偏移才能和其它日志对齐。
+    // The timestamp may carry a zone: `Z` (UTC) or `±HH:MM` (local time); convert to UTC.
+    let tz_offset = parse_timezone_offset(&value[19..]);
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - tz_offset;
     u64::try_from(seconds * 1_000_000 + micros_fraction).unwrap_or(0)
+}
+
+/// 解析结尾的 `Z` / `+08:00` / `-05:30` 时区偏移成「东为正」的秒数；认不出（没有时区、
+/// 乱码）一律当 UTC(0)，与旧行为一致。
+/// Parse a trailing `Z` / `+08:00` / `-05:30` zone offset into seconds east of UTC; anything
+/// unrecognised (no zone, junk) counts as UTC (0), matching the previous behaviour.
+#[cfg(unix)]
+fn parse_timezone_offset(suffix: &str) -> i64 {
+    let Some(position) = suffix.find(['+', '-']) else {
+        return 0;
+    };
+    let zone = &suffix[position..];
+    let sign = if zone.starts_with('-') { -1 } else { 1 };
+    let body = &zone[1..];
+    let (hours, minutes) = match body.split_once(':') {
+        Some((hours, minutes)) => (hours, minutes),
+        None if body.len() == 4 => (&body[..2], &body[2..]),
+        None if body.len() == 2 => (body, "0"),
+        None => return 0,
+    };
+    let (Ok(hours), Ok(minutes)) = (hours.parse::<i64>(), minutes.parse::<i64>()) else {
+        return 0;
+    };
+    sign * (hours * 3_600 + minutes * 60)
 }
 
 /// Howard Hinnant 的 `days_from_civil`，避免为一行日志拉一个日期库。
@@ -1450,9 +1480,9 @@ mod tests {
         let logfile = directory.path().join("kixdns.log");
         std::fs::write(
             &logfile,
-            "2026-11-21T00:00:01.000000Z  INFO kixdns: 第一行\n\
-             2026-11-21T00:00:02.000000Z  WARN kixdns: 第二行\n\
-             2026-11-21T00:00:03.000000Z ERROR kixdns: 第三行\n",
+            "2026-11-21T00:00:01.000000Z  INFO dns server started bind_udp=127.0.0.1:20553 第一行\n\
+             2026-11-21T00:00:02.000000Z  WARN dns upstream slow 第二行\n\
+             2026-11-21T00:00:03.000000Z ERROR dns server exited boom 第三行\n",
         )
         .unwrap();
 
@@ -1510,8 +1540,10 @@ mod tests {
         assert_eq!(priority, 3);
     }
 
-    /// `2026-11-21T00:00:00.123456Z` 这类 tracing 时间戳要能被认出来，认不出就记 0。
-    /// Tracing timestamps like `2026-11-21T00:00:00.123456Z` are parsed; nonsense becomes 0.
+    /// `2026-11-21T00:00:00.123456Z` 这类 tracing 时间戳要能被认出来，认不出就记 0；
+    /// 带 `Z` 或 `±HH:MM` 时区偏移的都要按 UTC 归一。
+    /// Tracing timestamps like `2026-11-21T00:00:00.123456Z` are parsed; `Z` and `±HH:MM`
+    /// offsets are both normalised to UTC; nonsense becomes 0.
     #[cfg(unix)]
     #[test]
     fn tracing_timestamps_parse_to_micros() {
@@ -1526,6 +1558,21 @@ mod tests {
         assert_eq!(
             timestamp_micros("2000-01-01T00:00:00.5Z"),
             946_684_800_500_000
+        );
+        // 东八区本地时间 15:00:02 == UTC 07:00:02；和 Z 结尾的同一墙钟时间差 8 小时。
+        assert_eq!(
+            timestamp_micros("2026-11-22T15:00:02.000000+08:00"),
+            1_795_330_802_000_000
+        );
+        // 西五区本地时间 10:00:02 == UTC 15:00:02。
+        assert_eq!(
+            timestamp_micros("2026-11-22T10:00:02.000000-05:00"),
+            1_795_359_602_000_000
+        );
+        // 没有时区后缀时按 UTC 处理，和旧行为一致。
+        assert_eq!(
+            timestamp_micros("2026-11-21T00:00:00.123456"),
+            1_795_219_200_123_456
         );
         assert_eq!(timestamp_micros("不是时间"), 0);
         assert_eq!(timestamp_micros(""), 0);

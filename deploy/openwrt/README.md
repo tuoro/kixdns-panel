@@ -28,7 +28,7 @@ geo/geosite.dat geo/geosite.json geo/geoip.dat
 init/kixdns.init                        本仓库 deploy/openwrt/init/kixdns.init
 init/kixdns-panel.init                  本仓库 deploy/openwrt/init/kixdns-panel.init
 init/kixdns-panel-helper.init           本仓库 deploy/openwrt/init/kixdns-panel-helper.init
-etc/pipeline.json                       本仓库 deploy/openwrt/etc/pipeline.json
+etc/pipeline.json                       本仓库 deploy/config/pipeline.json（与 systemd 版同款）
 ```
 
 `install.sh` 把它们装到（`ROOT` 默认 `/`）：
@@ -101,8 +101,9 @@ cd web && npm ci && npm run build                   # 产物在 web/dist，对�
 
 ## 打包
 
-按上面的「目录布局与来源」把文件放进一个目录（就是 payload 根），`install.sh`、`init/`、
-`etc/` 直接取本目录内容：
+按上面的「目录布局与来源」把文件放进一个目录（就是 payload 根），`install.sh`、`init/`
+直接取本目录内容；`etc/pipeline.json` 取自 `deploy/config/pipeline.json`（和 systemd 版同一份，
+内核要的是 `bind_udp`/`bind_tcp` + 带 `id` 的 `pipelines` 数组）：
 
 ```bash
 pkg=/tmp/kixdns-panel-openwrt
@@ -112,7 +113,7 @@ cp target/aarch64-unknown-linux-musl/release/kixdns-panel-helper "$pkg/libexec/"
 cp -a web/dist/. "$pkg/web/"
 cp deploy/openwrt/install.sh "$pkg/"
 cp deploy/openwrt/init/*.init "$pkg/init/"
-cp deploy/openwrt/etc/pipeline.json "$pkg/etc/"
+cp deploy/config/pipeline.json "$pkg/etc/pipeline.json"
 # geo/ 放 fetch-builtin-geosite.sh 生成的 geosite.dat/geosite.json/geoip.dat
 # bin/kixdns 放内核二进制
 tar -C "$pkg" -czf kixdns-panel-openwrt-aarch64.tar.gz .
