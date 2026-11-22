@@ -21,7 +21,7 @@ import { backUnconfirmed, downShownHere, noteRead, readBeforeTelling, useService
 import { serviceLabel as labelOfService, serviceTone as toneOfService, type ServiceTone } from '../service-state'
 import { settingNames } from '../config-editor/schema'
 import { useToast } from '../composables/useToast'
-import { HEALTH_LABELS, cacheComposition, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
+import { HEALTH_LABELS, cacheComposition, flowView, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { lastBucketUnfinished, sparkline, trendEnd, trendIsLive } from '../trend'
@@ -736,6 +736,20 @@ const destinationLog = (key: string) => ({ path: '/logs', query: { dest: routing
 const ruleLog = (rule: RuleCount) => ({ path: '/logs', query: { rule: rule.rule.replace(/#\d+$/, ''), in: rule.pipeline, phase: rule.phase === 'response' ? 'response' : undefined } })
 // 排行里的域名按域名本身筛（qname），不当搜索词：搜「t.co」也会搜出 microsoft.com / A ranked domain filters on the name itself (qname),
 // not as a search term: searching 「t.co」 would also find microsoft.com
+// 智能流控：内核太旧没有这些指标时不出卡；开着时按最近一小时（或启动以来）算 / Flow control: no card when the kernel is too old to report it; when on, counted over the
+// recent hour (or since the start)
+const flow = computed(() => {
+  const metrics = displayOverview.value?.metrics.flow
+  if (!metrics) return null
+  return { on: metrics.enabled, view: flowView(metrics, recentWindow.value, snapshotData.value) }
+})
+const flowTag = computed(() => {
+  if (!flow.value) return { label: '', tone: '' }
+  if (!flow.value.on) return { label: '未开启', tone: '' }
+  const { period, total } = flow.value.view
+  return total ? { label: `${period}拦了 ${formatNumber(total)} 次`, tone: 'warn' } : { label: `${period}没拦过`, tone: 'ok' }
+})
+const FLOW_SETTINGS = { path: '/config', query: { section: 'settings', group: 'flow-control' } }
 const rankingLog = (group: 'clients' | 'domains', name: string) => ({ path: '/logs', query: group === 'clients' ? { client: name } : { qname: name } })
 // 配置写进了新版本（包括离开配置页以后才落地的保存）：马上重读，页头和「当前运行配置」不和「版本 #N 已生效」对不上
 // A new config version was written (including a save that landed after leaving the config page): re-read at once, so the header and the running-config card match 「版本 #N 已生效」
@@ -930,6 +944,42 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <!-- 智能流控占一整行：开着时左边是这个时段各道防线拦了多少，中间是内存、轮流和卡住的查询，右边是被拦得最多的设备；没开时只有一句什么时候该开、
+             去哪里开。内核太旧没有这些指标时不出
+             Flow control takes a full row: when on, what each defence refused over the period on the left, memory, turns and stuck queries in the middle, and the
+             devices refused most on the right; when off, one line on when to turn it on and where. No card when the kernel is too old to report it -->
+        <section v-if="flow" class="ui-card overview-card overview-card--flow" aria-label="智能流控">
+          <div class="overview-card-head">
+            <h2 class="ui-card__label">智能流控</h2>
+            <span class="ui-tag" :class="flowTag.tone ? `ui-tag--${flowTag.tone}` : ''">{{ flowTag.label }}</span>
+          </div>
+          <div v-if="flow.on" class="overview-flow">
+            <div class="overview-rows">
+              <div v-for="row in flow.view.refused" :key="row.key" class="overview-row">
+                <span class="overview-row-name"><span>{{ row.label }}</span></span>
+                <span class="overview-row-value">{{ formatNumber(row.count) }} 次</span>
+              </div>
+              <p v-if="!flow.view.refused.length" class="overview-empty">{{ flow.view.period }}一次都没拦过，各台设备都照常解析。</p>
+            </div>
+            <dl class="overview-flow-state">
+              <div><dt class="ui-lbl">内存</dt><dd><b v-if="flow.view.memory" :class="`overview-text--${flow.view.memory.tone === 'ok' ? 'healthy' : flow.view.memory.tone === 'warn' ? 'degraded' : 'unhealthy'}`">{{ flow.view.memory.label }}</b><template v-else>没吃紧</template></dd></div>
+              <div><dt class="ui-lbl">按设备轮流</dt><dd>{{ flow.view.turns ? `${formatNumber(flow.view.turns)} 次` : '没有' }}</dd></div>
+              <div><dt class="ui-lbl">卡住等上游</dt><dd>{{ flow.view.stuck ? `${formatNumber(flow.view.stuck)} 个` : '没有' }}</dd></div>
+            </dl>
+            <div v-if="flow.view.clients.length" class="overview-rows">
+              <div v-for="client in flow.view.clients" :key="client.client" class="overview-row" :class="{ 'ov-jumps': logLinks }">
+                <RouterLink v-if="logLinks" class="ov-jump" :to="rankingLog('clients', client.client)" :aria-label="`在查询日志里看 ${client.client} 的查询`" />
+                <span class="overview-row-name ov-jump-name"><span class="ui-mono">{{ client.client }}</span></span>
+                <!-- 设备的次数是内核启动以来的（按时段算的话表里来回换人就不准了），时段不是启动以来时写明「累计」 / A device's count runs from the kernel's start (counting it
+                     by period would go wrong as the table swaps devices), so it says 累计 when the period is not since the start -->
+                <span class="overview-row-value">{{ flow.view.period === '启动以来' ? '' : '累计 ' }}{{ formatNumber(client.refused) }} 次</span>
+                <p v-if="client.ago" class="overview-row-sub">最近一次 {{ client.ago }}</p>
+              </div>
+            </div>
+          </div>
+          <p v-else class="overview-flow-off"><span>路由器这类内存小的设备建议打开：某台设备猛发查询时，只有它收到 SERVFAIL，别的设备照常解析。</span><RouterLink class="ui-btn ui-btn--secondary" :to="FLOW_SETTINGS"><SlidersHorizontal :size="16" aria-hidden="true" />去开启</RouterLink></p>
+        </section>
+
         <!-- 底下一排：响应码分布、缓存构成（有数据才出）和当前运行配置；三张卡同高，运行配置的按钮落在底边
              The bottom row: response codes, cache composition (drawn only with data) and the running configuration; three cards of one height, the configuration's buttons on the bottom edge -->
         <div class="overview-trio">
@@ -1087,6 +1137,13 @@ onBeforeUnmount(() => {
 .overview-grid.is-empty .overview-col { grid-template-rows: none; align-content: start; }
 @media (min-width: 1160px) { .overview-grid.is-empty > .overview-col--side { grid-template-rows: auto auto; align-content: stretch; } }
 .overview-trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap); }
+/* 智能流控：三块并排，和底下三张卡同一套列；窄了叠起来 / Flow control: three blocks side by side on the same columns as the three cards below; stacked when narrow */
+.overview-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap); align-items: start; }
+.overview-flow-state { display: grid; gap: 8px; margin: 0; }
+.overview-flow-state > div { display: flex; justify-content: space-between; gap: 12px; }
+.overview-flow-state dd { margin: 0; text-align: right; }
+.overview-flow-off { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
+@media (max-width: 899px) { .overview-flow { grid-template-columns: minmax(0, 1fr); } }
 .overview-trio > :only-child { grid-column: 1 / -1; }
 
 /* ---------- 卡片：小标签、右上角一句灰字、内容 ---------- */

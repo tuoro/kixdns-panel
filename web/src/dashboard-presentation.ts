@@ -1,5 +1,5 @@
-import type { MetricsSnapshot, RequestLatency, UpstreamCount, UpstreamTally } from './api/types'
-import { shownPercent, upstreamSuccessRate } from './utils'
+import type { FlowControl, FlowRefused, MetricsSnapshot, RequestLatency, UpstreamCount, UpstreamTally } from './api/types'
+import { formatAgo, shownPercent, upstreamSuccessRate } from './utils'
 
 export type UpstreamHealth = 'pending' | 'healthy' | 'degraded' | 'unhealthy'
 
@@ -155,4 +155,59 @@ export function cacheComposition(metrics: MetricsSnapshot): ShareRow[] {
   const total = rows.reduce((sum, row) => sum + row.count, 0)
   if (total === 0) return []
   return rows.map((row) => ({ ...row, share: row.count / total }))
+}
+
+/** 各道防线在卡片上叫什么，按平常最可能出现的先后排 / What each defence is called on the card, in the order they most often turn up */
+export const FLOW_DEFENCES: readonly { key: keyof FlowRefused; label: string }[] = [
+  { key: 'queue', label: '处理不过来时排不下' },
+  { key: 'capacity', label: '处理不过来时发得多' },
+  { key: 'memory', label: '内存不够' },
+  { key: 'connection', label: '内存不够时的新连接' },
+  { key: 'stuck', label: '等上游卡住的太多' },
+  { key: 'unanswered', label: '上游不回答这台设备' },
+]
+
+export interface FlowView {
+  /** 时段：最近一小时，或启动以来 */
+  period: string
+  /** 拦过的防线，次数多的在前 */
+  refused: { key: keyof FlowRefused; label: string; count: number }[]
+  total: number
+  turns: number
+  stuck: number
+  /** 内存：充足、紧张（还剩底线的几倍）、见底；最近一分钟没读过内存时为 null（在途少时内核不看内存） */
+  memory: { label: string; tone: 'ok' | 'warn' | 'bad' } | null
+  /** 这个时段里被拦过的设备，次数多的在前；快照时不写多久以前（离快照多久不知道） */
+  clients: { client: string; refused: number; ago: string }[]
+}
+
+/**
+ * 智能流控卡片要写的：有最近一小时的窗口就按窗口算，没有就按启动以来；设备只列这个时段里被拦过的。
+ * What the flow control card shows: over the recent window when there is one, otherwise since the start; only devices refused within
+ * that period are listed.
+ */
+export function flowView(flow: FlowControl, windowSeconds: number | null, snapshot = false, now = Date.now()): FlowView {
+  const recent = flow.recent && windowSeconds !== null ? flow.recent : null
+  const counts = recent?.refused ?? flow.refused
+  const refused = FLOW_DEFENCES.map(({ key, label }) => ({ key, label, count: counts[key] }))
+    .filter((row) => row.count > 0)
+    .sort((a, b) => b.count - a.count)
+  const room = flow.memory_room
+  const memory = room === null ? null
+    : room >= 2 ? { label: '充足', tone: 'ok' as const }
+    : room >= 1 ? { label: `紧张，剩底线的 ${room.toFixed(1)} 倍`, tone: 'warn' as const }
+    : { label: '见底', tone: 'bad' as const }
+  const within = recent ? windowSeconds! : Infinity
+  const nowSeconds = now / 1000
+  return {
+    period: recent ? recentWindowLabel(windowSeconds, snapshot) : '启动以来',
+    refused,
+    total: refused.reduce((sum, row) => sum + row.count, 0),
+    turns: recent?.turns ?? flow.turns,
+    stuck: flow.stuck,
+    memory,
+    clients: flow.clients
+      .filter((client) => client.age_seconds <= within)
+      .map((client) => ({ client: client.client, refused: client.refused, ago: snapshot ? '' : formatAgo(nowSeconds - client.age_seconds, now) })),
+  }
 }

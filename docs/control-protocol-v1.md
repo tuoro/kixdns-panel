@@ -75,7 +75,16 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `kixdns_upstream_rcodes_total{upstream,rcode}`：上游应答的响应码计数，`rcode` 为 hickory 的变体名（`NoError`、`NXDomain`、`ServFail`、`Refused` 等）。
 - `kixdns_upstream_via_total{upstream,transport,via}`：`transport` 为该地址选定的传输，`via` 为实际带回答案的传输；`transport="udp"` 且 `via="tcp"` 即 TCP 兜底。
 
-标签值必须转义，且只能来自配置中有界的 Pipeline、规则和上游集合。
+内核 2026.11.23 起追加智能流控的序列；更早的内核没有，面板就不出概览页的「智能流控」卡片：
+
+- `kixdns_flow_control_enabled`：开没开，1 或 0。
+- `kixdns_flow_refused_total{defence="capacity|memory|connection|queue|stuck|unanswered"}`：各道防线拦下几次，分别是内核忙时在途占着自己那一份的设备、内存不够、内存不够时的 TCP 和 DoH 新连接、按设备轮流时排不下、卡住的查询留够了、上游最近不回答这台设备。
+- `kixdns_flow_turns_total`：开始按设备轮流过几次。
+- `kixdns_flow_stuck`：卡住了、留着接着等的查询数。
+- `kixdns_flow_memory_room`：一分钟内读到的内存还剩几倍余量，2 以上算够，1 以下算没了；在途少时内核不读内存，这时没有这一行。
+- `kixdns_flow_refused_client_total{client}`、`kixdns_flow_refused_client_age_seconds{client}`：被拦得最多的设备（最多 8 台），各自被拦了几次（上限）、最近一次是几秒前。
+
+标签值必须转义，且只能来自配置中有界的 Pipeline、规则和上游集合；`client` 只来自上面那张最多 8 台的表。
 
 ### `POST /v1/config/validate`
 

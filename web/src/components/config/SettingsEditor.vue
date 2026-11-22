@@ -2,6 +2,7 @@
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { SETTING_SECTIONS, geoSummary, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
@@ -44,7 +45,9 @@ const searchInput = ref<HTMLInputElement>()
 // 左边一列分组、右边一组设置，和解析编排的「左列表、右检查器」同一种版式；手机上先看分组列表，点进去看一组。
 // Groups on the left and one group's settings on the right, the same layout as 解析编排's list and
 // inspector; a phone shows the group list first and opens one group at a time.
-const current = ref(props.lead?.id ?? 'network')
+// 网址里写了 ?group= 就打开那一组（概览页的「去开启」链到智能流控）/ A ?group= in the address opens that group (the overview's 去开启 links to flow control)
+const route = useRoute()
+const current = ref(SETTING_SECTIONS.some((section) => section.id === route.query.group) ? String(route.query.group) : props.lead?.id ?? 'network')
 const mobileOpen = ref(false)
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)

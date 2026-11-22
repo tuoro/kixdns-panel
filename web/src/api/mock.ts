@@ -250,6 +250,21 @@ const overview: Overview = {
     request_latency_recent: { samples: 58_210, avg_ms: 12.6, within_10ms: 47_558, within_100ms: 56_406, within_1s: 57_978 },
     cache_stale: { expired: 128_904, client_timeout: 9_314, upstream_failure: 1_204 },
     recent_window_seconds: 3_540,
+    // 智能流控开着：最近一小时一台设备猛发，处理不过来时排不下的丢了，轮流过一次 / Flow control on: one device flooded in the last hour, what did
+    // not fit while devices took turns was dropped, and turns began once
+    flow: {
+      enabled: true,
+      refused: { capacity: 1_408, memory: 2_212, connection: 0, queue: 48_307, stuck: 318, unanswered: 52 },
+      turns: 6,
+      stuck: 0,
+      memory_room: null,
+      clients: [
+        { client: '192.168.1.27', refused: 46_118, age_seconds: 380 },
+        { client: '192.168.1.8', refused: 1_264, age_seconds: 1_920 },
+        { client: '192.168.1.40', refused: 811, age_seconds: 52_000 },
+      ],
+      recent: { refused: { capacity: 212, memory: 0, connection: 0, queue: 1_840, stuck: 36, unanswered: 0 }, turns: 1 },
+    },
   },
 }
 

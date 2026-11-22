@@ -15,7 +15,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::control::{MetricsSnapshot, RequestLatency, UpstreamCount, UpstreamTally};
+use crate::control::{
+    FlowRecent, FlowRefused, MetricsSnapshot, RequestLatency, UpstreamCount, UpstreamTally,
+};
 
 /// 窗口长度。 / The window length.
 pub const RECENT_WINDOW_SECONDS: i64 = 60 * 60;
@@ -92,6 +94,9 @@ struct Sample {
     kernel_started_at: i64,
     upstreams: HashMap<(String, String), Counters>,
     request_latency: RequestLatency,
+    /// 流控拦下的次数和轮流的次数；内核没有时为空。 / Flow control's refusals and turns; empty when
+    /// the kernel has none.
+    flow: Option<(FlowRefused, u64)>,
 }
 
 /// 最近一小时的计数采样。 / Counter samples from the last hour.
@@ -118,6 +123,7 @@ impl RecentHistory {
                 })
                 .collect(),
             request_latency: metrics.request_latency.clone(),
+            flow: metrics.flow.as_ref().map(|flow| (flow.refused, flow.turns)),
         });
         while self
             .samples
@@ -165,6 +171,13 @@ impl RecentHistory {
             .unwrap_or_default();
         snapshot.request_latency_recent =
             Some(latency_since(&snapshot.request_latency, &latency_base));
+        if let Some(flow) = &mut snapshot.flow {
+            let (refused, turns) = baseline.and_then(|sample| sample.flow).unwrap_or_default();
+            flow.recent = Some(FlowRecent {
+                refused: flow.refused.since(refused),
+                turns: flow.turns.saturating_sub(turns),
+            });
+        }
     }
 }
 
@@ -217,6 +230,39 @@ mod tests {
             request_latency,
             ..MetricsSnapshot::default()
         }
+    }
+
+    /// 流控拦下的次数和轮流的次数也按窗口算；内核没有流控指标时不填
+    /// Flow control's refusals and turns go by the window too; with no flow metrics from the
+    /// kernel nothing is filled in
+    #[test]
+    fn flow_refusals_are_counted_over_the_window() {
+        use crate::control::{FlowControl, FlowRefused};
+        let flow = |memory, queue, turns| MetricsSnapshot {
+            flow: Some(FlowControl {
+                enabled: true,
+                refused: FlowRefused {
+                    memory,
+                    queue,
+                    ..FlowRefused::default()
+                },
+                turns,
+                ..FlowControl::default()
+            }),
+            ..MetricsSnapshot::default()
+        };
+        let mut history = RecentHistory::default();
+        history.record(NOW - 1_800, LONG_AGO, &flow(10, 4, 1));
+        let mut current = flow(25, 4, 3);
+        history.attach(&mut current, NOW, LONG_AGO);
+        let recent = current.flow.unwrap().recent.expect("a window");
+        assert_eq!(recent.refused.memory, 15);
+        assert_eq!(recent.refused.queue, 0);
+        assert_eq!(recent.turns, 2);
+
+        let mut without = MetricsSnapshot::default();
+        history.attach(&mut without, NOW, LONG_AGO);
+        assert!(without.flow.is_none());
     }
 
     #[test]

@@ -415,6 +415,92 @@ pub struct MetricsSnapshot {
     /// compare against.
     #[serde(default)]
     pub recent_window_seconds: Option<u64>,
+    /// 智能流控；内核 2026.11.23 起提供，更早的内核为空。
+    /// Smart flow control; from kernel 2026.11.23, empty with older kernels.
+    #[serde(default)]
+    pub flow: Option<FlowControl>,
+}
+
+/// 智能流控的状态和拦下的次数。 / Smart flow control's state and what it refused.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FlowControl {
+    pub enabled: bool,
+    /// 内核启动以来各道防线拦下几次。 / What each defence refused since the kernel started.
+    pub refused: FlowRefused,
+    /// 内核启动以来开始按设备轮流过几次。 / How many times devices began taking turns since the kernel started.
+    pub turns: u64,
+    /// 卡住了、留着接着等的查询。 / Stuck queries kept waiting.
+    pub stuck: u64,
+    /// 上次读到内存还剩几倍余量：2 以上算够，1 以下算没了；没开流控时为空。
+    /// How many margins of memory were left as last read: 2 or more is enough, under 1 none left;
+    /// empty with flow control off.
+    pub memory_room: Option<f64>,
+    /// 被拦得最多的几台设备，次数多的在前。 / The devices refused most, most first.
+    pub clients: Vec<RefusedClient>,
+    /// 最近一段时间（`recent_window_seconds`）拦下的次数；还没有可比的采样时为空。
+    /// What was refused over the recent window (`recent_window_seconds`); empty until there is a
+    /// sample to compare against.
+    pub recent: Option<FlowRecent>,
+}
+
+/// 各道防线拦下几次。 / What each defence refused.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowRefused {
+    /// 内核忙、查询排着长队时，在途占着自己那一份的设备。 / The kernel busy and queueing long, a device holding its share.
+    pub capacity: u64,
+    /// 内存不够。 / Too little memory.
+    pub memory: u64,
+    /// 内存不够时的 TCP、DoH 新连接。 / New TCP and `DoH` connections with too little memory.
+    pub connection: u64,
+    /// 按设备轮流时这台设备的队排满了。 / Its queue full while devices take turns.
+    pub queue: u64,
+    /// 这台设备卡住的查询留够了。 / Enough of the device's stuck queries kept.
+    pub stuck: u64,
+    /// 上游最近不回答这台设备。 / The upstream not answering the device of late.
+    pub unanswered: u64,
+}
+
+impl FlowRefused {
+    fn set(&mut self, defence: &str, value: u64) {
+        let slot = match defence {
+            "capacity" => &mut self.capacity,
+            "memory" => &mut self.memory,
+            "connection" => &mut self.connection,
+            "queue" => &mut self.queue,
+            "stuck" => &mut self.stuck,
+            "unanswered" => &mut self.unanswered,
+            _ => return,
+        };
+        *slot = value;
+    }
+
+    /// 两次采样之差。 / The difference between two samples.
+    pub fn since(self, base: Self) -> Self {
+        Self {
+            capacity: self.capacity.saturating_sub(base.capacity),
+            memory: self.memory.saturating_sub(base.memory),
+            connection: self.connection.saturating_sub(base.connection),
+            queue: self.queue.saturating_sub(base.queue),
+            stuck: self.stuck.saturating_sub(base.stuck),
+            unanswered: self.unanswered.saturating_sub(base.unanswered),
+        }
+    }
+}
+
+/// 最近一段时间拦下的次数。 / What was refused over the recent window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowRecent {
+    pub refused: FlowRefused,
+    pub turns: u64,
+}
+
+/// 被拦得最多的一台设备：被拦了几次（上限），最近一次是几秒前。
+/// A device refused often: how often (an upper bound), and how many seconds ago it last was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusedClient {
+    pub client: String,
+    pub refused: u64,
+    pub age_seconds: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -987,6 +1073,8 @@ struct MetricsBuilder {
     upstream_response_latency: BTreeMap<(String, String), (f64, u64)>,
     upstream_rcodes: BTreeMap<(String, String), u64>,
     request_latency_sum_ms: f64,
+    /// 被拦的设备：次数和几秒前。 / Refused devices: how often and how many seconds ago.
+    refused_clients: BTreeMap<String, (u64, u64)>,
     seen: BTreeSet<&'static str>,
 }
 
@@ -1012,6 +1100,10 @@ impl MetricsBuilder {
     }
 
     fn record(&mut self, sample: &Sample) {
+        if sample.metric.starts_with("kixdns_flow_") {
+            self.record_flow(sample);
+            return;
+        }
         if let Some(value) = float_value(sample.value) {
             match sample.metric.as_str() {
                 "kixdns_request_latency_ms_sum" => {
@@ -1100,6 +1192,36 @@ impl MetricsBuilder {
                             _ => {}
                         }
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 智能流控的序列；更早的内核没有这些行，`flow` 留空。 / Flow control's series; older kernels have
+    /// none of them and `flow` stays empty.
+    fn record_flow(&mut self, sample: &Sample) {
+        let flow = self.snapshot.flow.get_or_insert_with(FlowControl::default);
+        let count = numeric_value(sample.value);
+        let client = || sample.labels.get("client").map(str::to_owned);
+        match (sample.metric.as_str(), count) {
+            ("kixdns_flow_control_enabled", Some(value)) => flow.enabled = value == 1,
+            ("kixdns_flow_refused_total", Some(value)) => {
+                if let Some(defence) = sample.labels.get("defence") {
+                    flow.refused.set(defence, value);
+                }
+            }
+            ("kixdns_flow_turns_total", Some(value)) => flow.turns = value,
+            ("kixdns_flow_stuck", Some(value)) => flow.stuck = value,
+            ("kixdns_flow_memory_room", _) => flow.memory_room = float_value(sample.value),
+            ("kixdns_flow_refused_client_total", Some(value)) => {
+                if let Some(client) = client() {
+                    self.refused_clients.entry(client).or_default().0 = value;
+                }
+            }
+            ("kixdns_flow_refused_client_age_seconds", Some(value)) => {
+                if let Some(client) = client() {
+                    self.refused_clients.entry(client).or_default().1 = value;
                 }
             }
             _ => {}
@@ -1267,6 +1389,19 @@ impl MetricsBuilder {
                     upstream
                 })
                 .collect();
+            if let Some(flow) = &mut self.snapshot.flow {
+                flow.clients = self
+                    .refused_clients
+                    .into_iter()
+                    .map(|(client, (refused, age_seconds))| RefusedClient {
+                        client,
+                        refused,
+                        age_seconds,
+                    })
+                    .collect();
+                flow.clients
+                    .sort_by_key(|client| std::cmp::Reverse(client.refused));
+            }
             Ok(self.snapshot)
         } else {
             Err(ControlError::Protocol(format!(
@@ -1680,6 +1815,62 @@ kixdns_upstream_via_total{upstream="1.1.1.1:53",transport="udp",via="tcp"} 2
         assert_eq!(first.rcodes[1].name, "NXDomain");
         assert!(metrics.upstreams[1].avg_latency_ms.is_none());
         assert!(metrics.upstreams[1].rcodes.is_empty());
+    }
+
+    /// 流控的指标读进 `flow`：各道防线、轮流、卡住、内存余地和被拦的设备（次数多的在前）；不认识的防线不管，
+    /// 更早的内核没有这些行时 `flow` 为空
+    /// Flow control's metrics are read into `flow`: the defences, turns, stuck queries, memory room
+    /// and the refused devices (most first); an unknown defence is passed over, and with an older
+    /// kernel lacking these lines `flow` is empty
+    #[test]
+    fn flow_control_metrics_are_read() {
+        let required = r#"
+kixdns_requests_total 42
+kixdns_requests_inflight 2
+kixdns_cache_lookups_total 20
+kixdns_cache_hits_total{kind="fresh"} 8
+kixdns_cache_hits_total{kind="stale"} 1
+kixdns_cache_entries 7
+kixdns_config_generation 3
+kixdns_config_reload_total{result="success"} 2
+kixdns_config_reload_total{result="failure"} 0
+"#;
+        assert!(
+            parse_metrics(required).unwrap().flow.is_none(),
+            "an older kernel has no flow control"
+        );
+        let text = format!(
+            "{required}{}",
+            r#"
+kixdns_flow_control_enabled 1
+kixdns_flow_refused_total{defence="memory"} 120
+kixdns_flow_refused_total{defence="queue"} 7
+kixdns_flow_refused_total{defence="future"} 9
+kixdns_flow_turns_total 2
+kixdns_flow_stuck 3
+kixdns_flow_memory_room 1.562
+kixdns_flow_refused_client_total{client="192.168.1.20"} 100
+kixdns_flow_refused_client_age_seconds{client="192.168.1.20"} 30
+kixdns_flow_refused_client_total{client="fd00::5"} 400
+kixdns_flow_refused_client_age_seconds{client="fd00::5"} 2
+"#
+        );
+        let flow = parse_metrics(&text).unwrap().flow.expect("flow control");
+        assert!(flow.enabled);
+        assert_eq!(flow.refused.memory, 120);
+        assert_eq!(flow.refused.queue, 7);
+        assert_eq!(flow.refused.capacity, 0);
+        assert_eq!((flow.turns, flow.stuck), (2, 3));
+        assert_eq!(flow.memory_room, Some(1.562));
+        assert_eq!(
+            flow.clients
+                .iter()
+                .map(|client| (client.client.as_str(), client.refused, client.age_seconds))
+                .collect::<Vec<_>>(),
+            [("fd00::5", 400, 2), ("192.168.1.20", 100, 30)],
+            "most refused first"
+        );
+        assert!(flow.recent.is_none());
     }
 
     /// 内核按 Prometheus 文本格式转义标签值（`\\`、`\"`、`\n`），名字里的逗号、等号、`}` 原样写出；
