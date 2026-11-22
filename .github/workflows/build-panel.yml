@@ -604,7 +604,13 @@ jobs:
 
   acceptance:
     name: Accept packaged installation
-    if: github.event_name != 'pull_request'
+    # 推到 main 时 e2e 被跳过，「跳过」会顺着依赖往下传：不写 !cancelled()、只看 build 的结果的话，build 照常构建了，
+    # 这里却跟着被跳过，每次推到 main 的安装验收就没了。publish 同理
+    # On pushes to main e2e is skipped, and a skip travels down the needs chain: without !cancelled() and a check on
+    # build's own result this job is skipped even though build ran, losing the install acceptance on every push to
+    # main. The same holds for publish
+    if: >-
+      !cancelled() && github.event_name != 'pull_request' && needs.build.result == 'success'
     needs: build
     permissions:
       actions: read
@@ -626,7 +632,9 @@ jobs:
 
   publish:
     name: Publish panel release
-    if: github.event_name == 'release'
+    if: >-
+      !cancelled() && github.event_name == 'release'
+      && needs.build.result == 'success' && needs.acceptance.result == 'success'
     needs: [build, acceptance]
     permissions:
       actions: read
