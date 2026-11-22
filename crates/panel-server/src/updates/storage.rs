@@ -471,6 +471,90 @@ pub(super) fn prune_versions(
     sync_directory(versions_path)
 }
 
+/// 版本目录里 `keep` 以外的各个版本目录，连同各自占的字节（只看文件大小，不读内容）。要留的版本按它实际所在的目录认：
+/// 同一个版本可能还留着旧的目录名
+/// The version directories other than those in `keep`, each with the bytes it takes (by file size, without reading
+/// them). A kept version is told by the directory it actually lives in, as one version may still have an older name
+fn other_version_directories(
+    versions_path: &Path,
+    keep: &[&VersionKey],
+) -> Result<Vec<(PathBuf, u64)>, UpdateError> {
+    let install = |error: std::io::Error| UpdateError::Install(error.to_string());
+    let kept = keep
+        .iter()
+        .map(|key| locate_version_directory(versions_path, key))
+        .collect::<Result<Vec<_>, _>>()?;
+    let entries = match fs::read_dir(versions_path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(install(error)),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(install)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if parse_version_directory(&name).is_none() {
+            continue;
+        }
+        let path = entry.path();
+        if kept.contains(&path) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(install)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let mut size = 0u64;
+        for file in fs::read_dir(&path).map_err(install)? {
+            let metadata = fs::symlink_metadata(file.map_err(install)?.path()).map_err(install)?;
+            if metadata.is_file() {
+                size = size.saturating_add(metadata.len());
+            }
+        }
+        found.push((path, size));
+    }
+    Ok(found)
+}
+
+/// 删掉 `keep`（活动版本和这次要换上的版本）以外的本地版本能腾出多少字节（musl 版存内核前看空间时用，见 `space`）
+/// How many bytes removing the local versions other than `keep` (the active one and the one being switched to) frees
+/// (for the room check of musl builds, see `space`)
+pub(super) fn reclaimable_bytes(
+    versions_path: &Path,
+    keep: &[&VersionKey],
+) -> Result<u64, UpdateError> {
+    Ok(other_version_directories(versions_path, keep)?
+        .iter()
+        .map(|(_, size)| size)
+        .sum())
+}
+
+/// 删掉 `keep` 以外的本地版本，连损坏的也删：空间不够、这次更新不留上一个时，先腾出空间
+/// Removes the local versions other than `keep`, damaged ones included: with too little room, when this update keeps no
+/// previous kernel, this makes the room first
+pub(super) fn remove_other_versions(
+    versions_path: &Path,
+    keep: &[&VersionKey],
+) -> Result<(), UpdateError> {
+    for (path, _) in other_version_directories(versions_path, keep)? {
+        fs::remove_dir_all(path).map_err(|error| UpdateError::Install(error.to_string()))?;
+    }
+    sync_directory(versions_path)
+}
+
+/// 本地某个版本的内核占多少字节 / How many bytes a local version's kernel takes
+pub(super) fn stored_binary_size(
+    versions_path: &Path,
+    key: &VersionKey,
+) -> Result<u64, UpdateError> {
+    let path = locate_version_directory(versions_path, key)?.join("kixdns");
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.len())
+        .map_err(|error| UpdateError::Install(error.to_string()))
+}
+
 fn parse_version_directory(name: &str) -> Option<VersionKey> {
     if validate_commit(name).is_ok() {
         return VersionKey::new(VersionSource::Action, name).ok();

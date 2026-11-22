@@ -834,6 +834,7 @@ onBeforeUnmount(() => {
             <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="kernelAction !== null || panelDown" @click="rollbackKernel"><RotateCw v-if="kernelAction === 'rollback'" :size="14" class="spin" />{{ kernelAction === 'rollback' ? '回退中' : '回退' }}</button>
           </template>
           <!-- 没有上一个版本时这一行照样在：卡片底部不留空，两张卡的底行对齐 / Without a previous build the row stays, so the card's bottom is never blank and the pair's bottom rows line up -->
+          <span v-else-if="kernel?.previous_dropped_for_space" class="install-previous__none">这台设备空间不够，上次更新没有保留上一个版本</span>
           <span v-else class="install-previous__none">没有可回退的版本，更新一次后会留下上一个</span>
         </div>
       </section>

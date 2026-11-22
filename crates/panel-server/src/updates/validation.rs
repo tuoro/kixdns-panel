@@ -136,10 +136,35 @@ pub(super) fn kernel_architecture() -> &'static str {
     }
 }
 
-/// 某个版本里本机架构的内核包文件名。
-/// The file name of this architecture's kernel package in a given version.
+/// 这个面板构建用的 C 库：musl 版（OpenWrt 这类没有 glibc 的系统）只能换上 musl 内核，内核包的
+/// `KIXDNS_SOURCE.json` 里记成 `libc`，没有这一项的旧包都是 glibc 版
+/// The C library of this panel build: a musl build (systems without glibc such as `OpenWrt`) may only switch to a musl
+/// kernel. A kernel package records it as `libc` in `KIXDNS_SOURCE.json`; older packages without it are all glibc builds
+pub(super) const fn kernel_libc() -> &'static str {
+    if cfg!(target_env = "musl") {
+        "musl"
+    } else {
+        "gnu"
+    }
+}
+
+/// 发布清单 `assets` 里本机要取的键：glibc 版就是架构名，musl 版再加 `-musl`（tuoro/kixdns 的 panel-release.yml）。
+/// 只认架构名的旧面板因此照旧取 glibc 版
+/// The key this host takes from the release manifest's `assets`: the architecture for a glibc build, with `-musl`
+/// added for a musl build (panel-release.yml in tuoro/kixdns), so older panels that only know the architecture keep
+/// taking the glibc build
+pub(super) fn kernel_asset_key() -> String {
+    if cfg!(target_env = "musl") {
+        format!("{}-musl", kernel_architecture())
+    } else {
+        kernel_architecture().to_owned()
+    }
+}
+
+/// 某个版本里本机该装的内核包文件名。
+/// The file name of the kernel package this host installs in a given version.
 pub(super) fn kernel_asset_name(version: &str) -> String {
-    format!("kixdns-{version}-linux-{}.zip", kernel_architecture())
+    format!("kixdns-{version}-linux-{}.zip", kernel_asset_key())
 }
 
 pub(super) fn validate_build_identity(identity: &BuildIdentity) -> Result<(), UpdateError> {
@@ -299,7 +324,53 @@ pub(super) fn validate_elf(binary: &[u8]) -> Result<(), UpdateError> {
             "ELF 架构不匹配：期望 {expected}，实际 {machine}"
         )));
     }
+    // musl 版的面板装在没有 glibc 的系统上：清单和来源说明之外再看一眼程序本身，带动态加载器的一律不收，
+    // 哪怕元数据写错了也装不上一个起不来的内核
+    // A musl panel runs where there is no glibc: beyond the manifest and the source record, the program itself is checked,
+    // and one with a dynamic loader is refused, so even wrong metadata cannot install a kernel that would not start
+    if cfg!(target_env = "musl") && elf_has_interpreter(binary)? {
+        return Err(UpdateError::Verification(
+            "这个内核是动态链接的，在没有 glibc 的系统上起不来".to_owned(),
+        ));
+    }
     Ok(())
+}
+
+/// 64 位小端 ELF 有没有程序解释器（动态加载器，`PT_INTERP`）；程序头读不全就当无效
+/// Whether a 64-bit little-endian ELF has a program interpreter (a dynamic loader, `PT_INTERP`); program headers that
+/// cannot be read in full count as invalid
+pub(super) fn elf_has_interpreter(binary: &[u8]) -> Result<bool, UpdateError> {
+    const PT_INTERP: u32 = 3;
+    let invalid = || UpdateError::Verification("ELF 程序头无效".to_owned());
+    if binary.get(..4) != Some(b"\x7fELF".as_slice()) || binary.get(4) != Some(&2) {
+        return Err(invalid());
+    }
+    let bytes = |offset: usize, length: usize| binary.get(offset..offset.checked_add(length)?);
+    let u16_at = |offset| bytes(offset, 2).map(|value| u16::from_le_bytes([value[0], value[1]]));
+    let program_headers = bytes(0x20, 8)
+        .and_then(|value| <[u8; 8]>::try_from(value).ok())
+        .map(u64::from_le_bytes)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .ok_or_else(invalid)?;
+    let entry_size = usize::from(u16_at(0x36).ok_or_else(invalid)?);
+    let entries = usize::from(u16_at(0x38).ok_or_else(invalid)?);
+    if entry_size < 4 {
+        return Err(invalid());
+    }
+    for index in 0..entries {
+        let start = index
+            .checked_mul(entry_size)
+            .and_then(|offset| offset.checked_add(program_headers))
+            .ok_or_else(invalid)?;
+        let kind = bytes(start, 4)
+            .and_then(|value| <[u8; 4]>::try_from(value).ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(invalid)?;
+        if kind == PT_INTERP {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(super) fn write_executable(

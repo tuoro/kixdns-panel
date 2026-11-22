@@ -181,7 +181,8 @@ Differences from the systemd version:
 - service status asks procd through `ubus call service list` first: instances present but not running read as failed (triggering "did not come up" rollback), only a service absent from the list reads as inactive; ubus unusable falls back to the pid file + `/proc/<pid>`
 - the logs page takes the level from the first word after each line's timestamp (INFO/WARN/ERROR) instead of scanning the whole line, so `terror.example.com` and `no error` are not misread
 - the start/stop buttons drive the init script's `enable start` / `stop disable`, matching systemd's persistence
-- online updates (panel self-update, kernel online update) are not supported on musl yet: the updater still ships glibc packages; the panel says so clearly until musl packages are published
+- kernel online updates take the `-musl` kernel package and check the room on the flash before storing it: with room the previous kernel is kept as usual, with room for the new one only no previous kernel is kept (the System page says so), and with no room there is no update. A new kernel that does not start is still switched back automatically; see `deploy/openwrt/README.md`
+- panel self-update is not supported on musl yet: the updater and the panel package are still for systemd and glibc, and the panel says so clearly
 
 ## First access
 

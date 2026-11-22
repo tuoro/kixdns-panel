@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,7 @@ use crate::temporaries::sweep;
 mod catalog;
 mod github;
 mod install;
+mod space;
 mod validation;
 
 use github::read_github_token;
@@ -46,6 +47,10 @@ const LEGACY_ACTIVE_COMMIT_KEY: &str = "installed_panel_commit";
 /// The previous kernel: the rollback target, and the only version kept besides the
 /// current one.
 const PREVIOUS_VERSION_KEY: &str = "previous_kixdns_version";
+/// 上一次内核更新因为空间不够没有留下上一个（musl 版，见 `space`）：页面据此说明为什么没有可回退的版本
+/// The last kernel update kept no previous kernel for lack of room (musl builds, see `space`): the page says why there is
+/// nothing to roll back to
+const PREVIOUS_DROPPED_KEY: &str = "previous_kixdns_dropped_for_space";
 /// 旧轨道的内核（Action 构建或更早的 Release）第一次被换成 fork 发布版的时间。有这条
 /// 记录，用户自己回退到旧内核后，面板重启时不再替换一次。
 /// When a kernel from an old track (an Action build or an earlier Release) was first
@@ -167,6 +172,12 @@ pub struct UpdateManager {
     github_token_path: Arc<PathBuf>,
     github_token: Arc<RwLock<Option<SecretString>>>,
     github_rate_limit: Arc<RwLock<Option<GithubRateLimit>>>,
+    /// 存新内核前先看空间（只有 musl 版这样做，见 `space`）/ Look at the room before storing a new kernel (only musl builds do,
+    /// see `space`)
+    space_aware: bool,
+    /// 文件系统还能写多少字节；测试里换成固定的数 / How many bytes the filesystem can still take; tests put fixed numbers
+    /// in its place
+    free_space: fn(&Path) -> Result<u64, UpdateError>,
 }
 
 pub struct UpdateSettings {
@@ -225,6 +236,10 @@ pub struct KixdnsKernel {
     pub binary_present: bool,
     pub active: Option<InstalledVersion>,
     pub previous: Option<InstalledVersion>,
+    /// 没有上一个，是因为上次更新时这台设备空间不够（musl 版，见 `space`），不是还没更新过
+    /// There is no previous kernel because the device was short of room at the last update (musl builds, see `space`),
+    /// not because it was never updated
+    pub previous_dropped_for_space: bool,
     pub latest: Option<RemoteVersion>,
     pub remote_error: Option<String>,
 }
@@ -511,6 +526,10 @@ struct KernelSource {
     #[serde(default)]
     upstream_commit: Option<String>,
     arch: String,
+    /// `gnu` 或 `musl`；加上 musl 版以前的包没有这一项，都是 glibc 版
+    /// `gnu` or `musl`; packages from before the musl builds lack it and are all glibc builds
+    #[serde(default)]
+    libc: Option<String>,
     control_protocol: u32,
 }
 
@@ -574,10 +593,14 @@ pub enum UpdateError {
     Conflict(String),
     #[error("当前平台不支持自动更新")]
     Unsupported,
-    /// musl 构建（OpenWrt 等）：在线更新用的还是 glibc 包，先临时禁用并给出明确提示。
-    /// `musl` builds (`OpenWrt` etc.): the online updater still ships glibc packages, so it is
-    /// disabled for now with a clear message.
-    #[error("当前是 musl 构建，暂不支持在线更新（musl 版安装包尚未发布）")]
+    /// musl 构建（OpenWrt 等）的面板自更新：更新器和面板安装包都还是给 systemd、glibc 的，先禁用并给出明确提示。
+    /// 内核在线更新已经按 libc 取包，不受这一条影响
+    /// Panel self-update on a musl build (`OpenWrt` etc.): the updater and the panel package are still for systemd and
+    /// glibc, so it is disabled with a clear message. Kernel online updates take the package by libc and are not
+    /// affected
+    #[error(
+        "当前是 musl 构建，面板暂不支持在线自更新（OpenWrt 安装包尚未发布）；内核可以照常在线更新"
+    )]
     MuslUnsupported,
 }
 
@@ -686,6 +709,8 @@ impl UpdateManager {
             github_token_path: Arc::new(github_token_path),
             github_token: Arc::new(RwLock::new(github_token)),
             github_rate_limit: Arc::new(RwLock::new(None)),
+            space_aware: cfg!(target_env = "musl"),
+            free_space: space::available,
         })
     }
 }

@@ -566,6 +566,9 @@ export interface KixdnsKernel {
   binary_present: boolean
   active: InstalledKixdnsVersion | null
   previous: InstalledKixdnsVersion | null
+  // 没有上一个，是因为上次更新时这台设备（路由器等 musl 版）空间不够，不是还没更新过
+  // No previous build because the device (a musl build such as a router) was short of room at the last update, not because it was never updated
+  previous_dropped_for_space?: boolean
   latest: RemoteKixdnsVersion | null
   remote_error: string | null
 }

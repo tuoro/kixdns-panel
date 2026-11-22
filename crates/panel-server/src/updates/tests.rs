@@ -7,8 +7,10 @@ use tempfile::tempdir;
 
 use super::ServiceHost;
 use super::install::verify_kernel_source;
-use super::storage::bundled_binary_is_current;
-use super::validation::{kernel_architecture, kernel_asset_name};
+use super::storage::{bundled_binary_is_current, reclaimable_bytes, remove_other_versions};
+use super::validation::{
+    elf_has_interpreter, kernel_architecture, kernel_asset_key, kernel_asset_name, kernel_libc,
+};
 use super::{
     BuildIdentity, GithubRelease, InstalledVersion, MANIFEST_SCHEMA_VERSION, ReleaseAsset,
     ReleaseManifest, RemoteVersion, UpdateError, UpdateManager, UpdateSettings, VersionKey,
@@ -2095,4 +2097,235 @@ fn a_replaced_binary_is_simply_not_the_bundled_one() {
         directory.path(),
         b"replaced by an update"
     ));
+}
+
+/// 内核包记着 C 库：没有这一项的旧包是 glibc 版；和这个面板的 C 库对不上就不收
+/// A kernel package records its C library: older packages without it are glibc builds, and one that does not match this
+/// panel's C library is refused
+#[test]
+fn a_package_must_be_built_for_this_c_library() {
+    let packaged = serde_json::from_str::<super::KernelSource>(&kernel_source_json(
+        TEST_VERSION,
+        TEST_BUILD_COMMIT,
+    ))
+    .unwrap();
+    let check = |source: &super::KernelSource| {
+        verify_kernel_source(
+            source,
+            TEST_REPOSITORY,
+            TEST_VERSION,
+            TEST_BUILD_COMMIT,
+            Some(TEST_UPSTREAM_COMMIT),
+        )
+    };
+    assert!(packaged.libc.is_none(), "older packages carry no libc");
+    assert_eq!(check(&packaged).is_ok(), kernel_libc() == "gnu");
+    let mut same = packaged.clone();
+    same.libc = Some(kernel_libc().to_owned());
+    assert!(check(&same).is_ok());
+    let other = if kernel_libc() == "musl" {
+        "gnu"
+    } else {
+        "musl"
+    };
+    let mut different = packaged;
+    different.libc = Some(other.to_owned());
+    let error = check(&different).unwrap_err();
+    assert!(error.to_string().contains(other), "{error}");
+}
+
+/// 本机取清单里哪个包：glibc 版就是架构名，musl 版再加 `-musl`
+/// Which package this host takes from the manifest: the architecture for glibc, with `-musl` added for musl
+#[test]
+fn the_asset_key_carries_the_c_library() {
+    let key = kernel_asset_key();
+    if cfg!(target_env = "musl") {
+        assert_eq!(key, format!("{}-musl", kernel_architecture()));
+    } else {
+        assert_eq!(key, kernel_architecture());
+    }
+    assert_eq!(
+        kernel_asset_name("2026.11.22.2"),
+        format!("kixdns-2026.11.22.2-linux-{key}.zip")
+    );
+}
+
+/// 一个 64 位 ELF 头加上给定类型的程序头 / A 64-bit ELF header followed by program headers of the given types
+fn elf_with_program_headers(kinds: &[u32]) -> Vec<u8> {
+    let mut binary = test_elf();
+    binary.resize(64, 0);
+    binary[4] = 2;
+    binary[0x20..0x28].copy_from_slice(&64_u64.to_le_bytes());
+    binary[0x36..0x38].copy_from_slice(&56_u16.to_le_bytes());
+    binary[0x38..0x3a].copy_from_slice(&u16::try_from(kinds.len()).unwrap().to_le_bytes());
+    for kind in kinds {
+        let mut header = vec![0_u8; 56];
+        header[..4].copy_from_slice(&kind.to_le_bytes());
+        binary.extend(header);
+    }
+    binary
+}
+
+/// 动态加载器（`PT_INTERP`）从程序头里认；程序头读不全就当无效
+/// The dynamic loader (`PT_INTERP`) is found in the program headers; program headers cut short count as invalid
+#[test]
+fn a_dynamic_loader_is_found_in_the_program_headers() {
+    assert!(!elf_has_interpreter(&elf_with_program_headers(&[1, 1])).unwrap());
+    assert!(elf_has_interpreter(&elf_with_program_headers(&[6, 3, 1])).unwrap());
+    let mut truncated = elf_with_program_headers(&[1, 3]);
+    truncated.truncate(64 + 56 + 2);
+    assert!(elf_has_interpreter(&truncated).is_err());
+    assert!(
+        elf_has_interpreter(&test_elf()).is_err(),
+        "a 32-byte header is not a full 64-bit one"
+    );
+}
+
+fn directory_size(path: &std::path::Path) -> u64 {
+    std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum()
+}
+
+/// 能腾出的空间只算要留的版本以外的；清理时要留的不动，不是版本名的目录也不碰。要留的版本按实际所在的目录认，
+/// 还用着旧目录名的也认得出
+/// The room to free counts only versions other than the kept ones; cleaning leaves the kept ones and directories that are
+/// not version names alone. A kept version is told by the directory it lives in, an older directory name included
+#[test]
+fn room_from_old_versions_counts_all_but_the_kept_ones() {
+    let directory = tempdir().unwrap();
+    let versions = directory.path().join("versions");
+    std::fs::create_dir_all(&versions).unwrap();
+    let older = store_stored_build(&versions, 41, 10);
+    let active = store_stored_build(&versions, 42, 20);
+    let target = store_stored_build(&versions, 43, 30);
+    // 活动版本还在不带编号的旧目录名下 / The active version still under the older name without its number
+    let trackless = versions.join(format!("{}-{}", active.source.as_str(), active.commit));
+    std::fs::rename(versions.join(active.directory_name()), &trackless).unwrap();
+    let older_size = directory_size(&versions.join(older.directory_name()));
+    let all = older_size
+        + directory_size(&trackless)
+        + directory_size(&versions.join(target.directory_name()));
+    assert_eq!(
+        reclaimable_bytes(&versions, &[&active, &target]).unwrap(),
+        older_size
+    );
+    assert_eq!(reclaimable_bytes(&versions, &[]).unwrap(), all);
+
+    std::fs::create_dir(versions.join("not-a-version")).unwrap();
+    remove_other_versions(&versions, &[&active, &target]).unwrap();
+    assert!(!versions.join(older.directory_name()).exists());
+    assert!(trackless.is_dir());
+    assert!(versions.join(target.directory_name()).is_dir());
+    assert!(versions.join("not-a-version").is_dir());
+}
+
+async fn dropped_setting(database: &Database) -> Option<String> {
+    database
+        .get_setting(super::PREVIOUS_DROPPED_KEY)
+        .await
+        .unwrap()
+}
+
+/// 空间只够新内核（musl 版）：先删掉 43，换上新内核后 42 也不留，不记上一个，记下是空间不够
+/// Room for the new kernel only (musl builds): 43 is removed first, 42 is not kept after the switch, no previous kernel
+/// is recorded, and the lack of room is
+#[tokio::test]
+async fn a_device_short_of_room_keeps_no_previous_kernel() {
+    let mut fixture = switch_fixture().await;
+    fixture.manager.space_aware = true;
+    fixture.manager.free_space = |_| Ok(super::space::MIN_MARGIN);
+    let (latest, binary) = store_fork_build(&fixture.versions_path, 77, TEST_VERSION);
+    let host = FakeHost::new(true);
+
+    let installed = fixture
+        .manager
+        .update_locked(&latest, Some(77), &empty_config(), &host)
+        .await
+        .unwrap();
+
+    assert_eq!(installed.label(), TEST_VERSION);
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), binary);
+    assert_eq!(previous_setting(&fixture.database).await, None);
+    assert!(dropped_setting(&fixture.database).await.is_some());
+    let new_key = VersionKey::remote(&latest).unwrap();
+    assert!(
+        fixture
+            .versions_path
+            .join(new_key.directory_name())
+            .is_dir()
+    );
+    for gone in [&fixture.current_key, &fixture.target_key] {
+        assert!(!fixture.versions_path.join(gone.directory_name()).exists());
+    }
+    let rollback = fixture.manager.rollback(&empty_config(), &host).await;
+    assert!(matches!(rollback, Err(UpdateError::Conflict(_))));
+}
+
+/// 空间够（musl 版）：照常留下换下来的 42 当上一个，之前「空间不够」的记号清掉
+/// With room (musl builds): the 42 switched out stays as the previous kernel as usual, and an earlier lack-of-room note
+/// is cleared
+#[tokio::test]
+async fn a_device_with_room_keeps_the_previous_kernel() {
+    let mut fixture = switch_fixture().await;
+    fixture.manager.space_aware = true;
+    fixture.manager.free_space = |_| Ok(1 << 30);
+    fixture
+        .database
+        .set_setting(super::PREVIOUS_DROPPED_KEY, "1".to_owned(), 1)
+        .await
+        .unwrap();
+    let (latest, _) = store_fork_build(&fixture.versions_path, 77, TEST_VERSION);
+    let host = FakeHost::new(true);
+
+    fixture
+        .manager
+        .update_locked(&latest, Some(77), &empty_config(), &host)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(fixture.current_key.encoded())
+    );
+    assert_eq!(dropped_setting(&fixture.database).await, None);
+    assert!(
+        fixture
+            .versions_path
+            .join(fixture.current_key.directory_name())
+            .is_dir()
+    );
+}
+
+/// 连新内核都放不下（musl 版）：不更新，说清要多少、有多少，程序、版本和上一个的记录都不动
+/// Not even room for the new kernel (musl builds): no update, a message with what is needed and what is there, and the
+/// binary, the versions and the previous record all untouched
+#[tokio::test]
+async fn a_device_without_room_for_the_new_kernel_is_left_alone() {
+    let mut fixture = switch_fixture().await;
+    fixture.manager.space_aware = true;
+    fixture.manager.free_space = |_| Ok(1 << 20);
+    let (latest, _) = store_fork_build(&fixture.versions_path, 77, TEST_VERSION);
+    let host = FakeHost::new(true);
+
+    let error = fixture
+        .manager
+        .update_locked(&latest, Some(77), &empty_config(), &host)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, UpdateError::Conflict(_)), "{error:?}");
+    assert!(error.to_string().contains("空间不够"), "{error}");
+    assert_eq!(
+        std::fs::read(&fixture.binary_path).unwrap(),
+        fixture.current
+    );
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
+    );
+    for kept in [&fixture.current_key, &fixture.target_key] {
+        assert!(fixture.versions_path.join(kept.directory_name()).is_dir());
+    }
 }
