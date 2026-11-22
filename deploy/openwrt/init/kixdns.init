@@ -43,6 +43,143 @@ start_service() {
 	procd_close_instance
 }
 
+# ---------- 53 端口 / port 53 ----------
+# OpenWrt 自带的 dnsmasq 占着 53 端口。启用内核（面板的「启动」、START_DNS=1、enable）时由它接管 53：dnsmasq 的 DNS 挪到 5353，
+# DHCP 照常，并且照样把路由器发给客户端当 DNS（dnsmasq 不在 53 上时自己不发，这里补一条 6,0.0.0.0，0.0.0.0 就是路由器自己）；
+# 局域网主机名（.lan）由内核转给 5353 上的 dnsmasq（OpenWrt 安装包的默认配置里有这条规则）。停用内核（面板的「停止」、
+# disable）时原样还回去。改了什么记在 UCI 的 kixdns-panel.handover，还的时候只撤自己改的。
+# 原来就不在 53 上（自己挪过、关了 DNS）的 dnsmasq 不动；不想让内核动 dnsmasq：uci set kixdns-panel.main.dnsmasq_handover='0'
+# OpenWrt's own dnsmasq holds port 53. Enabling the kernel (the panel's 启动, START_DNS=1, enable) hands 53 to it: dnsmasq's
+# DNS moves to 5353, DHCP carries on and still gives clients the router as their DNS (dnsmasq stops doing so off port 53, so
+# 6,0.0.0.0 is added, 0.0.0.0 meaning the router itself); local host names (.lan) go from the kernel to dnsmasq on 5353 (a
+# rule in the OpenWrt package's default config). Disabling the kernel (the panel's 停止, disable) gives it all back. What
+# changed is recorded in the UCI section kixdns-panel.handover, and giving back undoes only that. A dnsmasq already off port
+# 53 (moved, or DNS turned off) is left alone; to keep the kernel away from dnsmasq set kixdns-panel.main.dnsmasq_handover='0'
+DNSMASQ_PORT=5353
+DNS_OPTION=6,0.0.0.0
+
+handover_wanted() {
+	[ "$(uci -q get kixdns-panel.main.dnsmasq_handover)" != 0 ] && [ -x /etc/init.d/dnsmasq ] &&
+		uci -q get 'dhcp.@dnsmasq[0]' >/dev/null
+}
+
+handed_over() {
+	[ "$(uci -q get kixdns-panel.handover)" = dnsmasq ]
+}
+
+# 内核进程在不在：按 /proc/<pid>/exe 认程序。不用 pidof：经 #!/bin/sh /etc/rc.common 运行的这个脚本，进程名也是 kixdns
+# Whether a kernel process exists, recognised by its program through /proc/<pid>/exe. Not pidof: this script, run through
+# #!/bin/sh /etc/rc.common, is named kixdns too
+kernel_running() {
+	for process in /proc/[0-9]*; do
+		case "$(readlink "$process/exe" 2>/dev/null)" in
+			"$PROG" | "$PROG (deleted)") return 0 ;;
+		esac
+	done
+	return 1
+}
+
+# dnsmasq 换了端口要重启；53 还被占着（内核还没完全退出）就等一等，免得 dnsmasq 起不来
+# dnsmasq restarts to take a new port; while 53 is still held (the kernel not fully gone) wait a little, so dnsmasq can bind
+restart_dnsmasq() {
+	waited=0
+	while kernel_running && [ "$waited" -lt 10 ]; do
+		sleep 1
+		waited=$((waited + 1))
+	done
+	# 输出不接到调用方：dnsmasq 的 init 会留下一个子进程拿着它，helper 等输出关上要多等十秒
+	# Output is not tied to the caller: dnsmasq's init leaves a child holding it, and the helper would wait ten more seconds
+	# for it to close
+	/etc/init.d/dnsmasq restart </dev/null >/dev/null 2>&1
+}
+
+take_over_dns() {
+	handover_wanted || return 0
+	handed_over && return 0
+	port="$(uci -q get 'dhcp.@dnsmasq[0].port')"
+	[ "${port:-53}" = 53 ] || return 0
+	[ -f /etc/config/kixdns-panel ] || touch /etc/config/kixdns-panel
+	uci set kixdns-panel.handover=dnsmasq
+	uci set kixdns-panel.handover.port_was="${port:-unset}"
+	uci set "dhcp.@dnsmasq[0].port=$DNSMASQ_PORT"
+	# 每个发地址的 DHCP 段补上 DNS 选项；自己写过 DNS 选项的段不动 / Every DHCP section handing out addresses gets the DNS
+	# option; a section with a DNS option of its own is left alone
+	for section in $(uci -q show dhcp | sed -n 's/^dhcp\.\([^.=]*\)=dhcp$/\1/p'); do
+		[ "$(uci -q get "dhcp.$section.ignore")" = 1 ] && continue
+		if uci -q get "dhcp.$section.dhcp_option" | tr ' ' '\n' | grep -qE '^(6|option:dns-server),'; then
+			continue
+		fi
+		uci add_list "dhcp.$section.dhcp_option=$DNS_OPTION"
+		uci add_list "kixdns-panel.handover.dhcp_option=$section"
+	done
+	uci commit dhcp
+	uci commit kixdns-panel
+	restart_dnsmasq
+	logger -t kixdns "dnsmasq 的 DNS 挪到 $DNSMASQ_PORT，53 端口交给 KixDNS / dnsmasq DNS moved to $DNSMASQ_PORT, port 53 handed to KixDNS"
+}
+
+give_back_dns() {
+	handed_over || return 0
+	# 期间自己又改过 dnsmasq 的端口：端口不动，只撤补上的 DNS 选项 / The dnsmasq port changed by hand meanwhile: the port stays,
+	# only the added DNS option goes
+	if [ "$(uci -q get 'dhcp.@dnsmasq[0].port')" = "$DNSMASQ_PORT" ]; then
+		port_was="$(uci -q get kixdns-panel.handover.port_was)"
+		if [ "$port_was" = unset ] || [ -z "$port_was" ]; then
+			uci -q delete 'dhcp.@dnsmasq[0].port'
+		else
+			uci set "dhcp.@dnsmasq[0].port=$port_was"
+		fi
+	fi
+	for section in $(uci -q get kixdns-panel.handover.dhcp_option); do
+		uci -q del_list "dhcp.$section.dhcp_option=$DNS_OPTION"
+	done
+	uci -q delete kixdns-panel.handover
+	uci commit dhcp
+	uci commit kixdns-panel
+	restart_dnsmasq
+	logger -t kixdns "53 端口还给 dnsmasq / port 53 given back to dnsmasq"
+}
+
+# 内核真的在 53 上收查询了吗：进程在、53 有人听（dnsmasq 已经挪走，听的只能是它）
+# Is the kernel really taking queries on 53: the process is up and something listens on 53 (dnsmasq has moved, so only it)
+kernel_listening() {
+	kernel_running && netstat -lnu 2>/dev/null | grep -qE '[:.]53[[:space:]]'
+}
+
+# 启用 = 接管 53、开机自启、现在就跑起来；内核 10 秒内没在 53 上收查询就把 53 还回去、不启用，局域网不会没有 DNS。
+# 和 rc.common 的 enable 一样建 rc.d 的链接
+# Enable = take port 53, start at boot and run now; when the kernel is not taking queries on 53 within 10 seconds, 53 goes
+# back and nothing is enabled, so the LAN never goes without DNS. The rc.d links are made as rc.common's enable does
+enable() {
+	take_over_dns
+	ln -sf ../init.d/kixdns "$IPKG_INSTROOT/etc/rc.d/S${START}kixdns"
+	ln -sf ../init.d/kixdns "$IPKG_INSTROOT/etc/rc.d/K${STOP}kixdns"
+	handed_over || return 0
+	start
+	waited=0
+	until kernel_listening; do
+		if [ "$waited" -ge 10 ]; then
+			rm -f "$IPKG_INSTROOT"/etc/rc.d/S??kixdns "$IPKG_INSTROOT"/etc/rc.d/K??kixdns
+			stop
+			give_back_dns
+			echo "KixDNS 10 秒内没有在 53 端口上收查询，已把 53 还给 dnsmasq、没有启用；查看原因：/var/log/kixdns.log" >&2
+			return 1
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+}
+
+# 停用 = 停下、不再开机自启、53 还给 dnsmasq（还之前先停，免得 dnsmasq 抢不到 53）
+# Disable = stop, no start at boot, 53 back to dnsmasq (stopped first, so dnsmasq can bind 53)
+disable() {
+	rm -f "$IPKG_INSTROOT"/etc/rc.d/S??kixdns "$IPKG_INSTROOT"/etc/rc.d/K??kixdns
+	if handed_over; then
+		stop
+		give_back_dns
+	fi
+}
+
 # 不要在这里删 pidfile：procd 自己会删（procd_set_param pidfile），抢先删会让 procd 记
 # `daemon.err procd: Failed to remove pidfile: ...: No such file or directory`。
 # Do not remove the pidfile here: procd removes it itself (procd_set_param pidfile); removing

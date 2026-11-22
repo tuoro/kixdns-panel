@@ -85,7 +85,10 @@ main() {
     fi
   done
   cp -- "${root}"/deploy/openwrt/init/*.init "${package}/init/"
-  cp -- "${root}/deploy/config/pipeline.json" "${package}/etc/pipeline.json"
+  # OpenWrt 自己的默认配置：IPv4、IPv6 都听（odhcpd 把路由器的 IPv6 地址发给客户端当 DNS），.lan 交给 5353 上的 dnsmasq
+  # OpenWrt's own default config: listening on IPv4 and IPv6 (odhcpd gives clients the router's IPv6 address as DNS), with
+  # .lan going to dnsmasq on 5353
+  cp -- "${root}/deploy/openwrt/pipeline.json" "${package}/etc/pipeline.json"
   cp -- "${kernel}"/KIXDNS_* "${package}/bundle/"
   if [[ -n ${PANEL_BUILD_COMMIT:-} ]]; then
     [[ ${PANEL_BUILD_COMMIT} =~ ^[0-9a-f]{40}$ ]] || fail "PANEL_BUILD_COMMIT 不是 40 位提交号"
