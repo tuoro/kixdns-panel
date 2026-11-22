@@ -127,6 +127,9 @@ cd web && npm ci && npm run build                   # 产物在 web/dist，对�
 
 正式版的 Release 里有 `kixdns-panel-openwrt-x86_64.tar.gz` 和 `kixdns-panel-openwrt-arm64.tar.gz`，直接下载即可。
 CI 的 `Package OpenWrt` 每次也会打出同样的包，在 Actions 的运行页面下载（保留 7 天），用来试还没发布的改动。
+接着 `Accept OpenWrt` 在 OpenWrt 官方的 rootfs 容器里（x86_64 和 arm64，各测 25.12 和 24.10）把这个包从头走一遍：
+安装、在面板里启停内核（接管和交还 53 端口、`.lan` 交给 dnsmasq、IPv6）、在线更新、装到一半失败的回滚、卸载和重装、
+`--purge`（`scripts/test-openwrt-package.sh`，本机有 docker 也能跑）。它不过，正式版就不发布。
 
 本机打包用同一个脚本 `scripts/package-openwrt.sh`，它核对三个程序都是这个架构的静态链接程序、内核是 musl 版，
 再按上面的目录拼好并写出 `SHA256SUMS`：
