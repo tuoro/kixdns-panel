@@ -183,6 +183,7 @@ Differences from the systemd version:
 - processes run as root with no `ProtectSystem` and no separate accounts, so the helper's `--allowed-uid` is 0, and it only runs an init script owned by root that neither group nor others can write
 - the panel listens only on the LAN interface's current IPv4 address by default, not `0.0.0.0`; change it with the UCI option `kixdns-panel.main.bind`, see "面板的监听地址" (panel listen address) in `deploy/openwrt/README.md`
 - `/var` is a tmpfs on OpenWrt, so the database lives on the overlay (`/etc/kixdns-panel/`)
+- uninstall with `sh /usr/libexec/kixdns-panel-uninstall` (`--purge` removes the config and data too, `--keep-kernel` removes only the panel); see "卸载" (uninstall) in `deploy/openwrt/README.md`
 - the query log sits in memory by default (`/tmp/kixdns-panel/querylog`, cleared at a reboot), kept for a day and capped at 16 MB by default; the largest cap allowed follows the device's free space, and the UCI option can move it to a USB drive to keep it; see "查询日志" (query log) in `deploy/openwrt/README.md`
 - service status asks procd through `ubus call service list` first: instances present but not running read as failed (triggering "did not come up" rollback), only a service absent from the list reads as inactive; ubus unusable falls back to the pid file + `/proc/<pid>`
 - the logs page takes the level from the first word after each line's timestamp (INFO/WARN/ERROR) instead of scanning the whole line, so `terror.example.com` and `no error` are not misread

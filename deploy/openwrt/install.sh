@@ -53,6 +53,7 @@ done
 [ -x "$SRC/bin/kixdns-panel-server" ] || die "缺少 bin/kixdns-panel-server"
 [ -x "$SRC/libexec/kixdns-panel-helper" ] || die "缺少 libexec/kixdns-panel-helper"
 [ -f "$SRC/libexec/kixdns-panel-update" ] || die "缺少 libexec/kixdns-panel-update"
+[ -f "$SRC/libexec/kixdns-panel-uninstall" ] || die "缺少 libexec/kixdns-panel-uninstall"
 [ -d "$SRC/web" ] || die "缺少 web/（前端构建产物）"
 for svc in $SERVICES; do
 	[ -f "$SRC/init/$svc.init" ] || die "缺少 init/$svc.init"
@@ -176,6 +177,7 @@ backup_items() {
 		"panel-server $DEST_BIN/kixdns-panel-server" \
 		"panel-helper $DEST_LIBEXEC/kixdns-panel-helper" \
 		"panel-update $DEST_LIBEXEC/kixdns-panel-update" \
+		"panel-uninstall $DEST_LIBEXEC/kixdns-panel-uninstall" \
 		"web $DEST_SHARE/web" \
 		"geo $DEST_SHARE/geo" \
 		"bundle $DEST_STATE/bundle" \
@@ -199,7 +201,7 @@ check_space() {
 		die "/tmp 剩余 $((tmp_free / 1024)) MiB，备份现有面板要 $(((backup_kib + 4096) / 1024)) MiB；先腾出内存再试"
 	new_kib=$(used_kib "$SRC/bin/kixdns-panel-server" "$SRC/libexec" "$SRC/web" "$SRC/geo")
 	old_kib=$(used_kib "$DEST_BIN/kixdns-panel-server" "$DEST_LIBEXEC/kixdns-panel-helper" \
-		"$DEST_LIBEXEC/kixdns-panel-update" "$DEST_SHARE/web" "$DEST_SHARE/geo")
+		"$DEST_LIBEXEC/kixdns-panel-update" "$DEST_LIBEXEC/kixdns-panel-uninstall" "$DEST_SHARE/web" "$DEST_SHARE/geo")
 	if [ "$install_kernel" = 1 ]; then
 		new_kib=$((new_kib + $(used_kib "$SRC/bin/kixdns")))
 		old_kib=$((old_kib + $(used_kib "$DEST_BIN/kixdns")))
@@ -410,6 +412,7 @@ fi
 install_file "$SRC/bin/kixdns-panel-server" "$DEST_BIN/kixdns-panel-server" 755
 install_file "$SRC/libexec/kixdns-panel-helper" "$DEST_LIBEXEC/kixdns-panel-helper" 755
 install_file "$SRC/libexec/kixdns-panel-update" "$DEST_LIBEXEC/kixdns-panel-update" 755
+install_file "$SRC/libexec/kixdns-panel-uninstall" "$DEST_LIBEXEC/kixdns-panel-uninstall" 755
 
 # 不用 cp -a：包里文件的属主是打包机器上的账号，装到路由器上要归 root
 # Not cp -a: the package's files belong to an account on the packaging machine, and on the router they belong to root
