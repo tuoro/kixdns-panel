@@ -347,6 +347,9 @@ impl UpdateManager {
         config: &Value,
         host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
+        if cfg!(target_env = "musl") {
+            return Err(UpdateError::MuslUnsupported);
+        }
         let _guard = self.apply_lock.lock().await;
         let latest = self.fetch_latest().await?;
         self.update_locked(&latest, expected, config, host).await

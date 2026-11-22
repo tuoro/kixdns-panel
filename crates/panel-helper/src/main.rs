@@ -5,7 +5,7 @@ mod linux {
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
+    use std::process::Command;
     use std::time::Duration;
 
     use clap::Parser;
@@ -24,7 +24,7 @@ mod linux {
         #[arg(long)]
         allowed_uid: u32,
 
-        /// 没有 systemctl 时（OpenWrt/procd）用它启停：`脚本 start|stop|restart`。
+        /// 没有 systemctl 时（OpenWrt/procd）用它启停：`脚本 enable start` / `stop disable` / `restart`。
         /// Used instead of systemctl when there is none (OpenWrt/procd).
         #[arg(long, default_value = "/etc/init.d/kixdns")]
         init_script: PathBuf,
@@ -111,24 +111,23 @@ mod linux {
             }
             return Ok(());
         }
-        // 没有 systemd（OpenWrt/procd）时改用 init 脚本启停。
-        // Without systemd (OpenWrt/procd) fall back to the init script.
+        // 没有 systemd（OpenWrt/procd）时改用 init 脚本，并保持和 systemd 一致的持久化语义：
+        // 启用 = enable + start，停用 = stop + disable。否则路由器重启后内核又会自己起来。
+        // Without systemd (OpenWrt/procd) fall back to the init script, keeping systemd's
+        // persistence semantics: enable = enable + start, disable = stop + disable. Otherwise
+        // the kernel comes back by itself after a router reboot.
         if args.init_script.is_file() {
-            let verb = match action {
-                ServiceAction::Start => "start",
-                ServiceAction::Stop => "stop",
-                ServiceAction::Restart => "restart",
-                ServiceAction::PanelUpdate => unreachable!("panel-update 在上方已返回"),
-            };
-            let output = Command::new(&args.init_script).arg(verb).output()?;
-            if !output.status.success() {
-                let detail = String::from_utf8_lossy(&output.stderr);
-                return Err(format!(
-                    "{} {verb} 执行失败: {}",
-                    args.init_script.display(),
-                    detail.trim()
-                )
-                .into());
+            for verb in init_script_verbs(action) {
+                let output = Command::new(&args.init_script).arg(verb).output()?;
+                if !output.status.success() {
+                    let detail = String::from_utf8_lossy(&output.stderr);
+                    return Err(format!(
+                        "{} {verb} 执行失败: {}",
+                        args.init_script.display(),
+                        detail.trim()
+                    )
+                    .into());
+                }
             }
             return Ok(());
         }
@@ -162,6 +161,18 @@ mod linux {
         }
     }
 
+    /// 没有 systemd 时 init 脚本要按顺序跑的动作，语义对齐 systemctl 的 enable/disable。
+    /// The verbs to run, in order, against the init script when there is no systemd, matching
+    /// systemctl's enable/disable semantics.
+    fn init_script_verbs(action: ServiceAction) -> &'static [&'static str] {
+        match action {
+            ServiceAction::Start => &["enable", "start"],
+            ServiceAction::Stop => &["stop", "disable"],
+            ServiceAction::Restart => &["restart"],
+            ServiceAction::PanelUpdate => &[],
+        }
+    }
+
     fn launch_panel_update() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::MetadataExt;
 
@@ -174,16 +185,17 @@ mod linux {
         {
             return Err("面板在线更新器权限无效".into());
         }
-        // OpenWrt 上没有 systemd-run：直接把自己拉起来，脱离 helper 的生命周期。
-        // No systemd-run on OpenWrt: spawn the updater directly, detached from the helper.
+        // 没有 systemd-run 的平台（OpenWrt/procd、musl）暂时不支持在线更新：更新器是给
+        // glibc 打的包，硬装会把 glibc 二进制塞进 musl 系统。先明确拒绝，等 musl 内核/面板
+        // 包发布后再打开。
+        // Platforms without systemd-run (OpenWrt/procd, musl) do not support online updates yet:
+        // the updater ships glibc binaries and would drop them into a musl system. Refuse clearly
+        // until musl kernel/panel packages are published.
         let Some(systemd_run) = find_executable(&["/usr/bin/systemd-run", "/bin/systemd-run"])
         else {
-            Command::new(UPDATER)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()?;
-            return Ok(());
+            return Err(
+                "当前平台暂不支持在线更新（没有 systemd-run；musl 版安装包尚未发布）".into(),
+            );
         };
         let output = Command::new(systemd_run)
             .args([
@@ -240,7 +252,8 @@ mod linux {
         use std::path::Path;
 
         use super::{
-            ServiceAction, parse_action, systemctl_arguments, validate_socket_path, validate_unit,
+            ServiceAction, init_script_verbs, parse_action, systemctl_arguments,
+            validate_socket_path, validate_unit,
         };
 
         #[test]
@@ -271,6 +284,16 @@ mod linux {
                 ["restart", "kixdns.service"]
             );
             assert!(systemctl_arguments(ServiceAction::PanelUpdate, "kixdns.service").is_empty());
+        }
+
+        #[test]
+        fn init_script_matches_systemd_persistence() {
+            // procd 下没有 systemd，init 脚本也要做到 enable+start / stop+disable，
+            // 否则重启后内核又会自己起来。
+            assert_eq!(init_script_verbs(ServiceAction::Start), ["enable", "start"]);
+            assert_eq!(init_script_verbs(ServiceAction::Stop), ["stop", "disable"]);
+            assert_eq!(init_script_verbs(ServiceAction::Restart), ["restart"]);
+            assert!(init_script_verbs(ServiceAction::PanelUpdate).is_empty());
         }
 
         #[test]

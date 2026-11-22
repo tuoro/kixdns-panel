@@ -2196,6 +2196,10 @@ fn map_update_error(error: UpdateError) -> AppError {
         UpdateError::Unsupported => {
             AppError::ServiceUnavailable("update_unsupported", "当前平台不支持自动更新".to_owned())
         }
+        UpdateError::MuslUnsupported => AppError::ServiceUnavailable(
+            "update_unsupported",
+            "当前是 musl 构建，暂不支持在线更新（musl 版安装包尚未发布）".to_owned(),
+        ),
     }
 }
 

@@ -272,6 +272,9 @@ impl UpdateManager {
     }
 
     async fn kixdns_update_notice(&self) -> Result<KixdnsUpdateNotice, UpdateError> {
+        if cfg!(target_env = "musl") {
+            return Err(UpdateError::MuslUnsupported);
+        }
         let latest = self.latest_remote().await?;
         let active = self.active_version().await?;
         let current = match active.as_ref() {
@@ -322,6 +325,9 @@ impl UpdateManager {
     }
 
     pub async fn panel_update_notice(&self) -> Result<PanelUpdateNotice, UpdateError> {
+        if cfg!(target_env = "musl") {
+            return Err(UpdateError::MuslUnsupported);
+        }
         if let Some(cached) = self.panel_cache.read().await.as_ref()
             && cached.loaded_at.elapsed() < PANEL_CACHE_TTL
         {

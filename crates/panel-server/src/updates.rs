@@ -574,6 +574,11 @@ pub enum UpdateError {
     Conflict(String),
     #[error("当前平台不支持自动更新")]
     Unsupported,
+    /// musl 构建（OpenWrt 等）：在线更新用的还是 glibc 包，先临时禁用并给出明确提示。
+    /// `musl` builds (`OpenWrt` etc.): the online updater still ships glibc packages, so it is
+    /// disabled for now with a clear message.
+    #[error("当前是 musl 构建，暂不支持在线更新（musl 版安装包尚未发布）")]
+    MuslUnsupported,
 }
 
 impl UpdateError {

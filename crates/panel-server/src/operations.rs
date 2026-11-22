@@ -240,7 +240,20 @@ impl Operations {
     #[cfg(unix)]
     pub async fn service_status(&self) -> Result<ServiceStatus, OperationError> {
         if let Some(pidfile) = &self.service_pidfile {
-            return Ok(procd_service_status(self.service_unit.as_ref(), pidfile));
+            // 先用 ubus 问 procd 自己：它分得清「用户停掉的」（服务不在列表里）和「崩了没
+            // 被拉起来的」（实例还在但 running=false）。ubus 用不了（不在 OpenWrt 上、
+            // 命令缺失或输出读不懂）才退回 pid 文件。
+            // Ask procd through ubus first: it can tell "the user stopped it" (the service is
+            // gone from the list) from "it crashed and was not brought back" (the instance
+            // remains but running=false). Only when ubus is unusable (not on OpenWrt, missing
+            // command or unreadable output) do we fall back to the pid file.
+            if let Some(status) = procd_status_via_ubus(self.service_unit.as_ref()).await {
+                return Ok(status);
+            }
+            return Ok(procd_status_via_pidfile(
+                self.service_unit.as_ref(),
+                pidfile,
+            ));
         }
         let output = run_command(
             &self.systemctl,
@@ -359,7 +372,7 @@ impl Operations {
     ) -> Result<LogPage, OperationError> {
         let limit = limit.clamp(1, 500);
         if let Some(logfile) = self.service_logfile.clone() {
-            return Ok(procd_logs(&logfile, limit, before_cursor, level));
+            return Ok(procd_logs(&logfile, limit, before_cursor, level).await);
         }
         let arguments = journal_arguments(self.service_unit.as_ref(), limit, before_cursor, level);
         let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
@@ -520,10 +533,11 @@ async fn run_command(
         .map_err(|_| OperationError::Failed(format!("{program} 输出不是 UTF-8")))
 }
 
-/// procd 后端的状态：pid 文件里的进程还活着就是 active，否则 inactive。
-/// procd status: active while the pid from the pid file still exists, inactive otherwise.
+/// 读不到 procd 时的兜底状态：pid 文件里的进程还活着就是 active，否则 inactive。
+/// Fallback status when procd cannot be queried: active while the pid in the pid file is
+/// alive, inactive otherwise.
 #[cfg(unix)]
-fn procd_service_status(unit: &str, pidfile: &std::path::Path) -> ServiceStatus {
+fn procd_status_via_pidfile(unit: &str, pidfile: &std::path::Path) -> ServiceStatus {
     let pid = std::fs::read_to_string(pidfile)
         .ok()
         .and_then(|text| {
@@ -532,48 +546,220 @@ fn procd_service_status(unit: &str, pidfile: &std::path::Path) -> ServiceStatus 
                 .and_then(|value| value.parse::<u32>().ok())
         })
         .filter(|pid| *pid > 0 && std::path::Path::new(&format!("/proc/{pid}")).exists());
-    let running = pid.is_some();
+    match pid {
+        Some(pid) => active_status(unit, pid),
+        None => inactive_status(unit),
+    }
+}
+
+/// 通过 `ubus call service list` 问 procd 服务状态；ubus 不在、调用失败或输出读不懂时返回
+/// `None`，交给 pid 文件兜底。
+/// Ask procd for the service state through `ubus call service list`; returns `None` when
+/// ubus is absent, the call fails or the output cannot be read, so the pid file takes over.
+#[cfg(unix)]
+async fn procd_status_via_ubus(unit: &str) -> Option<ServiceStatus> {
+    let service = unit.strip_suffix(".service").unwrap_or(unit);
+    let filter = format!("{{\"name\":\"{service}\"}}");
+    let output = run_command(
+        "ubus",
+        &["call", "service", "list", &filter],
+        Duration::from_secs(5),
+    )
+    .await
+    .ok()?;
+    parse_procd_status_from_ubus(unit, &output)
+}
+
+/// procd 在实例还在时，即使没在跑也把它留在 `service list` 里（respawn 耗尽、崩溃但没被删）。
+/// 因此：有实例 running=true → active；有实例但都不 running → failed（起不来）；服务根本不在
+/// 列表里（用户 stop 掉了，procd 已删）→ inactive。
+/// procd keeps an instance in `service list` even when it is not running (respawn exhausted,
+/// crashed but not deleted). So: any instance running=true → active; instances present but none
+/// running → failed (did not come up); the service not listed at all (the user stopped it, procd
+/// deleted it) → inactive.
+#[cfg(unix)]
+fn parse_procd_status_from_ubus(unit: &str, output: &str) -> Option<ServiceStatus> {
+    let root: Value = serde_json::from_str(output).ok()?;
+    let object = root.as_object()?;
+    let service = unit.strip_suffix(".service").unwrap_or(unit);
+    let Some(entry) = object.get(service) else {
+        return Some(inactive_status(unit));
+    };
+    let Some(instances) = entry.get("instances").and_then(Value::as_object) else {
+        return Some(inactive_status(unit));
+    };
+    let mut running_pid = None;
+    for instance in instances.values() {
+        let running = instance
+            .get("running")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if running {
+            let pid = instance
+                .get("pid")
+                .and_then(Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
+                .unwrap_or(0);
+            running_pid = Some(pid);
+        }
+    }
+    Some(match running_pid {
+        Some(pid) => active_status(unit, pid),
+        None if instances.is_empty() => inactive_status(unit),
+        None => failed_status(unit),
+    })
+}
+
+#[cfg(unix)]
+fn active_status(unit: &str, pid: u32) -> ServiceStatus {
     ServiceStatus {
         unit: unit.to_owned(),
-        active_state: if running { "active" } else { "inactive" }.to_owned(),
-        sub_state: if running { "running" } else { "dead" }.to_owned(),
-        main_pid: pid.unwrap_or(0),
+        active_state: "active".to_owned(),
+        sub_state: "running".to_owned(),
+        main_pid: pid,
         did_not_come_up: false,
         restart_rollback: None,
         pending_writable: None,
     }
 }
 
-/// 从日志文件取一页，新的在前。游标是行的字节偏移：翻旧页时只取偏移更小的行。
-/// One page from the log file, newest first. The cursor is a line's byte offset:
-/// older pages only take lines with a smaller offset.
 #[cfg(unix)]
-fn procd_logs(
+fn inactive_status(unit: &str) -> ServiceStatus {
+    ServiceStatus {
+        unit: unit.to_owned(),
+        active_state: "inactive".to_owned(),
+        sub_state: "dead".to_owned(),
+        main_pid: 0,
+        did_not_come_up: false,
+        restart_rollback: None,
+        pending_writable: None,
+    }
+}
+
+#[cfg(unix)]
+fn failed_status(unit: &str) -> ServiceStatus {
+    ServiceStatus {
+        unit: unit.to_owned(),
+        active_state: "failed".to_owned(),
+        sub_state: "failed".to_owned(),
+        main_pid: 0,
+        did_not_come_up: false,
+        restart_rollback: None,
+        pending_writable: None,
+    }
+}
+
+/// 从日志文件取一页，新的在前。游标是行的文件绝对字节偏移：翻旧页时只取偏移更小的行。
+/// 只读文件末尾那一块（最多 8 MiB），用 seek 定位，不再把整个日志读进内存；读盘放到
+/// `spawn_blocking`，不阻塞 tokio。
+/// One page from the log file, newest first. The cursor is a line's absolute byte offset in
+/// the file: older pages only take lines with a smaller offset. Only the tail (at most 8 MiB)
+/// is read, located with seek, instead of reading the whole log into memory; the disk read runs
+/// on `spawn_blocking` so it does not block tokio.
+#[cfg(unix)]
+async fn procd_logs(
     logfile: &std::path::Path,
     limit: usize,
     before_cursor: Option<&str>,
     level: Option<LogLevel>,
 ) -> LogPage {
-    // 日志文件按 8 MiB 截尾读，避免一个巨大的日志把内存吃光。
-    // Read at most the last 8 MiB so a huge log cannot eat the memory.
-    const MAX_READ: usize = 8 * 1024 * 1024;
-    let bytes = std::fs::read(logfile).unwrap_or_default();
-    let bytes = &bytes[bytes.len().saturating_sub(MAX_READ)..];
-    let text = String::from_utf8_lossy(bytes);
-    let mut lines: Vec<(usize, &str)> = Vec::new();
-    let mut offset = 0usize;
-    for line in text.split('\n') {
-        lines.push((offset, line));
-        offset += line.len() + 1;
+    let logfile = logfile.to_owned();
+    let before_cursor = before_cursor.map(str::to_owned);
+    match tokio::task::spawn_blocking(move || {
+        procd_logs_blocking(&logfile, limit, before_cursor.as_deref(), level)
+    })
+    .await
+    {
+        Ok(page) => page,
+        Err(error) => LogPage {
+            entries: Vec::new(),
+            next_cursor: None,
+            notice: Some(format!("读取日志失败：{error}")),
+        },
     }
-    let cursor_offset = before_cursor.and_then(|value| value.parse::<usize>().ok());
-    let mut entries: Vec<(usize, LogEntry)> = lines
+}
+
+#[cfg(unix)]
+fn procd_logs_blocking(
+    logfile: &std::path::Path,
+    limit: usize,
+    before_cursor: Option<&str>,
+    level: Option<LogLevel>,
+) -> LogPage {
+    use std::io::{Read, Seek, SeekFrom};
+
+    // 只读末尾 8 MiB：文件再大也不会一次吃进内存。
+    // Read only the last 8 MiB so a huge file cannot be loaded at once.
+    const MAX_READ: u64 = 8 * 1024 * 1024;
+    let mut file = match std::fs::File::open(logfile) {
+        Ok(file) => file,
+        // 日志文件还没建出来是空页，不是错误。
+        // A log file that does not exist yet is an empty page, not an error.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return LogPage {
+                entries: Vec::new(),
+                next_cursor: None,
+                notice: None,
+            };
+        }
+        Err(error) => {
+            return LogPage {
+                entries: Vec::new(),
+                next_cursor: None,
+                notice: Some(format!("读取日志失败：{error}")),
+            };
+        }
+    };
+    let length = file.metadata().map_or(0, |meta| meta.len());
+    let base = length.saturating_sub(MAX_READ);
+    if let Err(error) = file.seek(SeekFrom::Start(base)) {
+        return LogPage {
+            entries: Vec::new(),
+            next_cursor: None,
+            notice: Some(format!("读取日志失败：{error}")),
+        };
+    }
+    let tail_len = usize::try_from(length - base).unwrap_or(0);
+    let mut buffer = Vec::with_capacity(tail_len);
+    if let Err(error) = file.read_to_end(&mut buffer) {
+        return LogPage {
+            entries: Vec::new(),
+            next_cursor: None,
+            notice: Some(format!("读取日志失败：{error}")),
+        };
+    }
+    // 尾部窗口可能从一行中间开始：丢掉第一个不完整的行。
+    // The tail window may start mid-line: drop the first, incomplete line.
+    let mut offset = if base > 0 {
+        match buffer.iter().position(|byte| *byte == b'\n') {
+            Some(index) => index + 1,
+            None => buffer.len(),
+        }
+    } else {
+        0
+    };
+    let mut lines: Vec<(u64, String)> = Vec::new();
+    while offset <= buffer.len() {
+        let rest = &buffer[offset..];
+        let end = rest.iter().position(|byte| *byte == b'\n');
+        let (line_bytes, next) = match end {
+            Some(index) => (&rest[..index], offset + index + 1),
+            None => (rest, buffer.len() + 1),
+        };
+        lines.push((
+            base + offset as u64,
+            String::from_utf8_lossy(line_bytes).into_owned(),
+        ));
+        offset = next;
+    }
+    let cursor_offset = before_cursor.and_then(|value| value.parse::<u64>().ok());
+    let mut entries: Vec<(u64, LogEntry)> = lines
         .into_iter()
         .filter(|(_, line)| !line.trim().is_empty())
         .rev()
         .filter(|(start, _)| cursor_offset.is_none_or(|cursor| *start < cursor))
         .filter_map(|(start, line)| {
-            let (timestamp_unix_micros, priority, message) = parse_log_line(line);
+            let (timestamp_unix_micros, priority, message) = parse_log_line(&line);
             if let Some(wanted) = level {
                 let matched = match wanted {
                     LogLevel::Error => priority <= 3,
@@ -608,9 +794,12 @@ fn procd_logs(
 }
 
 /// 解析 `2026-11-21T20:00:00.123456Z  INFO kixdns: ...` 这种 tracing 行；
-/// 认不出时间戳就记 0，级别按关键字粗判（tracing 的 INFO/WARN/ERROR）。
+/// 认不出时间戳就记 0，级别取时间戳之后的第一个词，不再在整行里搜关键字
+/// （否则 `terror.example.com`、`no error` 会被误判成 ERROR）。
 /// Parses a tracing line like `2026-11-21T20:00:00.123456Z  INFO kixdns: ...`;
-/// an unparsable timestamp becomes 0 and the level is guessed from the keyword.
+/// an unparsable timestamp becomes 0 and the level is the first word after the timestamp,
+/// instead of scanning the whole line for a keyword (which misreads `terror.example.com`
+/// and `no error` as ERROR).
 #[cfg(unix)]
 fn parse_log_line(line: &str) -> (u64, u8, &str) {
     let mut rest = line.trim_start();
@@ -621,12 +810,10 @@ fn parse_log_line(line: &str) -> (u64, u8, &str) {
             rest = tail.trim_start();
         }
     }
-    let priority = if rest.contains("ERROR") || rest.contains("error") {
-        3
-    } else if rest.contains("WARN") || rest.contains("warn") {
-        4
-    } else {
-        6
+    let priority = match rest.split_whitespace().next().unwrap_or("") {
+        "ERROR" | "Error" | "error" => 3,
+        "WARN" | "Warn" | "warn" | "WARNING" | "Warning" | "warning" => 4,
+        _ => 6,
     };
     (timestamp, priority, rest)
 }
@@ -867,12 +1054,14 @@ mod tests {
     use serde_json::json;
     use tokio::net::UdpSocket;
 
+    #[cfg(target_os = "linux")]
+    use super::procd_status_via_pidfile;
     use super::{
         LogLevel, OperationError, Operations, ServiceAction, helper_failure, journal_arguments,
         parse_journal_page, parse_record_type, procd_logs, unit_log_notice,
     };
     #[cfg(unix)]
-    use super::{procd_service_status, timestamp_micros};
+    use super::{parse_log_line, parse_procd_status_from_ubus, timestamp_micros};
 
     // 服务助手的失败不把协议记号和 systemctl 的英文原话交给页面，给出看原因的命令；别的原因照原样
     // A helper failure hands the page neither the protocol token nor systemctl's English original, but the command to see why; other reasons pass through
@@ -1174,16 +1363,18 @@ mod tests {
         assert_eq!(result.response_code, "No Error");
     }
 
-    /// procd 后端：pid 文件里的进程还活着才算 active；文件没了、pid 死了、内容不是数字都算 inactive。
-    /// procd backend: active only while the pid in the pid file is alive; a missing file,
-    /// a dead pid or a non-numeric body all read as inactive.
-    #[cfg(unix)]
+    /// procd 后端（pid 文件兜底）：pid 文件里的进程还活着才算 active；文件没了、pid 死了、
+    /// 内容不是数字都算 inactive。`/proc` 只有 Linux 有，所以这条测试只在 Linux 上跑。
+    /// procd backend (pid-file fallback): active only while the pid in the pid file is alive; a
+    /// missing file, a dead pid or a non-numeric body all read as inactive. `/proc` only exists
+    /// on Linux, so this test runs on Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn procd_status_follows_the_pid_file() {
         let directory = tempfile::tempdir().unwrap();
         let pidfile = directory.path().join("kixdns.pid");
 
-        let missing = procd_service_status("kixdns", &pidfile);
+        let missing = procd_status_via_pidfile("kixdns", &pidfile);
         assert_eq!(missing.unit, "kixdns");
         assert_eq!(missing.active_state, "inactive");
         assert_eq!(missing.sub_state, "dead");
@@ -1191,7 +1382,7 @@ mod tests {
         assert!(!missing.did_not_come_up);
 
         std::fs::write(&pidfile, format!("{}\n", std::process::id())).unwrap();
-        let alive = procd_service_status("kixdns", &pidfile);
+        let alive = procd_status_via_pidfile("kixdns", &pidfile);
         assert_eq!(alive.active_state, "active");
         assert_eq!(alive.sub_state, "running");
         assert_eq!(alive.main_pid, std::process::id());
@@ -1200,23 +1391,61 @@ mod tests {
         // procd writes a bare pid; a stale file whose process is gone must not read as active.
         std::fs::write(&pidfile, "4194304\n").unwrap();
         assert_eq!(
-            procd_service_status("kixdns", &pidfile).active_state,
+            procd_status_via_pidfile("kixdns", &pidfile).active_state,
             "inactive"
         );
 
         std::fs::write(&pidfile, "not a pid\n").unwrap();
         assert_eq!(
-            procd_service_status("kixdns", &pidfile).active_state,
+            procd_status_via_pidfile("kixdns", &pidfile).active_state,
             "inactive"
         );
     }
 
-    /// 日志页按行倒序给，游标是行首字节偏移；翻旧页只取偏移更小的行，并识别 tracing 的级别。
-    /// The log page is newest-first, the cursor is the line's byte offset: paging back only
-    /// takes smaller offsets, and the tracing level is recognised.
+    /// ubus 输出里实例还在跑是 active；实例在但都没 running 是 failed（起不来）；服务不在
+    /// 列表里是 inactive（用户停掉了）；读不懂就当没问到，返回 None 交给 pid 文件兜底。
+    /// In ubus output an instance that runs is active; instances present but none running is
+    /// failed (did not come up); a service absent from the list is inactive (the user stopped
+    /// it); unreadable output is None so the pid file takes over.
     #[cfg(unix)]
     #[test]
-    fn procd_logs_page_backwards_through_the_file() {
+    fn procd_ubus_output_maps_to_service_status() {
+        let running = parse_procd_status_from_ubus(
+            "kixdns.service",
+            r#"{"kixdns":{"instances":{"instance1":{"running":true,"pid":4321}}}}"#,
+        )
+        .expect("可读的 ubus 输出");
+        assert_eq!(running.active_state, "active");
+        assert_eq!(running.sub_state, "running");
+        assert_eq!(running.main_pid, 4321);
+
+        // respawn 耗尽 / 崩溃没被拉起：实例还在，但 running=false。
+        // Respawn exhausted / crashed and not restarted: the instance is still there, running=false.
+        let failed = parse_procd_status_from_ubus(
+            "kixdns.service",
+            r#"{"kixdns":{"instances":{"instance1":{"running":false,"pid":0}}}}"#,
+        )
+        .expect("可读的 ubus 输出");
+        assert_eq!(failed.active_state, "failed");
+        assert_eq!(failed.sub_state, "failed");
+
+        // 用户 stop 掉了，procd 把它从列表里删了。
+        // The user stopped it, so procd removed it from the list.
+        let stopped =
+            parse_procd_status_from_ubus("kixdns.service", "{}").expect("可读的 ubus 输出");
+        assert_eq!(stopped.active_state, "inactive");
+
+        // 输出不是 JSON：当作没问到。
+        // The output is not JSON: treat it as "did not get an answer".
+        assert!(parse_procd_status_from_ubus("kixdns.service", "not json").is_none());
+    }
+
+    /// 日志页按行倒序给，游标是行的文件绝对字节偏移；翻旧页只取偏移更小的行，并识别 tracing 的级别。
+    /// The log page is newest-first, the cursor is the line's absolute byte offset: paging back
+    /// only takes smaller offsets, and the tracing level is recognised.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn procd_logs_page_backwards_through_the_file() {
         let directory = tempfile::tempdir().unwrap();
         let logfile = directory.path().join("kixdns.log");
         std::fs::write(
@@ -1227,7 +1456,7 @@ mod tests {
         )
         .unwrap();
 
-        let first = procd_logs(&logfile, 2, None, None);
+        let first = procd_logs(&logfile, 2, None, None).await;
         assert_eq!(first.entries.len(), 2);
         assert!(
             first.entries[0].message.contains("第三行"),
@@ -1244,23 +1473,41 @@ mod tests {
         assert!(first.notice.is_none());
 
         let cursor = first.next_cursor.clone().expect("还有更旧的日志");
-        let older = procd_logs(&logfile, 2, Some(&cursor), None);
+        let older = procd_logs(&logfile, 2, Some(&cursor), None).await;
         assert_eq!(older.entries.len(), 1);
         assert!(older.entries[0].message.contains("第一行"));
         assert!(older.next_cursor.is_none(), "第一页之后不该再给游标");
 
-        let errors = procd_logs(&logfile, 10, None, Some(LogLevel::Error));
+        let errors = procd_logs(&logfile, 10, None, Some(LogLevel::Error)).await;
         assert_eq!(errors.entries.len(), 1);
         assert!(errors.entries[0].message.contains("第三行"));
-        let warnings = procd_logs(&logfile, 10, None, Some(LogLevel::Warning));
+        let warnings = procd_logs(&logfile, 10, None, Some(LogLevel::Warning)).await;
         assert_eq!(warnings.entries.len(), 1);
         assert!(warnings.entries[0].message.contains("第二行"));
 
         // 日志文件还没建出来时是空页，不是错误：进程刚起来就会有人看日志页。
         // A log file that does not exist yet is an empty page, not an error.
-        let empty = procd_logs(&directory.path().join("missing.log"), 10, None, None);
+        let empty = procd_logs(&directory.path().join("missing.log"), 10, None, None).await;
         assert!(empty.entries.is_empty());
         assert!(empty.next_cursor.is_none());
+    }
+
+    /// 只认时间戳后的第一个词当级别，正文里的 error/warn 字样不该误判。
+    /// Only the first word after the timestamp is the level; "error"/"warn" inside the message
+    /// must not be misread.
+    #[cfg(unix)]
+    #[test]
+    fn log_level_comes_from_the_word_after_the_timestamp() {
+        let (_, priority, _) =
+            parse_log_line("2026-11-21T00:00:01.000000Z  INFO kixdns: resolved terror.example.com");
+        assert_eq!(priority, 6, "正文里的 terror 不该被当成 ERROR");
+        let (_, priority, _) =
+            parse_log_line("2026-11-21T00:00:01.000000Z  INFO kixdns: no error happened");
+        assert_eq!(priority, 6, "正文里的 error 不该被当成 ERROR");
+        let (_, priority, _) = parse_log_line("2026-11-21T00:00:01.000000Z   WARN kixdns: warner");
+        assert_eq!(priority, 4, "WARN 行要判成 warning");
+        let (_, priority, _) = parse_log_line("2026-11-21T00:00:01.000000Z ERROR kixdns: boom");
+        assert_eq!(priority, 3);
     }
 
     /// `2026-11-21T00:00:00.123456Z` 这类 tracing 时间戳要能被认出来，认不出就记 0。

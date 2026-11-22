@@ -57,15 +57,19 @@ fi
 
 "$DEST_ETC/init.d/kixdns-panel-helper" enable
 "$DEST_ETC/init.d/kixdns-panel" enable
-"$DEST_ETC/init.d/kixdns" enable
 "$DEST_ETC/init.d/kixdns-panel-helper" start
 "$DEST_ETC/init.d/kixdns-panel" start
 
 if [ "${START_DNS:-0}" = "1" ]; then
+	# 只有显式要求启动内核时才 enable：否则开机自启一个不用的内核会一直占着 53。
+	# Only enable the kernel when asked to start it; otherwise a self-starting but unused
+	# kernel would keep hogging port 53 after every reboot.
+	"$DEST_ETC/init.d/kixdns" enable
 	"$DEST_ETC/init.d/kixdns" start
-	say "已启动 KixDNS 内核"
+	say "已启动 KixDNS 内核（已设为开机自启）"
 else
-	say "内核未启动（确认 53 端口空闲后执行 /etc/init.d/kixdns start）"
+	say "内核未启动，也未设为开机自启（确认 53 端口空闲后执行 /etc/init.d/kixdns enable && /etc/init.d/kixdns start）"
+	say "注意：OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先停掉或在面板里把 dnsmasq 挪到别的端口"
 fi
 
 say "面板地址：http://<路由器IP>:5738"
