@@ -7,6 +7,7 @@
 - Linux x86_64/ARM64 with systemd
 - GLIBC 2.35 or later: Ubuntu 22.04, Debian 12 or newer distributions
 - Requires `systemctl`, `sha256sum`, `getent`. One-line install and the download examples also need `curl`, `jq`, `unzip`
+- OpenWrt (procd, no systemd): no GLIBC needed, but you build the musl binaries yourself; see [OpenWrt / procd](#openwrt--procd-no-systemd). The official releases carry no such package
 
 The full package is published on the panel's [GitHub Releases](https://github.com/tuoro/kixdns-panel/releases). It contains KixDNS Enhanced, Panel Server, the frontend static assets, the service units and the install scripts.
 
@@ -133,6 +134,53 @@ KixDNS listens on `0.0.0.0:53` by default. Before changing the host, the install
 - **Held by systemd-resolved** (`127.0.0.53`, the Ubuntu default): with a terminal, the installer asks whether to turn off its local listener. The default is not to. If you agree, the installer writes `/etc/systemd/resolved.conf.d/kixdns-panel.conf` (`DNSStubListener=no`), repoints `/etc/resolv.conf` to `/run/systemd/resolve/resolv.conf` when it points at the local cache, restarts systemd-resolved, and confirms that the port is free and local name resolution still works. A failure at any step rolls back. The original `resolv.conf` is recorded in the root-only `/var/lib/kixdns-panel-backup/resolved-stub/`. Choosing to remove KixDNS at uninstall restores it (keeping KixDNS only gives the restore command, because KixDNS still uses this port)
 - **Declined or unattended**: nothing is changed, and the install result gives the commands to run by hand
 - **Held by another program**: reports the process name and PID and never touches it. If this install needs to restart a KixDNS that was running, the install halts before changing the host
+
+### OpenWrt / procd (no systemd)
+
+OpenWrt runs services under procd: there is no `systemctl` and no `journalctl`, and the distribution is musl rather than GLIBC, so the glibc packages in the official releases cannot run there. `deploy/openwrt/` in this repository holds what is needed: three init scripts, the panel's start-up settings, a sample `pipeline.json` and an install script.
+
+The panel gained a replaceable service backend for this. The status and log switches are opt-in; the init-script switch has a default path `/etc/init.d/kixdns` and is used only when there is no `systemctl`. Without these parameters the behaviour is the unchanged systemd one:
+
+| With systemd | On OpenWrt | Switch |
+| --- | --- | --- |
+| `systemctl show --property=ActiveState,SubState,MainPID` for status | `ubus call service list` (tells "the user stopped it" from "it crashed and was not brought back"); only when ubus is unusable does it fall back to the pid file + `/proc/<pid>` | `--service-pidfile` / `KIXDNS_SERVICE_PIDFILE` |
+| `journalctl -u kixdns -o json` for logs | read the log file directly (last 8 MiB only), paging by absolute byte offset in the file | `--service-log` / `KIXDNS_SERVICE_LOG` |
+| helper calls `systemctl start|stop|restart` | when there is no `systemctl`, run `enable start` / `stop disable` / `restart` through the init script | `--init-script` (default `/etc/init.d/kixdns`) |
+
+The helper looks for `systemctl` first and uses it when found; only when it is missing does it fall back to the init script, and it errors only when it has neither. One binary therefore serves both Debian/Ubuntu and OpenWrt.
+
+Build from source (aarch64 router shown; swap the target for x86_64). On musl the panel and helper link
+C code (bundled SQLite, zstd, ring), so besides `rustup target add` you need a musl C cross toolchain;
+the simplest is cargo-zigbuild:
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+pip install ziglang cargo-zigbuild
+cargo zigbuild --release --locked --target aarch64-unknown-linux-musl \
+  -p kixdns-panel-server -p kixdns-panel-helper
+cd web && npm ci && npm run build
+```
+
+You can also use a native musl/gcc toolchain (`apt install musl-tools` on x86_64; for aarch64 the matching
+musl cross compiler with `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` and `CC_aarch64_unknown_linux_musl` set).
+
+`bin/kixdns` is the kernel, built in the fork [tuoro/kixdns](https://github.com/tuoro/kixdns), not this
+repository. Releases currently publish only the glibc kernel; the musl kernel is not published yet, so until
+then build one from the kernel repo with the same musl toolchain, or run just the panel.
+
+Then pack the binaries, frontend, `geo/`, init scripts and `pipeline.json` into a payload following
+`deploy/openwrt/README.md` ("Directory layout and sources"), and run `sh deploy/openwrt/install.sh`
+(`START_DNS=1` also starts the kernel). OpenWrt's default dnsmasq holds port 53, so move it to another port
+before enabling the kernel.
+
+Differences from the systemd version:
+
+- processes run as root with no `ProtectSystem` and no separate accounts, so the helper's `--allowed-uid` is 0
+- `/var` is a tmpfs on OpenWrt, so the database lives on the overlay (`/etc/kixdns-panel/`)
+- service status asks procd through `ubus call service list` first: instances present but not running read as failed (triggering "did not come up" rollback), only a service absent from the list reads as inactive; ubus unusable falls back to the pid file + `/proc/<pid>`
+- the logs page takes the level from the first word after each line's timestamp (INFO/WARN/ERROR) instead of scanning the whole line, so `terror.example.com` and `no error` are not misread
+- the start/stop buttons drive the init script's `enable start` / `stop disable`, matching systemd's persistence
+- online updates (panel self-update, kernel online update) are not supported on musl yet: the updater still ships glibc packages; the panel says so clearly until musl packages are published
 
 ## First access
 

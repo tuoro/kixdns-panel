@@ -72,6 +72,10 @@ pub struct AppSettings {
     pub control_socket: PathBuf,
     pub service_unit: String,
     pub service_helper_socket: PathBuf,
+    /// procd 后端：服务 pid 文件；Some 时状态不再问 systemctl
+    pub service_pidfile: Option<PathBuf>,
+    /// procd 后端：服务日志文件；Some 时日志页不再问 journalctl
+    pub service_log: Option<PathBuf>,
     pub diagnostic_server: SocketAddr,
     pub kernel_repository: String,
     pub installed_source: Option<String>,
@@ -375,11 +379,15 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         control: ControlClient::new(settings.control_socket),
         operations: {
             let operations = Operations::new(
-                settings.service_unit,
-                settings.service_helper_socket,
+                settings.service_unit.clone(),
+                settings.service_helper_socket.clone(),
                 settings.diagnostic_server,
             )
-            .map_err(|error| anyhow::anyhow!(error))?;
+            .map_err(|error| anyhow::anyhow!(error))?
+            .with_procd_service(
+                settings.service_pidfile.clone(),
+                settings.service_log.clone(),
+            );
             match &settings.systemctl {
                 Some(program) => operations.with_systemctl(&program.to_string_lossy()),
                 None => operations,
@@ -2188,6 +2196,10 @@ fn map_update_error(error: UpdateError) -> AppError {
         UpdateError::Unsupported => {
             AppError::ServiceUnavailable("update_unsupported", "当前平台不支持自动更新".to_owned())
         }
+        UpdateError::MuslUnsupported => AppError::ServiceUnavailable(
+            "update_unsupported",
+            "当前是 musl 构建，暂不支持在线更新（musl 版安装包尚未发布）".to_owned(),
+        ),
     }
 }
 
