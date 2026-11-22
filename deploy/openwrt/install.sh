@@ -28,7 +28,7 @@ LOCK_FILE="$ROOT/var/lock/kixdns-panel-install.lock"
 # 新面板起来、答出健康检查最多等这么久（秒）；路由器上第一次启动要读内置 GeoSite，慢一些
 # How long (seconds) the new panel may take to come up and answer the health check; the first start on a router reads
 # the built-in GeoSite and is slower
-PANEL_WAIT_SECONDS=90
+PANEL_WAIT_SECONDS=${PANEL_WAIT_SECONDS:-90}
 SERVICES="kixdns kixdns-panel kixdns-panel-helper kixdns-panel-update"
 
 say() { printf '%s\n' "$*"; }

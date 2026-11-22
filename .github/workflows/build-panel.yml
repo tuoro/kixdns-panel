@@ -12,6 +12,7 @@ on:
       - deploy/**
       - scripts/fetch-kixdns-release.sh
       - scripts/package-openwrt.sh
+      - scripts/test-openwrt-package.sh
       - scripts/npm-audit.py
       - scripts/test-npm-audit.py
       - scripts/check-kernel-regex-versions.py
@@ -43,6 +44,7 @@ on:
       - deploy/**
       - scripts/fetch-kixdns-release.sh
       - scripts/package-openwrt.sh
+      - scripts/test-openwrt-package.sh
       - scripts/npm-audit.py
       - scripts/test-npm-audit.py
       - scripts/check-kernel-regex-versions.py
@@ -686,6 +688,56 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # OpenWrt 安装包的验收：在 OpenWrt 官方的 rootfs 容器里（procd 当 1 号进程），用刚打的包把安装、在面板里启停内核
+  # （接管和交还 53 端口）、在线更新、装到一半失败的回滚、卸载和重装走一遍（scripts/test-openwrt-package.sh）。两个架构各在
+  # 原生 runner 上跑，各测当前和上一个稳定版；镜像按每个架构自己的 manifest digest 固定。不过就不发布
+  # Acceptance of the OpenWrt package: inside OpenWrt's official rootfs container (procd as PID 1) the package just built goes
+  # through install, starting and stopping the kernel from the panel (port 53 taken over and given back), the online
+  # update, a rollback of a failure halfway, uninstall and reinstall (scripts/test-openwrt-package.sh). Each architecture
+  # runs on a native runner against the current and the previous stable release; images are pinned by each
+  # architecture's own manifest digest. No release is published without it
+  openwrt-acceptance:
+    name: Accept OpenWrt ${{ matrix.arch }} on ${{ matrix.release }}
+    needs: package-openwrt
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            release: "25.12.6"
+            runner: ubuntu-24.04
+            image: openwrt/rootfs:x86-64-25.12.6@sha256:14401c04218c2e0da0448f099710ada2460636a92395f353351cc616cf3f67af
+          - arch: x86_64
+            release: "24.10.8"
+            runner: ubuntu-24.04
+            image: openwrt/rootfs:x86-64-24.10.8@sha256:62b8bdaa417736a93cc770e5015118612f0b1c62385b1ae6e838af4357b225c4
+          - arch: arm64
+            release: "25.12.6"
+            runner: ubuntu-24.04-arm
+            image: openwrt/rootfs:armsr-armv8-25.12.6@sha256:22f13387da208c0fb4150c41f3ec12e34cc5994a0717a49e50aa9f9ae6cb5e7b
+          - arch: arm64
+            release: "24.10.8"
+            runner: ubuntu-24.04-arm
+            image: openwrt/rootfs:armsr-armv8-24.10.8@sha256:f6dd33c1d9b7d6f1e0848f2fbb92b8d03fc9b425dc08c3574a44936b93133704
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download OpenWrt package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kixdns-panel-openwrt-${{ matrix.arch }}
+          path: dist
+
+      - name: Accept the package in an OpenWrt container
+        env:
+          IMAGE: ${{ matrix.image }}
+          PACKAGE: dist/kixdns-panel-openwrt-${{ matrix.arch }}.tar.gz
+        run: bash scripts/test-openwrt-package.sh "$PACKAGE" "$IMAGE"
+
   acceptance:
     name: Accept packaged installation
     # 推到 main 时 e2e 被跳过，「跳过」会顺着依赖往下传：不写 !cancelled()、只看 build 的结果的话，build 照常构建了，
@@ -719,8 +771,8 @@ jobs:
     if: >-
       !cancelled() && github.event_name == 'release'
       && needs.build.result == 'success' && needs.acceptance.result == 'success'
-      && needs.package-openwrt.result == 'success'
-    needs: [build, acceptance, package-openwrt]
+      && needs.package-openwrt.result == 'success' && needs.openwrt-acceptance.result == 'success'
+    needs: [build, acceptance, package-openwrt, openwrt-acceptance]
     permissions:
       actions: read
       contents: write
