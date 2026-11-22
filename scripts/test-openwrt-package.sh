@@ -117,6 +117,16 @@ UCI
   docker start "${NAME}" >/dev/null
   wait_until 60 "procd 和 ubus 起来" owrt 'ubus call system board'
   owrt 'grep DISTRIB_DESCRIPTION /etc/openwrt_release'
+  # preinit 收尾时会清掉 eth0 上的 IPv4 地址（它在那里配过故障恢复用的地址），docker 给的地址也跟着没了：照 docker 的记录补回来
+  # The end of preinit flushes the IPv4 addresses on eth0 (it set a failsafe one there), taking docker's with it: put it
+  # back as docker recorded it
+  local address prefix gateway
+  address="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${NAME}")"
+  prefix="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPPrefixLen}}{{end}}' "${NAME}")"
+  gateway="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "${NAME}")"
+  owrt "ip -4 address show dev eth0 | grep -q '${address}/' || ip address add '${address}/${prefix}' dev eth0
+    ip link set eth0 up; ip route show default | grep -q . || ip route add default via '${gateway}' dev eth0"
+  wait_until 20 "宿主机连得上容器" ping -c 1 -W 1 "${address}"
   # 让面板听所有地址，宿主机才连得上 / The panel listens on every address, so the host can reach it
   owrt "touch /etc/config/kixdns-panel; uci set kixdns-panel.main=panel; uci set kixdns-panel.main.bind='0.0.0.0:${PORT}'; uci commit kixdns-panel"
   PANEL="$(container_ip):${PORT}"
