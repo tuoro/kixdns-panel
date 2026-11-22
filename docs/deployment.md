@@ -147,6 +147,8 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 装完打开 `http://<路由器 LAN 地址>:5738`。在面板「系统」页点「启动」，内核就接管 53 端口：dnsmasq 的 DNS 挪到 5353，DHCP 照常，`.lan` 主机名转给 dnsmasq；点「停止」原样还回去。面板和内核都在「系统」页在线更新。
 
+**路由器上请打开智能流控**（「配置 → 基础设置 → 智能流控」，保存后重启一次 KixDNS）：它默认是关的，不开的话有设备猛发查询、上游又回得慢时，内核可能因为内存不足被系统杀掉。
+
 和 systemd 版不同的地方：面板默认只听 LAN 口的地址，查询日志默认放内存，进程以 root 运行。启用 DNS、更新、卸载和常用设置见 [`deploy/openwrt/README.md`](../deploy/openwrt/README.md)，实现细节和自己编译打包见 [`deploy/openwrt/DEVELOPMENT.md`](../deploy/openwrt/DEVELOPMENT.md)。
 
 ## 首次访问

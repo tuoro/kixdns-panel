@@ -50,6 +50,9 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 装完打开 `http://<路由器 LAN 地址>:5738`。在「系统」页启动 KixDNS 时，它接管 53 端口，dnsmasq 的 DNS 挪到 5353、DHCP 照常；停止时原样还回去。更新、卸载和常用设置见 [`deploy/openwrt/`](deploy/openwrt/README.md)。
 
+> [!IMPORTANT]
+> **路由器上请打开智能流控**：「配置 → 基础设置 → 智能流控」，保存后按提示重启一次 KixDNS。它默认是关的。路由器内存小，不开的话，有设备猛发查询、上游又回得慢时，内核可能被系统因为内存不足杀掉，DNS 跟着断；打开以后，发得多的那台设备收到 SERVFAIL，别的设备照常解析。[详细说明](deploy/openwrt/README.md#启用-dns)
+
 每个版本的变化见 [Releases](https://github.com/tuoro/kixdns-panel/releases)。
 
 ## 开发
