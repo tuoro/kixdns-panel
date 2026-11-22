@@ -1,4 +1,6 @@
 #!/bin/sh /etc/rc.common
+# START、STOP、USE_PROCD 由 /etc/rc.common 读取，shellcheck 看不到 / START, STOP and USE_PROCD are read by /etc/rc.common, out of shellcheck's sight
+# shellcheck shell=sh disable=SC2034
 # 以 root 运行的面板服务控制 helper（procd 版）；面板本身也是 root，
 # 所以 allowed-uid 用 0 —— OpenWrt 上不存在 systemd 时代的独立 kixdns 用户。
 

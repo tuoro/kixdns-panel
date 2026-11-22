@@ -1,4 +1,6 @@
 #!/bin/sh /etc/rc.common
+# START、STOP、USE_PROCD 由 /etc/rc.common 读取，shellcheck 看不到 / START, STOP and USE_PROCD are read by /etc/rc.common, out of shellcheck's sight
+# shellcheck shell=sh disable=SC2034
 # KixDNS 面板 —— OpenWrt procd 版本。
 # 面板默认按 systemd 语义工作；这里全部通过环境变量改成 procd 语义：
 #   服务状态 ← pidfile，日志 ← 日志文件，启停 ← /etc/init.d/kixdns（由 helper 执行）。
@@ -7,13 +9,46 @@ START=96
 STOP=05
 USE_PROCD=1
 
+PORT=5738
+
+# 面板以 root 运行，默认只听 LAN 口当前的 IPv4 地址，不听 0.0.0.0：防火墙一旦配错，WAN 上也打得开面板。
+# 要听别的地址（比如 0.0.0.0，或只给本机反向代理用的 127.0.0.1）就写 UCI，升级不会动它：
+#   touch /etc/config/kixdns-panel
+#   uci set kixdns-panel.main=panel
+#   uci set kixdns-panel.main.bind='0.0.0.0:5738'
+#   uci commit kixdns-panel && /etc/init.d/kixdns-panel reload
+# LAN 还没有地址时（比如 LAN 走 DHCP、开机时还没拿到）先只听 127.0.0.1；LAN 地址一出来、或者变了，
+# 下面的 interface 触发器会让面板换到新地址上。
+# The panel runs as root, so by default it listens only on the LAN interface's current IPv4 address instead of
+# 0.0.0.0: a misconfigured firewall would otherwise open the panel on the WAN. To listen elsewhere (0.0.0.0, or
+# 127.0.0.1 for a local reverse proxy only) set the UCI option above, which upgrades leave alone. Until the LAN has
+# an address (a DHCP LAN not yet up at boot, say) the panel listens on 127.0.0.1 only; once the LAN address appears or
+# changes, the interface trigger below moves the panel onto it.
+panel_bind() {
+	bind="$(uci -q get kixdns-panel.main.bind)"
+	if [ -n "$bind" ]; then
+		echo "$bind"
+		return
+	fi
+	# shellcheck source=/dev/null
+	. /lib/functions/network.sh
+	lan_ip=""
+	network_get_ipaddr lan_ip lan
+	if [ -n "$lan_ip" ]; then
+		echo "$lan_ip:$PORT"
+	else
+		logger -t kixdns-panel "LAN 还没有 IPv4 地址，面板先只听 127.0.0.1:$PORT / LAN has no IPv4 address yet, listening on 127.0.0.1:$PORT only"
+		echo "127.0.0.1:$PORT"
+	fi
+}
+
 start_service() {
 	mkdir -p /etc/kixdns-panel /etc/kixdns-panel/geo /run/kixdns-panel
 
 	procd_open_instance
 	procd_set_param command /usr/bin/kixdns-panel-server
 	procd_set_param env \
-		KIXDNS_PANEL_BIND=0.0.0.0:5738 \
+		KIXDNS_PANEL_BIND="$(panel_bind)" \
 		KIXDNS_PANEL_DATABASE=/etc/kixdns-panel/panel.db \
 		KIXDNS_CONFIG=/etc/kixdns/pipeline.json \
 		KIXDNS_CONTROL_SOCKET=/run/kixdns/admin.sock \
@@ -31,4 +66,12 @@ start_service() {
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance
+}
+
+# 改了 UCI 的监听地址、或者 LAN 的地址起来了 / 变了，就 reload：监听地址变了 procd 才重启面板，没变什么都不做
+# A change to the UCI listen address, or the LAN address coming up or changing, triggers a reload: procd restarts the
+# panel only when the listen address actually changed
+service_triggers() {
+	procd_add_reload_trigger kixdns-panel
+	procd_add_interface_trigger "interface.*" lan /etc/init.d/kixdns-panel reload
 }

@@ -42,7 +42,9 @@ fi
 
 # 先停旧实例，避免 "Text file busy"
 for svc in kixdns-panel kixdns-panel-helper kixdns; do
-	[ -x "$DEST_ETC/init.d/$svc" ] && "$DEST_ETC/init.d/$svc" stop 2>/dev/null || true
+	if [ -x "$DEST_ETC/init.d/$svc" ]; then
+		"$DEST_ETC/init.d/$svc" stop 2>/dev/null || true
+	fi
 done
 
 cp -f "$SRC/bin/kixdns" "$DEST_BIN/kixdns"

@@ -176,7 +176,8 @@ OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先把它换到�
 
 与 systemd 版的差异：
 
-- 进程以 root 运行，没有 `ProtectSystem` 和独立运行账号；因此 helper 的 `--allowed-uid` 是 0
+- 进程以 root 运行，没有 `ProtectSystem` 和独立运行账号；因此 helper 的 `--allowed-uid` 是 0，它也只执行 root 所有、组和其他用户写不进的 init 脚本
+- 面板默认只听 LAN 口当前的 IPv4 地址，不听 `0.0.0.0`；要改用 UCI 的 `kixdns-panel.main.bind`，见 `deploy/openwrt/README.md` 的「面板的监听地址」
 - OpenWrt 的 `/var` 是 tmpfs，数据库必须放在 overlay 上（安装脚本放 `/etc/kixdns-panel/`），否则重启就丢
 - 服务状态优先用 `ubus call service list` 问 procd：实例在但没 running 判为 failed（触发「起不来就退回」），服务不在列表才判为 inactive；ubus 不可用才退回 pid 文件 + `/proc/<pid>`
 - 日志页的级别取每行时间戳之后的第一个词（INFO/WARN/ERROR），不再整行搜关键字，避免 `terror.example.com`、`no error` 误判

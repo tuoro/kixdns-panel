@@ -136,6 +136,25 @@ OpenWrt 默认的 dnsmasq 占着 53 端口。启用内核（`START_DNS=1` 或之
 （面板里改，或 `uci set dhcp.@dnsmasq[0].port=5353; uci commit dhcp; /etc/init.d/dnsmasq restart`），
 否则内核起不来。
 
+## 面板的监听地址
+
+面板以 root 运行，所以默认只听 **LAN 口当前的 IPv4 地址**（`network_get_ipaddr lan`），端口 5738，
+不听 `0.0.0.0`：防火墙一旦配错，WAN 上也打得开面板。LAN 地址变了（改了 IP、LAN 走 DHCP 拿到了新地址），
+procd 会让面板换到新地址上；LAN 还没有地址时，面板先只听 `127.0.0.1`。
+
+要听别的地址，写 UCI（升级不会动它）：
+
+```sh
+touch /etc/config/kixdns-panel
+uci set kixdns-panel.main=panel
+uci set kixdns-panel.main.bind='0.0.0.0:5738'   # 或只给本机反向代理用：127.0.0.1:5738
+uci commit kixdns-panel
+/etc/init.d/kixdns-panel reload
+```
+
+去掉这个设置（`uci delete kixdns-panel.main.bind; uci commit kixdns-panel; /etc/init.d/kixdns-panel reload`）
+就回到只听 LAN。
+
 ## 与 systemd 版的行为差异
 
 - 进程以 root 运行，没有 `ProtectSystem`/独立 `kixdns` 用户。helper 的 `--allowed-uid` 因此是 0。
