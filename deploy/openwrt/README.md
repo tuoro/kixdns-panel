@@ -53,6 +53,11 @@ etc/pipeline.json                       本仓库 deploy/config/pipeline.json（
 统一改到 `/etc/kixdns-panel/`。日志放 `/var/log` 也是 tmpfs，重启即清空，需要长期保留就自行
 做日志轮转或改到 overlay。
 
+日志写在内存里，所以内核默认的日志级别和 systemd 版一样是 `info,kixdns::engine::phases=warn`：
+启动、重载、告警照常记，**逐请求的应答记录不记**。每个查询一行约 250 字节，只增不减地占着路由器的内存，
+会让智能流控的内存水位越来越早开始拒绝查询，还会把客户端 IP 和域名留在日志里。临时排查要逐条记录时，
+执行 `RUST_LOG=info /etc/init.d/kixdns restart`，下次重启就回到默认。
+
 ## 交叉编译
 
 面板和 helper 在 musl 上要链 C 代码（rusqlite 的 bundled SQLite、zstd、rustls 的 ring），

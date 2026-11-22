@@ -17,7 +17,8 @@ PIDFILE=/var/run/kixdns.pid
 
 start_service() {
 	mkdir -p /run/kixdns /var/log
-	# 只在文件过大时滚一次，避免 overlay 被日志吃满
+	# OpenWrt 的 /var 是内存盘：启动时日志超过 8 MiB 就滚一次，免得一直占着内存
+	# /var is a RAM disk on OpenWrt: roll the log at start-up once it is over 8 MiB so it does not keep holding memory
 	if [ -f "$LOGFILE" ] && [ "$(wc -c <"$LOGFILE")" -gt 8388608 ]; then
 		mv -f "$LOGFILE" "$LOGFILE.1"
 	fi
@@ -26,7 +27,16 @@ start_service() {
 	procd_open_instance
 	# 用 sh -c exec 包一层，把内核 stdout/stderr 落到文件，面板日志页才读得到
 	procd_set_param command /bin/sh -c "exec $PROG run --config $CONF --admin-socket $SOCK >>$LOGFILE 2>&1"
-	procd_set_param env RUST_LOG="${RUST_LOG:-warn,kixdns=info}"
+	# 和 systemd 版的 unit 一样：启动、重载、告警照常记，逐请求的应答记录（kixdns::engine::phases 的
+	# dns_response、dns_request_finished）不记。每个查询一行约 250 字节，写在内存盘上只增不减，会挤占路由器的内存，
+	# 让流控的内存水位越来越早开始拒绝查询，还会把客户端 IP 和域名留在日志里。临时排查要逐条记录时：
+	#   RUST_LOG=info /etc/init.d/kixdns restart    （下次重启就回到默认）
+	# As in the systemd unit: startup, reload and warnings are logged, the per-request answer records
+	# (dns_response and dns_request_finished of kixdns::engine::phases) are not. At about 250 bytes a query they only
+	# grow on the RAM disk, crowding the router's memory so flow control's memory watermark starts refusing queries ever
+	# earlier, and they leave client IPs and domains in the log. To record each request while troubleshooting, run the
+	# command above; the next restart goes back to the default.
+	procd_set_param env RUST_LOG="${RUST_LOG:-info,kixdns::engine::phases=warn}"
 	procd_set_param pidfile "$PIDFILE"
 	procd_set_param respawn 3600 5 5
 	procd_set_param limits nofile="65536"
