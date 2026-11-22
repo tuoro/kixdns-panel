@@ -186,19 +186,22 @@ UCI
   owrt "cd /root/package/${package_name} && printf 'v%s\n' '${version}' > PANEL_RELEASE &&
     find . -type f ! -name SHA256SUMS | sed 's|^\./||' | sort | xargs sha256sum > SHA256SUMS &&
     cd /root/package && tar -czf /root/release.tar.gz ${package_name}"
-  mkdir -p "${WORK}/release/download/v${version}"
-  docker cp "${NAME}:/root/release.tar.gz" "${WORK}/release/download/v${version}/${package_name}.tar.gz"
+  # 更新器从资产编号的地址下载（GitHub API 的 /releases/assets/<编号>），这里给它编号 7
+  # The updater downloads from the asset id's address (the GitHub API's /releases/assets/<id>); here the id is 7
+  mkdir -p "${WORK}/release/assets"
+  docker cp "${NAME}:/root/release.tar.gz" "${WORK}/release/assets/7"
   local gateway=${HOST_ADDRESS} digest size
-  digest="$(sha256sum "${WORK}/release/download/v${version}/${package_name}.tar.gz" | cut -d' ' -f1)"
-  size="$(stat -c %s "${WORK}/release/download/v${version}/${package_name}.tar.gz")"
+  digest="$(sha256sum "${WORK}/release/assets/7" | cut -d' ' -f1)"
+  size="$(stat -c %s "${WORK}/release/assets/7")"
   cat >"${WORK}/release/release.json" <<JSON
-{"tag_name":"v${version}","assets":[{"name":"${package_name}.tar.gz","state":"uploaded","size":${size},
+{"tag_name":"v${version}","assets":[{"id":7,"name":"${package_name}.tar.gz","state":"uploaded","size":${size},
 "digest":"sha256:${digest}","browser_download_url":"http://${gateway}:8765/download/v${version}/${package_name}.tar.gz"}]}
 JSON
   (cd "${WORK}/release" && exec python3 -m http.server 8765 --bind 0.0.0.0) >/dev/null 2>&1 &
   SERVER_PID=$!
   owrt "sed -i -e 's|^RELEASE_API=.*|RELEASE_API=\"http://${gateway}:8765/release.json\"|' \
-    -e 's|^DOWNLOAD_PREFIX=.*|DOWNLOAD_PREFIX=\"http://${gateway}:8765/download\"|' /usr/libexec/kixdns-panel-update"
+    -e 's|^DOWNLOAD_PREFIX=.*|DOWNLOAD_PREFIX=\"http://${gateway}:8765/download\"|' \
+    -e 's|^ASSET_API=.*|ASSET_API=\"http://${gateway}:8765/assets\"|' /usr/libexec/kixdns-panel-update"
   wait_until 10 "假的 Release 能取到" owrt "uclient-fetch -q -O /dev/null http://${gateway}:8765/release.json"
   owrt '/etc/init.d/kixdns-panel-update start'
   wait_until 120 "在线更新完成" owrt 'grep -q "\"complete\"" /var/lib/kixdns-panel-update/status.json'

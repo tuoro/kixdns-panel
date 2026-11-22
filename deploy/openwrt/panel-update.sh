@@ -18,6 +18,12 @@ set -u
 REPOSITORY="tuoro/kixdns-panel"
 RELEASE_API="https://api.github.com/repos/${REPOSITORY}/releases/latest"
 DOWNLOAD_PREFIX="https://github.com/${REPOSITORY}/releases/download"
+# 安装包从 GitHub API 的资产地址下载（跳转到 release-assets.githubusercontent.com），不走 github.com：有的网络里 github.com
+# 解析出来的地址时通时不通，uclient-fetch 又只试第一个地址，而 api.github.com 和 githubusercontent 通常是通的
+# The package is downloaded from the GitHub API's asset address (redirecting to release-assets.githubusercontent.com),
+# not from github.com: on some networks the addresses github.com resolves to are reachable only now and then, and
+# uclient-fetch tries the first one only, while api.github.com and githubusercontent usually work
+ASSET_API="https://api.github.com/repos/${REPOSITORY}/releases/assets"
 # 面板读的状态文件（panel_update.rs 的 STATUS_FILE）：root 所有、组和其他用户不可写，否则面板不认
 # The status file the panel reads (STATUS_FILE in panel_update.rs): root's and not writable by group or others, or the
 # panel ignores it
@@ -140,8 +146,18 @@ environment_value() {
 # 不带 GitHub Token：uclient-fetch 只能把它放在命令行上，本机别的账号从 /proc 就能读到；匿名额度（每小时 60 次）够一次更新用
 # No GitHub token: uclient-fetch takes it on the command line only, where other accounts on the host read it from /proc;
 # the anonymous allowance (60 an hour) is plenty for one update
+# 连不上、读到一半断了都再试，最多 3 次；第三个参数是要带的 Accept 头
+# A failed connection or a read cut short is tried again, 3 times at most; the third argument is the Accept header to send
 fetch() {
-	uclient-fetch -q -T 30 -U kixdns-panel-online-updater -O "$2" "$1"
+	attempt=1
+	while :; do
+		rm -f -- "$2"
+		uclient-fetch -q -T 30 -U kixdns-panel-online-updater --header="Accept: ${3:-application/vnd.github+json}" \
+			-O "$2" "$1" && return 0
+		[ "${attempt}" -lt 3 ] || return 1
+		attempt=$((attempt + 1))
+		sleep 2
+	done
 }
 
 detect_architecture() {
@@ -230,9 +246,13 @@ main() {
 	count=$(jsonfilter -i "${WORK}/release.json" -e "${filter}.name" | wc -l)
 	[ "${count}" -eq 1 ] || fail "Release ${tag} 里没有本架构（${architecture}）的 OpenWrt 安装包"
 	url=$(jsonfilter -i "${WORK}/release.json" -e "${filter}.browser_download_url")
+	asset_id=$(jsonfilter -i "${WORK}/release.json" -e "${filter}.id")
 	digest=$(jsonfilter -i "${WORK}/release.json" -e "${filter}.digest")
 	size=$(jsonfilter -i "${WORK}/release.json" -e "${filter}.size")
 	[ "${url}" = "${DOWNLOAD_PREFIX}/${tag}/${asset}" ] || fail "安装包下载地址不可信"
+	case ${asset_id} in
+	*[!0-9]* | "" | 0*) fail "Release 安装包的编号无效" ;;
+	esac
 	case ${digest} in
 	sha256:*) digest=${digest#sha256:} ;;
 	*) fail "安装包缺少有效的 SHA-256 摘要" ;;
@@ -254,7 +274,8 @@ main() {
 
 	write_status downloading "正在下载并校验 ${tag}"
 	archive="${WORK}/${asset}"
-	fetch "${url}" "${archive}" || fail "下载安装包失败，检查网络后再试"
+	fetch "${ASSET_API}/${asset_id}" "${archive}" application/octet-stream ||
+		fail "下载安装包失败（试了 3 次）：路由器连不上 api.github.com 或 release-assets.githubusercontent.com；检查网络后再试"
 	[ "$(sha256sum "${archive}" | cut -d' ' -f1)" = "${digest}" ] ||
 		fail "安装包 SHA-256 与 GitHub 公布的摘要不一致，已丢弃；再试一次，仍不一致就不要安装，并到 https://github.com/${REPOSITORY}/issues 报告"
 	package_name="kixdns-panel-openwrt-${architecture}"
