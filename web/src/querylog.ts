@@ -1,4 +1,4 @@
-import type { QueryLogEntry, QueryLogGap, QueryLogItem, QueryLogRecord, QueryLogStep, QueryLogStepRecord } from './api/types'
+import type { QueryLogEntry, QueryLogGap, QueryLogItem, QueryLogRecord, QueryLogSettings, QueryLogStep, QueryLogStepRecord } from './api/types'
 import { isIp, mappingPipelineId, ruleGroupPipelineId, upstreamPipelineId, type Model } from './config-model/model'
 import type { TraceNames } from './config-model/trace-names'
 import type { TextPart } from './diagnostics'
@@ -734,4 +734,15 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
     rows.push({ at: entry.latency_ms, tone: 'warn', idle: false, decides: false, lead: [t('没处理完就结束了')], note: [] })
   }
   return rows
+}
+
+/** 保存查询日志设置的结果，由放表单的地方决定接下来做什么 / The outcome of saving the query log settings; the form's host decides what follows */
+export type SettingsSaveOutcome =
+  | { status: 'invalid' | 'busy' | 'unchanged' }
+  | { status: 'failed'; text: string }
+  | { status: 'saved'; before: QueryLogSettings | null; next: QueryLogSettings }
+
+/** 保存多久的说法：整天的说天，其余说小时 / How long it is kept: whole days in days, the rest in hours */
+export function retentionText(hours: number): string {
+  return hours >= 24 && hours % 24 === 0 ? `${hours / 24} 天` : `${hours} 小时`
 }

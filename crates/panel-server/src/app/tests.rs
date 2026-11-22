@@ -57,6 +57,7 @@ fn app_settings(directory: &TempDir) -> AppSettings {
         systemctl: Some(systemctl),
         bind: "127.0.0.1:0".parse().unwrap(),
         database_path: directory.path().join("panel.db"),
+        querylog_dir: None,
         config_path,
         control_socket: directory.path().join("admin.sock"),
         service_unit: "kixdns.service".to_owned(),
@@ -884,6 +885,7 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         recent_history: Arc::default(),
         querylog: super::querylog::QueryLog::open(
             &directory.path().join("panel.db"),
+            None,
             &database_for_querylog,
         )
         .await
@@ -4855,6 +4857,27 @@ async fn put_querylog_settings(context: &AuthenticatedApp, body: Value) -> (Stat
         .body(Body::from(body.to_string()))
         .unwrap();
     send_json(context, request).await
+}
+
+/// 设置里说得出存在哪、在不在内存里、这台设备最多能设多大；没给目录时在数据库旁边
+/// The settings say where the log is kept, whether in memory, and the largest cap this device allows; without a
+/// directory it sits next to the database
+#[tokio::test]
+async fn the_querylog_settings_say_where_they_are_kept() {
+    let context = authenticated_app().await;
+    let settings = get_json(&context, "/api/v1/querylog/settings").await;
+    let storage = &settings["storage"];
+    assert_eq!(
+        storage["path"].as_str().unwrap(),
+        context
+            .directory
+            .path()
+            .join("querylog")
+            .display()
+            .to_string()
+    );
+    assert!(storage["memory"].is_boolean());
+    assert!(storage["limit_bytes"].as_u64().unwrap() > 0);
 }
 
 /// 页面用的接口：后台任务每秒取一次，按条件筛，设置检查后存下并记审计，清空以后什么也不剩

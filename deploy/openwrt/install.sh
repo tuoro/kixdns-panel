@@ -14,6 +14,9 @@
 set -e
 
 ROOT=${ROOT:-/}
+# 去掉结尾的斜杠：装到 / 时路径写成 /usr/bin，不是 //usr/bin / Drop the trailing slash: installing to / gives /usr/bin, not
+# //usr/bin
+ROOT=${ROOT%/}
 SRC=$(cd "$(dirname "$0")" && pwd)
 
 DEST_BIN="$ROOT/usr/bin"
@@ -492,6 +495,17 @@ fi
 wait_panel_healthy "$new_version" ||
 	die "新面板 $new_version 启动后没有正常运行（${PANEL_WAIT_SECONDS} 秒内没有稳定运行并答出健康检查）；查看原因：logread -e kixdns-panel"
 CHANGING=0
+
+# 查询日志改放内存（init 脚本的 querylog_dir）：新面板稳定运行以后，以前写在闪存上的删掉，腾出 overlay（装不成时原来的
+# 面板还要用它）；UCI 里指定放在那里的照旧
+# The query log now sits in memory (querylog_dir in the init script): once the new panel runs steadily, what earlier
+# versions wrote to flash goes, freeing the overlay (a failed install needs it for the old panel); one the UCI option
+# places there stays
+old_querylog="$DEST_STATE/querylog"
+if [ -d "$old_querylog" ] && [ "$(uci -q get kixdns-panel.main.querylog_dir)" != "/etc/kixdns-panel/querylog" ]; then
+	rm -rf "$old_querylog"
+	say "查询日志改放内存（重启清空），已删掉以前写在闪存上的 $old_querylog；要长期保留见 README 的「查询日志」"
+fi
 
 say "$kernel_message"
 if [ -n "$panel_release" ]; then

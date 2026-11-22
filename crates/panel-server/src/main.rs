@@ -18,6 +18,10 @@ struct Args {
     #[arg(long, env = "KIXDNS_PANEL_DATABASE", default_value = "data/panel.db")]
     database: PathBuf,
 
+    /// 查询日志放在哪个目录；不给就是数据库旁边的 `querylog/`。`OpenWrt` 上默认放内存（/tmp）。
+    #[arg(long, env = "KIXDNS_QUERYLOG_DIR")]
+    querylog_dir: Option<PathBuf>,
+
     /// `KixDNS` 配置文件路径；API 不能改写此路径。
     #[arg(long, env = "KIXDNS_CONFIG", default_value = "config/pipeline.json")]
     config: PathBuf,
@@ -159,6 +163,9 @@ impl Args {
             systemctl: None,
             bind: args.bind,
             database_path: args.database,
+            querylog_dir: args
+                .querylog_dir
+                .filter(|path| !path.as_os_str().is_empty()),
             config_path: args.config,
             control_socket: args.control_socket,
             service_unit: args.service_unit,

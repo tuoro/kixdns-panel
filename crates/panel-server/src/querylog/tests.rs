@@ -4,8 +4,8 @@ use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
 use super::{
-    Cursor, Filter, HOUR_MS, KernelEntry, MIB, PageQuery, QueryLogSettings, QueryLogStore, Record,
-    RuleFilter, RuleIndex, StaticKind, static_kind_from_answer,
+    Cursor, Filter, HOUR_MS, KernelEntry, MAX_MAX_BYTES, MIB, PageQuery, QueryLogSettings,
+    QueryLogStore, Record, RuleFilter, RuleIndex, StaticKind, Storage, static_kind_from_answer,
 };
 
 /// 2026-10-15 12:00 UTC 整点 / 2026-10-15 12:00 UTC on the hour
@@ -1636,4 +1636,70 @@ fn the_panels_own_field_names_are_dropped_from_a_kernel_record() {
     let mut out = Vec::new();
     empty.write_line(1, &mut out).unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), r#"{"id":1,"instance":7}"#);
+}
+
+/// 这台设备给得起多少：已经占的加上还剩的，减去留给别人的。内存里至少留 64 MiB 或四分之一，磁盘上至少 16 MiB 或
+/// 十分之一，按比例留的最多 1 GiB；别的东西占满了就比已经占的还小
+/// What this device can give: what is held plus what is free, less the room left to others. Memory keeps at least
+/// 64 MiB or a quarter, disk at least 16 MiB or a tenth, the share held to 1 GiB; with something else filling it the
+/// limit drops below what is held
+#[test]
+fn the_device_limit_leaves_room_to_others() {
+    // 256 MB 的路由器：tmpfs 一半内存，还剩 110 MiB / A 256 MB router: tmpfs is half the memory, 110 MiB free
+    let router = Storage {
+        memory: true,
+        total: 123 * MIB,
+        available: 110 * MIB,
+    };
+    assert_eq!(router.limit(0), 46 * MIB);
+    assert_eq!(router.limit(10 * MIB), 56 * MIB, "what it holds counts");
+    // 1 GB 内存：留四分之一 / 1 GB of memory: a quarter is kept
+    let larger = Storage {
+        memory: true,
+        total: 490 * MIB,
+        available: 440 * MIB,
+    };
+    assert_eq!(larger.limit(0), 440 * MIB - 490 * MIB / 4);
+    // 闪存只剩 45 MiB / Flash with 45 MiB left
+    let flash = Storage {
+        memory: false,
+        total: 122 * MIB,
+        available: 45 * MIB,
+    };
+    assert_eq!(flash.limit(0), 29 * MIB);
+    // 大盘按比例最多留 1 GiB，上限也不超过 100 GiB / A large disk keeps at most 1 GiB by share, and the cap stays
+    // within 100 GiB
+    let server = Storage {
+        memory: false,
+        total: 2_000_000 * MIB,
+        available: 50 * 1024 * MIB,
+    };
+    assert_eq!(server.limit(0), 49 * 1024 * MIB);
+    let roomy = Storage {
+        available: 500 * 1024 * MIB,
+        ..server
+    };
+    assert_eq!(roomy.limit(0), MAX_MAX_BYTES);
+    // 别的东西把空间占满了：比已经占的还小，查询日志让出空间 / Something else filled it: below what is held, and the
+    // query log gives room back
+    let full = Storage {
+        available: 2 * MIB,
+        ..flash
+    };
+    assert_eq!(full.limit(20 * MIB), 6 * MIB);
+    assert_eq!(full.limit(0), 0);
+}
+
+/// 存放的目录读得到大小和剩余 / The directory's filesystem reports its size and free space
+#[test]
+fn the_store_reports_its_filesystem() {
+    let directory = tempdir().unwrap();
+    let store = QueryLogStore::open(directory.path().join("querylog")).unwrap();
+    assert_eq!(store.root(), directory.path().join("querylog"));
+    let storage = store.storage().unwrap();
+    assert!(storage.total >= storage.available);
+    assert_eq!(
+        store.device_limit(),
+        Some(storage.limit(store.usage().bytes))
+    );
 }

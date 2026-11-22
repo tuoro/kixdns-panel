@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -115,16 +115,30 @@ pub(crate) struct QueryLog {
     pub(super) store: Option<QueryLogStore>,
     settings: Arc<RwLock<QueryLogSettings>>,
     support: Arc<AtomicU8>,
+    /// 这台设备上查询日志最多能占多少（[`QueryLogStore::device_limit`]），收拾时每秒更新；`u64::MAX` 是不限
+    /// How much the query log may take on this device ([`QueryLogStore::device_limit`]), refreshed by the once-a-second
+    /// housekeeping; `u64::MAX` is no limit
+    limit: Arc<AtomicU64>,
 }
 
 impl QueryLog {
-    /// 打开数据库旁边的 `querylog/` 目录，读回保存的设置
-    /// Opens `querylog/` next to the database and reads the saved settings back
-    pub(crate) async fn open(database_path: &Path, database: &Database) -> anyhow::Result<Self> {
-        let root = database_path
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .join("querylog");
+    /// 打开查询日志的目录（没给就是数据库旁边的 `querylog/`），读回保存的设置
+    /// Opens the query log's directory (`querylog/` next to the database when none is given) and reads the saved
+    /// settings back
+    pub(crate) async fn open(
+        database_path: &Path,
+        directory: Option<&Path>,
+        database: &Database,
+    ) -> anyhow::Result<Self> {
+        let root = directory.map_or_else(
+            || {
+                database_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join("querylog")
+            },
+            Path::to_path_buf,
+        );
         let store = match tokio::task::spawn_blocking(move || QueryLogStore::open(root)).await {
             Ok(Ok(store)) => Some(store),
             Ok(Err(error)) => {
@@ -146,11 +160,24 @@ impl QueryLog {
                 }),
             None => QueryLogSettings::default(),
         };
-        Ok(Self {
+        let querylog = Self {
             store,
             settings: Arc::new(RwLock::new(settings)),
             support: Arc::new(AtomicU8::new(SUPPORT_UNKNOWN)),
-        })
+            limit: Arc::new(AtomicU64::new(u64::MAX)),
+        };
+        querylog.refresh_limit();
+        Ok(querylog)
+    }
+
+    /// 重新算这台设备上查询日志最多能占多少 / Works out again how much the query log may take on this device
+    fn refresh_limit(&self) {
+        let limit = self
+            .store
+            .as_ref()
+            .and_then(QueryLogStore::device_limit)
+            .unwrap_or(u64::MAX);
+        self.limit.store(limit, Ordering::Relaxed);
     }
 
     fn store(&self) -> AppResult<QueryLogStore> {
@@ -162,7 +189,17 @@ impl QueryLog {
         })
     }
 
+    /// 写和收拾用的设置：空间上限不超过这台设备给得起的（[`Self::saved`] 是页面上存的那份）
+    /// The settings writing and housekeeping use: the cap no higher than this device can give ([`Self::saved`] is the
+    /// one saved from the page)
     fn settings(&self) -> QueryLogSettings {
+        let mut settings = self.saved();
+        settings.max_bytes = settings.max_bytes.min(self.limit.load(Ordering::Relaxed));
+        settings
+    }
+
+    /// 页面上存的设置 / The settings saved from the page
+    fn saved(&self) -> QueryLogSettings {
         self.settings
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -236,6 +273,17 @@ struct SettingsView {
     /// when the oldest segment opened or where retention begins, whichever is later
     oldest_unix_ms: Option<u64>,
     supported: bool,
+    /// 存在哪、在不在内存里、这台设备上最多能设多大；目录打不开时没有
+    /// Where it is kept, whether in memory, and the largest cap this device allows; absent when the directory is
+    /// unusable
+    storage: Option<StorageView>,
+}
+
+#[derive(Debug, Serialize)]
+struct StorageView {
+    memory: bool,
+    path: String,
+    limit_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,7 +413,7 @@ async fn save_settings(
 ) -> AppResult<Json<SettingsView>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
-    let before = state.querylog.settings();
+    let before = state.querylog.saved();
     let settings = QueryLogSettings {
         retention_hours: patch.retention_hours.unwrap_or(before.retention_hours),
         max_bytes: patch.max_bytes.unwrap_or(before.max_bytes),
@@ -375,6 +423,25 @@ async fn save_settings(
     }
     .normalized()
     .map_err(|message| AppError::BadRequest("querylog_settings_invalid", message))?;
+    // 改了上限时，不许超过这台设备给得起的；没改的照旧留着（设备上空间少了，实际按给得起的算）
+    // A changed cap may not exceed what this device can give; an unchanged one stays (with less room on the device, the
+    // room it can give is what counts)
+    if settings.max_bytes != before.max_bytes
+        && let Some(store) = state.querylog.store.as_ref()
+        && let Ok(storage) = store.storage()
+    {
+        let limit = storage.limit(store.usage().bytes);
+        if settings.max_bytes > limit {
+            let place = if storage.memory { "内存" } else { "磁盘" };
+            return Err(AppError::BadRequest(
+                "querylog_settings_invalid",
+                format!(
+                    "最多占用不能超过 {} MB：这台设备的{place}只能再给查询日志这么多",
+                    limit >> 20
+                ),
+            ));
+        }
+    }
     let serialized =
         serde_json::to_string(&settings).map_err(|error| AppError::Internal(error.into()))?;
     state
@@ -424,8 +491,16 @@ async fn clear(
 }
 
 fn settings_view(querylog: &QueryLog) -> SettingsView {
-    let settings = querylog.settings();
+    let settings = querylog.saved();
     let usage = querylog.store.as_ref().map(QueryLogStore::usage);
+    let storage = querylog.store.as_ref().and_then(|store| {
+        let storage = store.storage().ok()?;
+        Some(StorageView {
+            memory: storage.memory,
+            path: store.root().display().to_string(),
+            limit_bytes: storage.limit(usage.map_or(0, |usage| usage.bytes)),
+        })
+    });
     let cutoff = now_ms().saturating_sub(u64::from(settings.retention_hours) * 3_600_000);
     SettingsView {
         used_bytes: usage.map_or(0, |usage| usage.bytes),
@@ -434,6 +509,7 @@ fn settings_view(querylog: &QueryLog) -> SettingsView {
             .map(|start| start.max(cutoff)),
         settings,
         supported: querylog.supported(),
+        storage,
     }
 }
 
@@ -581,8 +657,11 @@ impl Collector {
             .is_none_or(tokio::task::JoinHandle::is_finished);
         if due && idle {
             self.tidied = Some(Instant::now());
-            let settings = state.querylog.settings();
+            let querylog = state.querylog.clone();
             self.tidying = Some(tokio::task::spawn_blocking(move || {
+                // 先看这台设备现在给得起多少，再按它收拾 / First see what this device can give now, then tidy by it
+                querylog.refresh_limit();
+                let settings = querylog.settings();
                 if let Err(error) = store.maintain(&settings, now_ms()) {
                     tracing::debug!(%error, "查询日志这一回没收拾好");
                 }

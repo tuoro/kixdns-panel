@@ -58,6 +58,7 @@ SHA256SUMS                              上面每个文件的 SHA-256
 /etc/kixdns-panel/panel.db              面板数据库（必须在 overlay 上，不能放 /var）
 /etc/kixdns-panel/panel.env             install.sh 写的身份：自带内核的来源、面板的版本
 /etc/kixdns-panel/github-token          系统页填的 GitHub Token（同样放在 overlay 上）
+/tmp/kixdns-panel/querylog              查询日志（默认放内存，重启清空；见下面的「查询日志」）
 /var/log/kixdns.log                     内核日志（面板日志页读它）
 /var/run/kixdns.pid                     procd 写的 pid 文件
 /run/kixdns/admin.sock                  内核管理 Socket
@@ -186,6 +187,27 @@ OpenWrt 默认的 dnsmasq 占着 53 端口。启用内核（`START_DNS=1` 或之
 `/etc/init.d/kixdns enable && /etc/init.d/kixdns start`）之前，先把 dnsmasq 换到别的端口
 （面板里改，或 `uci set dhcp.@dnsmasq[0].port=5353; uci commit dhcp; /etc/init.d/dnsmasq restart`），
 否则内核起不来。
+
+## 查询日志
+
+查询日志默认放在内存里（`/tmp/kixdns-panel/querylog`），路由器重启后清空：闪存小，也经不起一直写。
+OpenWrt 版默认保存 1 天、最多 16 MB（查询日志是压缩存的，每条几十字节，够家里的网络记好几天）。在面板的
+「配置 → 基础设置 → 查询日志」或者「日志 → 查询日志」的「设置」里改；那里会写出存在哪、这台设备最多能设多大：
+在内存里要给别的程序和在线更新留至少 64 MB 或四分之一，在磁盘上至少 16 MB 或十分之一。空间被别的东西占了，
+查询日志会自己删掉最早的，把空间让出来。
+
+想长期保留，就放到 U 盘之类的外置存储上：
+
+```sh
+touch /etc/config/kixdns-panel
+uci set kixdns-panel.main=panel
+uci set kixdns-panel.main.querylog_dir='/mnt/sda1/kixdns-querylog'
+uci commit kixdns-panel
+/etc/init.d/kixdns-panel restart
+```
+
+目录的上一层（这里是 `/mnt/sda1`）不存在时，比如 U 盘没挂上，面板这次照样放内存，不会写到闪存上去。
+以前的版本把查询日志写在闪存上的 `/etc/kixdns-panel/querylog`，升级时会删掉，腾出 overlay。
 
 ## 面板的监听地址
 

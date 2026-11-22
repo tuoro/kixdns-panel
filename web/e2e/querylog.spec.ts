@@ -133,6 +133,42 @@ test('设置只有保存多久、最多占用和不记录的域名；清空以�
   await expect(page.getByText('还没有查询')).toBeVisible()
 })
 
+// 设置在「基础设置」里也有一组：说清存在哪、这台设备最多能设多大，单独保存、立即生效；日志页的「设置」是同一份
+// The settings also form a group in 基础设置: where they are kept and the largest cap the device allows, saved on their
+// own and effective at once; the logs page's 设置 is the same settings
+test('基础设置里的查询日志一组：说清存在哪、最多能设多大，单独保存，和日志页的设置是同一份 @responsive', async ({ page }) => {
+  await page.goto('/config?v2=1&section=settings')
+  await page.getByRole('button', { name: /^查询日志/ }).click()
+  const group = page.locator('.settings-group', { has: page.getByRole('heading', { name: '查询日志', exact: true }) })
+  await expect(group).toContainText('保存后立即生效，不用应用配置')
+  await expect(group).toContainText('存在 /var/lib/kixdns-panel/querylog')
+  await expect(group).toContainText('这台设备最多能设 20480 MB')
+  // 超过这台设备给得起的：说在框下面，不保存 / Beyond what the device can give: said under the field, not saved
+  await group.getByLabel('最多占用多少 MB').fill('30000')
+  await group.getByRole('button', { name: '保存查询日志设置' }).click()
+  await expect(group.locator('#sets-ql-mb-err')).toContainText('最多占用不能超过 20480 MB')
+  await expect(group.getByLabel('最多占用多少 MB')).toBeFocused()
+  await group.getByLabel('最多占用多少 MB').fill('64')
+  await group.getByRole('button', { name: '1 天', exact: true }).click()
+  await group.getByRole('button', { name: '保存查询日志设置' }).click()
+  await expect(page.locator('.toast', { hasText: '查询日志设置已保存' })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^查询日志/ })).toContainText('保存 1 天')
+
+  await openQueryLog(page)
+  // 日志页的入口带字 / The logs page's entry carries a label
+  await expect(page.getByRole('button', { name: '查询日志设置' })).toContainText('设置')
+  await page.getByRole('button', { name: '查询日志设置' }).click()
+  const drawer = page.locator('dialog.pdrawer[open]')
+  await expect(drawer.getByLabel('最多占用多少 MB')).toHaveValue('64')
+})
+
+test('搜基础设置时也找得到查询日志那一组', async ({ page }) => {
+  await page.goto('/config?v2=1&section=settings')
+  await page.getByLabel('搜索基础设置').fill('保存多久')
+  await expect(page.getByRole('heading', { name: '查询日志', exact: true })).toBeVisible()
+  await expect(page.getByText('没有找到匹配的设置')).toHaveCount(0)
+})
+
 test('内核不支持查询日志：以前记下的照样能看；什么也没有时说去更新内核 @responsive', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-querylog-unsupported', 'true'))
   await openQueryLog(page)

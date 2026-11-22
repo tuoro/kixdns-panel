@@ -68,6 +68,8 @@ pub struct AppSettings {
     pub systemctl: Option<PathBuf>,
     pub bind: SocketAddr,
     pub database_path: PathBuf,
+    /// 查询日志的目录；None 时在数据库旁边 / The query log's directory; next to the database when None
+    pub querylog_dir: Option<PathBuf>,
     pub config_path: PathBuf,
     pub control_socket: PathBuf,
     pub service_unit: String,
@@ -341,7 +343,12 @@ pub async fn run(settings: AppSettings) -> anyhow::Result<()> {
 pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     ensure_database_parent(&settings.database_path)?;
     let database = Database::open(settings.database_path.clone()).await?;
-    let querylog = querylog::QueryLog::open(&settings.database_path, &database).await?;
+    let querylog = querylog::QueryLog::open(
+        &settings.database_path,
+        settings.querylog_dir.as_deref(),
+        &database,
+    )
+    .await?;
     let config = ConfigStore::new(settings.config_path, database.clone());
     config.initialize_history().await?;
     let dummy_password_hash = hash_password("dummy-password-for-timing".to_owned()).await?;
