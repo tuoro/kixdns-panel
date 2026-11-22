@@ -6,7 +6,7 @@ mod linux {
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use clap::Parser;
     use rustix::fs::{Uid, chown};
@@ -117,6 +117,15 @@ mod linux {
         // persistence semantics: enable = enable + start, disable = stop + disable. Otherwise
         // the kernel comes back by itself after a router reboot.
         if args.init_script.is_file() {
+            let service = service_name(&args.unit);
+            // 动作前记下运行 pid：restart 后要等新进程真正起来（pid 变了）再返回，
+            // 否则面板拿到的还是旧进程的 active/running。
+            // Remember the running pid before the action: after restart we wait until the new
+            // process is up (pid changed), otherwise the panel still sees the old active/running.
+            let before = match action {
+                ServiceAction::Restart => ubus_snapshot(service),
+                _ => UbusState::Unknown,
+            };
             for verb in init_script_verbs(action) {
                 let output = Command::new(&args.init_script).arg(verb).output()?;
                 if !output.status.success() {
@@ -129,6 +138,10 @@ mod linux {
                     .into());
                 }
             }
+            // procd 的 stop/restart 不等进程退出就返回；等状态落定再回 OK。
+            // procd's stop/restart returns before the process exits; wait for the state to
+            // settle before replying OK.
+            wait_for_settle(action, service, before);
             return Ok(());
         }
         Err("找不到 systemctl，也没有可用的 init 脚本".into())
@@ -170,6 +183,103 @@ mod linux {
             ServiceAction::Stop => &["stop", "disable"],
             ServiceAction::Restart => &["restart"],
             ServiceAction::PanelUpdate => &[],
+        }
+    }
+
+    /// `ubus call service list` 里一个服务的运行状态。
+    /// The running state of one service in `ubus call service list`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum UbusState {
+        /// 服务不在列表里：还没起来或被 procd 清掉。
+        Absent,
+        /// 在列表里但没有 running 的实例：启动失败之类。
+        NotRunning,
+        /// 有 running 实例，附带 pid（可能取不到）。
+        Running(Option<u32>),
+        /// 拿不到 ubus 或不是 JSON，无法判断。
+        Unknown,
+    }
+
+    /// `kixdns.service` → `kixdns`：procd/ubus 里都用短名。
+    fn service_name(unit: &str) -> &str {
+        unit.strip_suffix(".service").unwrap_or(unit)
+    }
+
+    fn ubus_snapshot(service: &str) -> UbusState {
+        let Some(ubus) = find_executable(&["/usr/bin/ubus", "/bin/ubus"]) else {
+            return UbusState::Unknown;
+        };
+        let request = format!("{{\"name\":\"{service}\"}}");
+        let Ok(output) = Command::new(ubus)
+            .args(["call", "service", "list", &request])
+            .output()
+        else {
+            return UbusState::Unknown;
+        };
+        if !output.status.success() {
+            return UbusState::Unknown;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            return UbusState::Unknown;
+        };
+        let Some(entry) = value.get(service) else {
+            return UbusState::Absent;
+        };
+        if let Some(instances) = entry
+            .get("instances")
+            .and_then(serde_json::Value::as_object)
+        {
+            for instance in instances.values() {
+                if instance.get("running").and_then(serde_json::Value::as_bool) == Some(true) {
+                    let pid = instance
+                        .get("pid")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|pid| u32::try_from(pid).ok());
+                    return UbusState::Running(pid);
+                }
+            }
+        }
+        UbusState::NotRunning
+    }
+
+    /// procd 的 stop/restart 不等进程退出就返回；等状态落定再回 OK，面板才不会读到旧状态。
+    /// 最多等 `term_timeout`（procd 里 5s）再加 1s 余量。
+    /// procd's stop/restart returns before the process exits; wait until the state settles so the
+    /// panel does not read a stale state. Waits up to the 5s term timeout plus a 1s margin.
+    fn wait_for_settle(action: ServiceAction, service: &str, before: UbusState) {
+        // 没有 ubus 根本无从判断，不能平白加 6 秒延迟。
+        if find_executable(&["/usr/bin/ubus", "/bin/ubus"]).is_none() {
+            return;
+        }
+        let before_pid = match before {
+            UbusState::Running(pid) => pid,
+            _ => None,
+        };
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            let state = ubus_snapshot(service);
+            if reached_goal(action, before_pid, state) || Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+
+    /// 动作的目标状态是否已经达到：stop 要服务消失或不再 running；restart 要新进程起来
+    /// （pid 变了）；start 不额外等。
+    /// Whether the action's goal state has been reached: stop wants the service gone or not
+    /// running; restart wants a new process up (pid changed); start does not wait here.
+    fn reached_goal(action: ServiceAction, before_pid: Option<u32>, state: UbusState) -> bool {
+        match action {
+            ServiceAction::Restart => match state {
+                UbusState::Running(pid) => match (before_pid, pid) {
+                    (Some(old), Some(new)) => old != new,
+                    _ => true,
+                },
+                _ => false,
+            },
+            ServiceAction::Stop => matches!(state, UbusState::Absent | UbusState::NotRunning),
+            ServiceAction::Start | ServiceAction::PanelUpdate => true,
         }
     }
 
@@ -252,8 +362,8 @@ mod linux {
         use std::path::Path;
 
         use super::{
-            ServiceAction, init_script_verbs, parse_action, systemctl_arguments,
-            validate_socket_path, validate_unit,
+            ServiceAction, UbusState, init_script_verbs, parse_action, reached_goal, service_name,
+            systemctl_arguments, validate_socket_path, validate_unit,
         };
 
         #[test]
@@ -294,6 +404,52 @@ mod linux {
             assert_eq!(init_script_verbs(ServiceAction::Stop), ["stop", "disable"]);
             assert_eq!(init_script_verbs(ServiceAction::Restart), ["restart"]);
             assert!(init_script_verbs(ServiceAction::PanelUpdate).is_empty());
+        }
+
+        #[test]
+        fn waits_for_procd_to_settle_after_stop_and_restart() {
+            // stop：服务消失或没有 running 实例才算停好。
+            assert!(!reached_goal(
+                ServiceAction::Stop,
+                None,
+                UbusState::Running(Some(3260))
+            ));
+            assert!(reached_goal(ServiceAction::Stop, None, UbusState::Absent));
+            assert!(reached_goal(
+                ServiceAction::Stop,
+                None,
+                UbusState::NotRunning
+            ));
+            // restart：要等新进程（pid 变了）才算重启好，旧 pid 还在不算。
+            assert!(!reached_goal(
+                ServiceAction::Restart,
+                Some(3260),
+                UbusState::Running(Some(3260))
+            ));
+            assert!(reached_goal(
+                ServiceAction::Restart,
+                Some(3260),
+                UbusState::Running(Some(3300))
+            ));
+            assert!(!reached_goal(
+                ServiceAction::Restart,
+                Some(3260),
+                UbusState::Absent
+            ));
+            // 取不到旧 pid 时，只要见到 running 就算数。
+            assert!(reached_goal(
+                ServiceAction::Restart,
+                None,
+                UbusState::Running(Some(3300))
+            ));
+            // start 不额外等。
+            assert!(reached_goal(ServiceAction::Start, None, UbusState::Unknown));
+        }
+
+        #[test]
+        fn service_name_drops_the_systemd_suffix() {
+            assert_eq!(service_name("kixdns.service"), "kixdns");
+            assert_eq!(service_name("kixdns"), "kixdns");
         }
 
         #[test]

@@ -31,8 +31,12 @@ start_service() {
 	procd_close_instance
 }
 
+# 不要在这里删 pidfile：procd 自己会删（procd_set_param pidfile），抢先删会让 procd 记
+# `daemon.err procd: Failed to remove pidfile: ...: No such file or directory`。
+# Do not remove the pidfile here: procd removes it itself (procd_set_param pidfile); removing
+# it first makes procd log `Failed to remove pidfile: ...: No such file or directory`.
 stop_service() {
-	rm -f "$PIDFILE"
+	:
 }
 
 restart() {

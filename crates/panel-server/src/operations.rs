@@ -795,11 +795,13 @@ fn procd_logs_blocking(
 
 /// 解析 `2026-11-21T20:00:00.123456Z  INFO kixdns: ...` 这种 tracing 行；
 /// 认不出时间戳就记 0，级别取时间戳之后的第一个词，不再在整行里搜关键字
-/// （否则 `terror.example.com`、`no error` 会被误判成 ERROR）。
+/// （否则 `terror.example.com`、`no error` 会被误判成 ERROR）。级别词本身从返回的
+/// 消息里删掉，因为面板已经单独显示级别，留着会重复成 `INFO client request finished ...`。
 /// Parses a tracing line like `2026-11-21T20:00:00.123456Z  INFO kixdns: ...`;
 /// an unparsable timestamp becomes 0 and the level is the first word after the timestamp,
 /// instead of scanning the whole line for a keyword (which misreads `terror.example.com`
-/// and `no error` as ERROR).
+/// and `no error` as ERROR). The level word itself is stripped from the returned message
+/// because the panel already shows the level separately.
 #[cfg(unix)]
 fn parse_log_line(line: &str) -> (u64, u8, &str) {
     let mut rest = line.trim_start();
@@ -810,12 +812,24 @@ fn parse_log_line(line: &str) -> (u64, u8, &str) {
             rest = tail.trim_start();
         }
     }
-    let priority = match rest.split_whitespace().next().unwrap_or("") {
-        "ERROR" | "Error" | "error" => 3,
-        "WARN" | "Warn" | "warn" | "WARNING" | "Warning" | "warning" => 4,
+    let first = rest.split_whitespace().next().unwrap_or("");
+    let mut message = rest;
+    let priority = match first {
+        "ERROR" | "Error" | "error" => {
+            message = rest[first.len()..].trim_start();
+            3
+        }
+        "WARN" | "Warn" | "warn" | "WARNING" | "Warning" | "warning" => {
+            message = rest[first.len()..].trim_start();
+            4
+        }
+        "INFO" | "Info" | "info" | "DEBUG" | "Debug" | "debug" | "TRACE" | "Trace" | "trace" => {
+            message = rest[first.len()..].trim_start();
+            6
+        }
         _ => 6,
     };
-    (timestamp, priority, rest)
+    (timestamp, priority, message)
 }
 
 /// `2026-11-21T20:00:00.123456Z` / `...123Z` / `...T20:00:00Z`，以及带 `±HH:MM` 偏移的
@@ -1522,22 +1536,30 @@ mod tests {
         assert!(empty.next_cursor.is_none());
     }
 
-    /// 只认时间戳后的第一个词当级别，正文里的 error/warn 字样不该误判。
+    /// 只认时间戳后的第一个词当级别，正文里的 error/warn 字样不该误判；级别词本身也不该
+    /// 留在消息里（面板已经单独显示级别）。
     /// Only the first word after the timestamp is the level; "error"/"warn" inside the message
-    /// must not be misread.
+    /// must not be misread, and the level word itself must not stay in the message.
     #[cfg(unix)]
     #[test]
     fn log_level_comes_from_the_word_after_the_timestamp() {
-        let (_, priority, _) =
-            parse_log_line("2026-11-21T00:00:01.000000Z  INFO kixdns: resolved terror.example.com");
+        let (_, priority, message) =
+            parse_log_line("2026-11-21T00:00:01.000000Z  INFO resolved terror.example.com");
         assert_eq!(priority, 6, "正文里的 terror 不该被当成 ERROR");
+        assert_eq!(
+            message, "resolved terror.example.com",
+            "INFO 级别词要从消息里删掉"
+        );
         let (_, priority, _) =
             parse_log_line("2026-11-21T00:00:01.000000Z  INFO kixdns: no error happened");
         assert_eq!(priority, 6, "正文里的 error 不该被当成 ERROR");
-        let (_, priority, _) = parse_log_line("2026-11-21T00:00:01.000000Z   WARN kixdns: warner");
+        let (_, priority, message) =
+            parse_log_line("2026-11-21T00:00:01.000000Z   WARN kixdns: warner");
         assert_eq!(priority, 4, "WARN 行要判成 warning");
-        let (_, priority, _) = parse_log_line("2026-11-21T00:00:01.000000Z ERROR kixdns: boom");
+        assert_eq!(message, "kixdns: warner", "WARN 级别词要从消息里删掉");
+        let (_, priority, message) = parse_log_line("2026-11-21T00:00:01.000000Z ERROR boom");
         assert_eq!(priority, 3);
+        assert_eq!(message, "boom", "ERROR 级别词要从消息里删掉");
     }
 
     /// `2026-11-21T00:00:00.123456Z` 这类 tracing 时间戳要能被认出来，认不出就记 0；

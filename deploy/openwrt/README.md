@@ -95,9 +95,10 @@ export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
 cd web && npm ci && npm run build                   # 产物在 web/dist，对应 payload 的 web/
 ```
 
-`bin/kixdns` 是内核，来自 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) 的构建，不在本
-仓库。目前 Release 只发布 glibc 版内核，**musl 内核还没发布**：在它发布前，OpenWrt 上要么
-自己用同一套 musl 工具链从内核仓库编一份 `kixdns`，要么先只跑面板。
+`bin/kixdns` 是内核，来自 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) 的 Release，不在
+本仓库。从 [`2026.11.22.2`](https://github.com/tuoro/kixdns/releases/tag/2026.11.22.2) 起 Release
+已经发布 musl 版内核包 `kixdns-<版本>-linux-<arch>-musl.zip`，直接取包里的 `kixdns` 即可；也可以
+用同一套 musl 工具链从内核仓库自己编一份。
 
 ## 打包
 
