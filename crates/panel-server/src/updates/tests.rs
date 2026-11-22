@@ -858,6 +858,28 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
             .available
     );
 
+    // glibc 版取 systemd 的 zip，musl 版取 OpenWrt 的 tar.gz：Release 里只有另一种平台的包时不提示更新
+    // A glibc build takes the systemd zip and a musl build the OpenWrt tar.gz: a release holding only the other
+    // platform's package offers no update
+    let (own, other) = if cfg!(target_env = "musl") {
+        (
+            format!("kixdns-panel-openwrt-{}.tar.gz", kernel_architecture()),
+            format!("kixdns-panel-linux-{}.zip", kernel_architecture()),
+        )
+    } else {
+        (
+            format!("kixdns-panel-linux-{}.zip", kernel_architecture()),
+            format!("kixdns-panel-openwrt-{}.tar.gz", kernel_architecture()),
+        )
+    };
+    assert_eq!(panel_release_asset_name(), own);
+    let other_platform = release("v99.0.0", &other);
+    assert!(
+        !to_panel_update_notice(None, Some(&current_tag), Some(&other_platform))
+            .unwrap()
+            .available
+    );
+
     let notice = to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, Some(&same)).unwrap();
     assert!(notice.available);
     assert_eq!(notice.current_version, current_version);

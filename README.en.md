@@ -29,7 +29,7 @@ The kernel is the enhanced build released under dated versions by the fork [tuor
 
 Requires Linux x86_64/ARM64 with systemd and GLIBC 2.35 or later (Ubuntu 22.04, Debian 12 or newer). The one-line install also needs `curl`, `jq` and `unzip`.
 
-On systems without systemd, such as OpenWrt with procd, the one-line install does not apply: the panel still runs, but you build it yourself and install it by following [`deploy/openwrt/`](deploy/openwrt/README.md) (see the [OpenWrt section](docs/deployment.en.md#openwrt--procd-no-systemd) of the deployment guide).
+On systems without systemd, such as OpenWrt with procd, the one-line install does not apply: releases carry a separate OpenWrt package, `kixdns-panel-openwrt-<arch>.tar.gz`, and once it is installed both the panel and the kernel update online from the System page. See the [OpenWrt section](docs/deployment.en.md#openwrt--procd-no-systemd) of the deployment guide and [`deploy/openwrt/`](deploy/openwrt/README.md).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh | sudo bash

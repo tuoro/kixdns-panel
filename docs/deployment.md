@@ -7,7 +7,7 @@
 - 带 systemd 的 Linux x86_64/ARM64
 - GLIBC 2.35 及以上：Ubuntu 22.04、Debian 12 或更新发行版
 - 需要 `systemctl`、`sha256sum`、`getent`；一键安装和下载示例另需 `curl`、`jq`、`unzip`
-- OpenWrt（procd，没有 systemd）见下面的[「OpenWrt / procd」](#openwrt--procd没有-systemd)：不依赖 GLIBC，需要自己交叉编译 musl 静态二进制；正式 Release 不包含这种包
+- OpenWrt（procd，没有 systemd）见下面的[「OpenWrt / procd」](#openwrt--procd没有-systemd)：不依赖 GLIBC，正式 Release 带 musl 静态链接的 OpenWrt 安装包 `kixdns-panel-openwrt-<架构>.tar.gz`
 
 以下是 systemd 发行版的安装方式；OpenWrt 直接看[「OpenWrt / procd」](#openwrt--procd没有-systemd)那一节。
 
@@ -139,7 +139,7 @@ KixDNS 默认监听 `0.0.0.0:53`。安装器在改动主机之前按配置里的
 
 ### OpenWrt / procd（没有 systemd）
 
-OpenWrt 用 procd 管进程，没有 `systemctl`/`journalctl`，发行版是 musl 而不是 GLIBC，正式 Release 里的 glibc 包在它上面跑不起来。本仓库的 `deploy/openwrt/` 放了在这类系统上装面板的全部东西：三个 init 脚本、面板启动参数、示例 `pipeline.json` 和一个安装脚本。
+OpenWrt 用 procd 管进程，没有 `systemctl`/`journalctl`，发行版是 musl 而不是 GLIBC，所以有单独的安装包：正式 Release 里的 `kixdns-panel-openwrt-x86_64.tar.gz` 和 `kixdns-panel-openwrt-arm64.tar.gz`，面板、服务助手和内核都是 musl 静态链接的。包的内容来自本仓库的 `deploy/openwrt/`：四个 init 脚本、面板启动参数、示例 `pipeline.json`、安装脚本和在线更新器。
 
 面板为此增加了可替换的服务后端。状态、日志两个开关只在显式给出时才生效；init 脚本开关有默认路径 `/etc/init.d/kixdns`，只在找不到 `systemctl` 时才用到。不给这些参数就是原来的 systemd 行为：
 
@@ -151,7 +151,11 @@ OpenWrt 用 procd 管进程，没有 `systemctl`/`journalctl`，发行版是 mus
 
 helper 先找 `systemctl`，找到就照旧用它，找不到才用 init 脚本；两个都没有才报错。所以同一份二进制既能装在 Debian/Ubuntu 上，也能装在 OpenWrt 上。
 
-安装从源码交叉编译开始（以 aarch64 路由器为例；x86_64 换 target 即可）。面板和 helper 在 musl
+在路由器上下载、解开，运行 `sh install.sh`（`START_DNS=1` 装完顺手启动内核），命令见 `deploy/openwrt/README.md` 的「安装」。
+OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先把它换到别的端口。之后面板和内核都在系统页在线更新。
+重新运行新版本的 `install.sh` 也能升级：升级是整体的，装不成就全部放回；面板在线装上的内核只要不比包里的旧就留着，不会被降级。
+
+要自己编（以 aarch64 路由器为例；x86_64 换 target 即可）：面板和 helper 在 musl
 上要链 C 代码（bundled SQLite、zstd、ring），所以除了 `rustup target add` 还要一个 musl 的 C 交叉
 工具链，最省事是用 cargo-zigbuild：
 
@@ -168,9 +172,7 @@ musl 交叉编译器并设 `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` 与 
 
 `bin/kixdns` 是内核，取 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) Release 里的 musl 版（从 `2026.11.22.2` 起发布）。
 
-安装包用 `scripts/package-openwrt.sh` 拼（CI 每次也打一份，在 Actions 的运行页面下载；面板在 OpenWrt 上能自更新以前，还不随 Release 发布），
-步骤见 `deploy/openwrt/README.md` 的「打包」。在路由器上解开后执行 `sh install.sh`（`START_DNS=1` 装完顺手启动内核）。
-OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先把它换到别的端口。升级时，面板在线装上的内核只要不比包里的旧就留着，不会被降级。
+安装包用 `scripts/package-openwrt.sh` 拼（CI 每次也打一份，在 Actions 的运行页面下载），步骤见 `deploy/openwrt/README.md` 的「打包」。
 
 与 systemd 版的差异：
 
@@ -181,7 +183,7 @@ OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先把它换到�
 - 日志页的级别取每行时间戳之后的第一个词（INFO/WARN/ERROR），不再整行搜关键字，避免 `terror.example.com`、`no error` 误判
 - 启停按钮对应 init 脚本的 `enable start` / `stop disable`，与 systemd 的持久化语义一致
 - 内核在线更新取 `-musl` 内核包；存之前先看闪存还剩多少：够就照常留下上一个，只够放新内核就不留上一个（系统页会说明），放不下就不更新。新内核起不来时照样自动换回原来的，见 `deploy/openwrt/README.md`
-- 面板自更新在 musl 上暂不支持：更新器和面板安装包都还是给 systemd、glibc 的，面板会给出明确提示
+- 面板在线更新取 Release 里本架构的 OpenWrt 安装包：helper 起一次性 procd 服务 `kixdns-panel-update` 跑更新器，按 GitHub 公布的 SHA-256 和包里的 `SHA256SUMS` 校验后用 `install.sh --panel-only-update` 只换面板，内核不停、DNS 不断，装不成就整个放回。下载和解包在 `/tmp`（内存），日志用 `logread -e kixdns-panel-update` 看，见 `deploy/openwrt/README.md` 的「面板在线更新」
 
 ## 首次访问
 

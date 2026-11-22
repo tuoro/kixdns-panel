@@ -306,23 +306,65 @@ mod linux {
             && metadata.mode() & 0o022 == 0)
     }
 
+    /// 有 systemd 时由 systemd-run 起一个临时 unit 跑在线更新器；OpenWrt（procd）上起一次性服务 kixdns-panel-update。
+    /// 两种都让更新器跑在 helper 之外：安装器更新时会停掉 helper，更新器不能跟着停
+    ///
+    /// With systemd, systemd-run starts a transient unit for the online updater; on `OpenWrt` (procd) the one-shot service
+    /// kixdns-panel-update runs it. Either way the updater runs outside the helper: the installer stops the helper during
+    /// the update, and the updater must not stop with it
     fn launch_panel_update() -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(systemd_run) = find_executable(&["/usr/bin/systemd-run", "/bin/systemd-run"]) {
+            return launch_systemd_panel_update(systemd_run);
+        }
+        if Path::new("/etc/rc.common").is_file() {
+            return launch_procd_panel_update();
+        }
+        Err("当前平台不支持在线更新（没有 systemd-run，也不是 OpenWrt 的 procd）".into())
+    }
+
+    /// OpenWrt：更新器和它的一次性 procd 服务都由 install.sh 装上，helper 以 root 执行，所以两个都只认 root 所有、
+    /// 别人写不进的普通文件。正在更新时不再起第二个
+    ///
+    /// `OpenWrt`: install.sh installs the updater and its one-shot procd service, and the helper runs them as root, so
+    /// both are trusted only as regular files owned by root that nobody else can write. No second update starts while one
+    /// runs
+    fn launch_procd_panel_update() -> Result<(), Box<dyn std::error::Error>> {
+        const UPDATER: &str = "/usr/libexec/kixdns-panel-update";
+        const SERVICE: &str = "/etc/init.d/kixdns-panel-update";
+        for path in [UPDATER, SERVICE] {
+            match check_root_executable(Path::new(path)) {
+                Ok(true) => {}
+                Ok(false) => return Err(format!("面板在线更新器权限无效：{path}").into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(format!(
+                        "没有面板在线更新器 {path}：先用新版 OpenWrt 安装包运行一次 install.sh"
+                    )
+                    .into());
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if matches!(
+            ubus_snapshot(service_name(SERVICE.rsplit('/').next().unwrap_or(SERVICE))),
+            UbusState::Running(_)
+        ) {
+            return Err("已有面板在线更新任务正在执行".into());
+        }
+        // 一次性服务没有 respawn：上次跑完的实例 start 会再跑一次，正在跑的 start 什么都不做
+        // The one-shot service has no respawn: start runs an instance that finished again, and does nothing to one running
+        let output = Command::new(SERVICE).arg("start").output()?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("启动面板在线更新失败: {}", detail.trim()).into());
+        }
+        Ok(())
+    }
+
+    fn launch_systemd_panel_update(systemd_run: &str) -> Result<(), Box<dyn std::error::Error>> {
         const UPDATER: &str = "/usr/local/libexec/kixdns-panel-online-update";
         if !check_root_executable(Path::new(UPDATER))? {
             return Err("面板在线更新器权限无效".into());
         }
-        // 没有 systemd-run 的平台（OpenWrt/procd、musl）暂时不支持在线更新：更新器是给
-        // glibc 打的包，硬装会把 glibc 二进制塞进 musl 系统。先明确拒绝，等 musl 内核/面板
-        // 包发布后再打开。
-        // Platforms without systemd-run (OpenWrt/procd, musl) do not support online updates yet:
-        // the updater ships glibc binaries and would drop them into a musl system. Refuse clearly
-        // until musl kernel/panel packages are published.
-        let Some(systemd_run) = find_executable(&["/usr/bin/systemd-run", "/bin/systemd-run"])
-        else {
-            return Err(
-                "当前平台暂不支持在线更新（没有 systemd-run；musl 版安装包尚未发布）".into(),
-            );
-        };
         let output = Command::new(systemd_run)
             .args([
                 "--quiet",

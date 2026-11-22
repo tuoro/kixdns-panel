@@ -61,16 +61,25 @@ start_service() {
 		KIXDNS_BINARY=/usr/bin/kixdns \
 		KIXDNS_VERSIONS=/etc/kixdns-panel/versions \
 		KIXDNS_BUNDLED_METADATA=/etc/kixdns-panel/bundle \
+		KIXDNS_GITHUB_TOKEN_FILE=/etc/kixdns-panel/github-token \
 		KIXDNS_WEB_ROOT=/usr/share/kixdns-panel/web
-	# install.sh 写下的自带内核身份：只认这三项，值只能是字母和数字
-	# The bundled kernel's identity written by install.sh: only these three keys, values letters and digits only
+	# install.sh 写下的身份：自带内核的来源、提交、发布编号，面板自己的提交和正式版标签。只认这五项；值只能是字母和数字，
+	# 正式版标签是 vX.Y.Z
+	# The identity install.sh wrote: the bundled kernel's source, commit and release id, the panel's own commit and release
+	# tag. Only these five keys; values letters and digits only, the release tag vX.Y.Z
 	if [ -f /etc/kixdns-panel/panel.env ]; then
 		while IFS='=' read -r key value; do
 			case "$key" in
-				KIXDNS_INSTALLED_SOURCE | KIXDNS_INSTALLED_COMMIT | KIXDNS_INSTALLED_SOURCE_ID) ;;
+				KIXDNS_PANEL_INSTALLED_RELEASE)
+					case "$value" in v[0-9]*.[0-9]*.[0-9]*) ;; *) continue ;; esac
+					case "${value#v}" in *[!0-9.]*) continue ;; esac
+					;;
+				KIXDNS_INSTALLED_SOURCE | KIXDNS_INSTALLED_COMMIT | KIXDNS_INSTALLED_SOURCE_ID | \
+					KIXDNS_PANEL_INSTALLED_COMMIT)
+					case "$value" in *[!0-9A-Za-z]* | "") continue ;; esac
+					;;
 				*) continue ;;
 			esac
-			case "$value" in *[!0-9A-Za-z]* | "") continue ;; esac
 			procd_append_param env "$key=$value"
 		done </etc/kixdns-panel/panel.env
 	fi
