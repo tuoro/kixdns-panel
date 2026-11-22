@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { apiRequest } from '../api/client'
+import type { QueryLogSettings } from '../api/types'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
+import QueryLogSettingsForm from '../components/logs/QueryLogSettingsForm.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
+import { useToast } from '../composables/useToast'
 import { defaultUpstreamFromRest, groupName, outcomeProblem, upstreamListProblem, withDefaultPorts } from '../config-model/model'
+import { retentionText } from '../querylog'
+import { errorMessage } from '../utils'
 import { changedSettingKeys, model } from './store'
 
 // 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、Geo 数据），最前面多一组「规则默认值」。
@@ -52,11 +58,45 @@ const lead = computed(() => ({
   description: '拦截怎么回应、其余请求交给谁',
   summary: [`拦截回 ${model.defaults.block === 'zero' ? '空地址' : model.defaults.block}`, restText.value],
 }))
+
+// 查询日志是面板自己的设置，不在配置里：读、存都直接走它的接口，保存就生效，不经过「应用配置」。日志页的「设置」是同一份
+// The query log is the panel's own setting, not part of the config: it is read and saved through its own endpoint and
+// takes effect on saving, without 应用配置. The logs page's 设置 is the same one
+const toast = useToast()
+const querylog = ref<QueryLogSettings | null>(null)
+const querylogError = ref('')
+const querylogForm = ref<InstanceType<typeof QueryLogSettingsForm> | null>(null)
+async function loadQueryLog(): Promise<void> {
+  querylogError.value = ''
+  try {
+    const s = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings')
+    querylog.value = s
+    querylogForm.value?.reset(s)
+  } catch (error) {
+    querylogError.value = `没能读到查询日志设置：${errorMessage(error)}`
+  }
+}
+onMounted(() => { void loadQueryLog() })
+const tail = computed(() => {
+  const s = querylog.value
+  return {
+    id: 'querylog',
+    title: '查询日志',
+    description: '面板自己的设置：保存后立即生效，不用应用配置',
+    search: '查询日志 保存多久 保留 最多占用 空间 不记录的域名 清空 querylog',
+    summary: s ? [`保存 ${retentionText(s.retention_hours)}`, `最多 ${Math.round(s.max_bytes / 1048576)} MB`, ...(s.storage ? [s.storage.memory ? '存在内存里' : '存在磁盘上'] : [])] : ['保存多久、最多占用'],
+  }
+})
+async function saveQueryLog(): Promise<void> {
+  const outcome = await querylogForm.value?.save()
+  if (outcome?.status === 'saved') toast.success('查询日志设置已保存')
+  else if (outcome?.status === 'unchanged') toast.success('查询日志设置没有改动')
+}
 </script>
 
 <template>
   <section class="ui-card sets__card" aria-label="基础设置">
-    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :problems="problems" :commit="commit">
+    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :tail="tail" :problems="problems" :commit="commit">
       <template #lead>
         <div class="ui-setrow">
           <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}。</small></span>
@@ -71,6 +111,15 @@ const lead = computed(() => ({
             <p v-if="restBroken" class="ui-field-error">这个组已经删掉了，选一个现有的组</p>
           </div>
         </div>
+      </template>
+      <template #tail>
+        <p v-if="querylogError" class="ui-field-error" role="alert">{{ querylogError }} <button class="ui-btn ui-btn--text ui-btn--sm" type="button" @click="loadQueryLog">重试</button></p>
+        <template v-else>
+          <QueryLogSettingsForm ref="querylogForm" v-model:settings="querylog" id-prefix="sets-ql" @cleared="toast.success('查询日志已清空')" />
+        </template>
+      </template>
+      <template #tail-actions>
+        <button v-if="!querylogError" class="ui-btn ui-btn--primary" type="button" :disabled="!querylog || querylogForm?.busy" :aria-busy="querylogForm?.busy || undefined" @click="saveQueryLog">保存查询日志设置</button>
       </template>
     </SettingsEditor>
   </section>

@@ -1,19 +1,18 @@
 <script setup lang="ts">
-import { Check, CircleAlert, Clock, Download, FileSearch, Search, SlidersHorizontal, X } from '@lucide/vue'
+import { Check, CircleAlert, Clock, Download, FileSearch, Search, X } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ApiError, apiRequest, isPanelDown } from '../../api/client'
 import type { ConfigDocument, IpRegion, QueryLogEntry, QueryLogItem, QueryLogPage, QueryLogSettings } from '../../api/types'
-import { useConfirm } from '../../composables/useConfirm'
 import { useConnection } from '../../composables/useConnection'
 import { useToast } from '../../composables/useToast'
 import { readConfig } from '../../config-model/document'
 import { traceNames } from '../../config-model/trace-names'
 import { knownRegions, lookupRegions } from '../../ip-region'
-import { answerOf, capProblem, clockText, dayText, destinationOptions, detailFacts, domainParts, glueText, hoursProblem, ignoredDomains, isGap, itemOf, latencyText, literalParts, regionAddresses, requestLine, routeOf, sinceText, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
+import { answerOf, clockText, dayText, destinationOptions, detailFacts, domainParts, glueText, isGap, itemOf, latencyText, literalParts, regionAddresses, requestLine, routeOf, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
 import type { KernelPipeline } from '../../request-destinations'
 import { errorMessage } from '../../utils'
-// 设置抽屉沿用配置页的抽屉样式（正式落地时挪进组件库） / The settings drawer uses the config page's drawer styles (moved into the kit when this lands)
+// 手机的整屏详情沿用配置页的抽屉样式（正式落地时挪进组件库） / The phone's full-screen detail uses the config page's drawer styles (moved into the kit when this lands)
 import '../../styles/config-v2.css'
 import UiDotText from '../ui/UiDotText.vue'
 import UiEmpty from '../ui/UiEmpty.vue'
@@ -35,7 +34,6 @@ const emit = defineEmits<{ facts: [parts: string[] | 'loading' | null] }>()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
-const confirm = useConfirm()
 
 const PAGE = 200
 /** 停在顶部一直开着时，列表最多留几页：新查询一直进来也不会越积越多 / How many pages the list keeps while left open at the top: new queries keep arriving without piling up */
@@ -700,127 +698,6 @@ function download(): void {
   URL.revokeObjectURL(url)
 }
 
-// ---------- 设置 / settings ----------
-const drawer = ref<HTMLDialogElement | null>(null)
-// 数字和单位之间是不断行空格：页头事实按第一个普通空格分出标签和值 / A no-break space between number and unit: the header facts split label from value at the first ordinary space
-const RETENTIONS = [{ value: '6', label: '6 小时' }, { value: '24', label: '1 天' }, { value: '168', label: '7 天' }, { value: '720', label: '30 天' }, { value: '2160', label: '90 天' }, { value: 'custom', label: '自定义' }]
-const draft = ref({ retention: '2160', customHours: '', maxMb: '500', ignored: '' })
-// 出错提示在填完（离开那个框）或按了保存以后才出来，不在刚选「自定义」时就红 / A problem shows once the field is left or 保存 is
-// pressed, not the moment 自定义 is chosen
-const touched = ref({ hours: false, mb: false, ignored: false, submitted: false })
-const settingsBusy = ref(false)
-// 服务端回来的错，按说的是哪一项放在那个框下面 / A server error goes under the field it is about
-const serverProblem = ref<{ field: 'hours' | 'mb' | 'ignored' | 'form'; text: string } | null>(null)
-const problems = computed(() => {
-  const d = draft.value
-  const shown = (field: 'hours' | 'mb' | 'ignored') => touched.value[field] || touched.value.submitted
-  const said = (field: 'hours' | 'mb' | 'ignored') => (serverProblem.value?.field === field ? serverProblem.value.text : '')
-  return {
-    hours: (d.retention === 'custom' && shown('hours') ? hoursProblem(d.customHours) : '') || said('hours'),
-    mb: (shown('mb') ? capProblem(d.maxMb) : '') || said('mb'),
-    ignored: (shown('ignored') ? ignoredDomains(d.ignored).problem : '') || said('ignored'),
-    form: serverProblem.value?.field === 'form' ? serverProblem.value.text : '',
-  }
-})
-const draftValid = () => (draft.value.retention !== 'custom' || !hoursProblem(draft.value.customHours)) && !capProblem(draft.value.maxMb) && !ignoredDomains(draft.value.ignored).problem
-const mb = (bytes: number) => `${Math.round(bytes / 1048576)} MB`
-async function openSettings(fromUrl = false): Promise<void> {
-  let s: QueryLogSettings
-  try {
-    s = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings')
-  } catch (error) {
-    toast.error(`没能读到查询日志设置：${errorMessage(error)}`)
-    return
-  }
-  settings.value = s
-  const preset = RETENTIONS.some((r) => r.value === String(s.retention_hours))
-  draft.value = { retention: preset ? String(s.retention_hours) : 'custom', customHours: preset ? '' : String(s.retention_hours), maxMb: String(Math.round(s.max_bytes / 1048576)), ignored: s.ignored_domains.join('\n') }
-  touched.value = { hours: false, mb: false, ignored: false, submitted: false }
-  serverProblem.value = null
-  await nextTick()
-  drawer.value?.showModal()
-  // 手机上同详情一样记一步历史：返回手势先关设置；从地址栏打开的（前进）那一步已经在了 / On phones, as for the detail, a history step:
-  // the back gesture closes the settings first; opened from the address bar (forward), that step is already there
-  if (phone.value && fromUrl) pushedDrawer = stepBehind('settings')
-  else if (phone.value) {
-    pushedDrawer = true
-    void router.push({ query: { ...route.query, settings: '1' } })
-  }
-}
-let pushedDrawer = false
-function onDrawerClose(): void {
-  if (!pushedDrawer) return
-  pushedDrawer = false
-  router.back()
-}
-// 正在保存时 Esc 不关：关了就看不到保存失败的提示 / Esc does not close while saving: closed, a failed save would go unseen
-function onDrawerCancel(event: Event): void { if (settingsBusy.value) event.preventDefault() }
-watch(() => route.query.settings, (value) => {
-  // 前进键回到设置那一步：设置跟着开 / Forward onto the settings step: the settings open with it
-  if (value !== undefined) {
-    if (phone.value && loaded.value && !drawer.value?.open) void openSettings(true)
-    return
-  }
-  if (!drawer.value?.open) return
-  pushedDrawer = false
-  drawer.value.close()
-})
-// 改了框里的内容，服务端上次说的错就不算了 / Editing a field clears what the server said about the last attempt
-watch(draft, () => { serverProblem.value = null }, { deep: true })
-// 保存没通过：焦点放到第一个有错的框上，读屏器接着读它下面的错 / A save that did not go through: focus goes to the first wrong field,
-// and a screen reader reads the error under it
-function focusProblem(): void {
-  void nextTick(() => drawer.value?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus())
-}
-async function saveSettings(): Promise<void> {
-  touched.value.submitted = true
-  serverProblem.value = null
-  if (settingsBusy.value) return
-  if (!draftValid()) { focusProblem(); return }
-  const d = draft.value
-  const next = {
-    retention_hours: d.retention === 'custom' ? Number(d.customHours) : Number(d.retention),
-    max_bytes: Math.round(Number(d.maxMb)) * 1048576,
-    ignored_domains: ignoredDomains(d.ignored).domains,
-  }
-  const before = settings.value
-  // 什么都没改：关上就好，不写、不重读，开着的详情也不动 / Nothing changed: just close, with no write and no reload, and an open detail stays
-  if (before && before.retention_hours === next.retention_hours && before.max_bytes === next.max_bytes && before.ignored_domains.join('\n') === next.ignored_domains.join('\n')) {
-    drawer.value?.close()
-    return
-  }
-  settingsBusy.value = true
-  try {
-    settings.value = await putSettings(next)
-  } catch (error) {
-    const text = errorMessage(error)
-    // 保存途中设置已经关了（手机的返回手势）：失败用提示条说，不留在看不见的框里 / The settings closed while saving (a phone's back
-    // gesture): the failure is said in a toast, not left in a drawer nobody sees
-    if (!drawer.value?.open) { toast.error(`查询日志设置没保存：${text}`); return }
-    serverProblem.value = { field: text.startsWith('保存多久') ? 'hours' : text.startsWith('最多占用') ? 'mb' : /域名/.test(text) ? 'ignored' : 'form', text }
-    focusProblem()
-    return
-  } finally {
-    settingsBusy.value = false
-  }
-  drawer.value?.close()
-  toast.success('查询日志设置已保存')
-  // 保存时间变短、上限变小会删掉旧的：重读一遍 / A shorter retention or a smaller cap deletes old records: read again
-  if (before && (next.retention_hours < before.retention_hours || next.max_bytes < before.max_bytes)) void load()
-}
-async function clearAll(): Promise<void> {
-  const ok = await confirm.ask({ title: '清空查询日志', body: '已经记下的查询全部删掉，找不回来。之后的查询照常记录。', confirmLabel: '清空查询日志', destructive: true })
-  if (!ok) return
-  try {
-    settings.value = await apiRequest<QueryLogSettings>('/api/v1/querylog/clear', { method: 'POST' })
-  } catch (error) {
-    serverProblem.value = { field: 'form', text: `没能清空：${errorMessage(error)}` }
-    return
-  }
-  drawer.value?.close()
-  toast.success('查询日志已清空')
-  void load()
-}
 // 只有按下和松开都在遮罩上才关：从框里拖选文字拖到外面不算点了遮罩 / Close only when the press and the release are both on the backdrop:
 // dragging a text selection out of a field is not a click on the backdrop
 let pressedOn: EventTarget | null = null
@@ -837,8 +714,8 @@ watch([newestMs, today, loaded, loadError, items], () => {
   emit('facts', [`最近一条 ${newestMs.value ? timeText(newestMs.value, today.value) : '—'}`])
 }, { immediate: true })
 
-// 每个筛选各看各的：写 id、settings 这类不是筛选的参数不会触发重读 / Each filter is watched on its own, so writing a parameter that is
-// not a filter (id, settings) never triggers a reload
+// 每个筛选各看各的：写 id 这类不是筛选的参数不会触发重读 / Each filter is watched on its own, so writing a parameter that is not a
+// filter (id, say) never triggers a reload
 watch([() => route.query.q, () => route.query.dest, () => route.query.client, () => route.query.rule, () => route.query.in, () => route.query.phase, () => route.query.upstream, () => route.query.qname], () => { void load() })
 onMounted(async () => {
   // 配置、日志、设置一起读：日志先到就先画，名字等配置到了再换成配置页上的叫法；慢网络上少等两趟。地址栏里带着去向时先等配置，
@@ -846,10 +723,12 @@ onMounted(async () => {
   // The config, the log and the settings are read together: the log is drawn as soon as it lands and its names switch to the config
   // page's once the config arrives; on a slow network that saves two round trips. With a destination in the address bar the config comes
   // first, since destinations such as an upstream group are recognised only through it
-  void apiRequest<QueryLogSettings>('/api/v1/querylog/settings').then((s) => { settings.value = s }, () => { /* 设置抽屉打开时再读 / Read again when the drawer opens */ })
-  // 刷新时地址栏里还挂着设置那一步：去掉，不自己打开；后面一步历史正是去掉它的这一页时退回去，不留两个一样的
-  // A reload with the settings step still in the address bar: it is dropped, not reopened; when the history step behind is that same page
-  // without it, it is gone back over, so no two identical entries remain
+  // 设置只用来认出「不再记录」的域名，改在「基础设置」里 / The settings serve only to know the domains not recorded; they are changed in
+  // 基础设置
+  void apiRequest<QueryLogSettings>('/api/v1/querylog/settings').then((s) => { settings.value = s }, () => { /* 不再记录的标记等下次 / The not-recorded marks wait for next time */ })
+  // 以前的设置抽屉留在地址栏里的 settings 参数：去掉；后面一步历史正是去掉它的这一页时退回去，不留两个一样的
+  // A settings parameter left in the address bar by the former settings drawer: it is dropped; when the history step behind is that
+  // same page without it, it is gone back over, so no two identical entries remain
   if (route.query.settings !== undefined) {
     if (stepBehind('settings')) router.back()
     else setQuery({ settings: undefined })
@@ -896,12 +775,12 @@ onBeforeUnmount(() => {
   <!-- 目录打不开、一条也没有：只留上面那条提示，不摆一排用不了的工具 / The directory unusable and nothing listed: only the notice above
        stays, with no row of tools that cannot work -->
   <section v-if="(supported || entries.length) && !waitingForPanel && !(unavailable && !entries.length)" class="log-console ui-card qlog" role="tabpanel" aria-labelledby="logs-tab-query">
-    <!-- 工具行：搜索、去向、右端设置和下载 / The toolbar: search, destination, settings and download at the right end -->
+    <!-- 工具行：搜索、去向、右端下载；查询日志的设置在「基础设置」里 / The toolbar: search, destination, download at the right end; the query
+         log's settings live in 基础设置 -->
     <header class="log-toolbar">
       <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="q" aria-label="搜索域名或客户端" placeholder="搜索域名或客户端" maxlength="253" autocapitalize="off" spellcheck="false" /></label>
       <UiSelect class="qlog-dest" :model-value="dest" :options="options" label="按去向筛选" @update:model-value="setQuery({ dest: $event || undefined })" />
       <div class="log-toolbar__end">
-        <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="查询日志设置" aria-label="查询日志设置" @click="openSettings()"><SlidersHorizontal :size="16" aria-hidden="true" /></button>
         <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="下载已列出的查询" aria-label="下载已列出的查询" :disabled="!entries.length" @click="download"><Download :size="16" aria-hidden="true" /></button>
       </div>
     </header>
@@ -1039,43 +918,6 @@ onBeforeUnmount(() => {
     </div>
   </dialog>
 
-  <dialog ref="drawer" class="pdrawer qlog-drawer" aria-labelledby="ql-settings-title" @close="onDrawerClose" @cancel="onDrawerCancel" @pointerdown="onPress" @click="onBackdrop($event, () => { if (!settingsBusy) drawer?.close() })">
-    <form class="pdrawer__panel" novalidate @submit.prevent="saveSettings">
-      <header class="pdrawer__head">
-        <h2 id="ql-settings-title">查询日志设置</h2>
-        <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" :disabled="settingsBusy" @click="drawer?.close()"><X :size="16" /></button>
-      </header>
-      <div class="pdrawer__body qlog-settings">
-        <!-- 每个框的问题写在它自己下面，框也标红 / Each field's problem sits under it, and the field turns red -->
-        <div class="pfield">
-          <span>保存多久</span>
-          <UiTabs v-model="draft.retention" :items="RETENTIONS" label="保存多久" variant="segment" />
-          <label v-if="draft.retention === 'custom'" class="ui-input qlog-hours"><input v-model="draft.customHours" inputmode="numeric" aria-label="保存多少小时" placeholder="1–8760" :aria-invalid="Boolean(problems.hours) || undefined" :aria-describedby="problems.hours ? 'ql-hours-err' : undefined" @blur="touched.hours = true"><span>小时</span></label>
-          <p v-if="problems.hours" id="ql-hours-err" class="ui-field-error" role="alert"><template v-for="(run, k) in glued(problems.hours)" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></p>
-        </div>
-        <label class="pfield">
-          <span>最多占用</span>
-          <span class="ui-input qlog-mb"><input v-model="draft.maxMb" inputmode="numeric" aria-label="最多占用多少 MB" :aria-invalid="Boolean(problems.mb) || undefined" :aria-describedby="problems.mb ? 'ql-mb-err' : 'ql-mb-hint'" @blur="touched.mb = true"><span>MB</span></span>
-          <p v-if="problems.mb" id="ql-mb-err" class="ui-field-error" role="alert"><template v-for="(run, k) in glued(problems.mb)" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></p>
-          <small id="ql-mb-hint" class="pfield__hint">{{ settings ? `已用 ${mb(settings.used_bytes)}${settings.oldest_unix_ms ? `，记录从 ${sinceText(settings.oldest_unix_ms)} 起` : ''}。` : '' }}超过上限时先删最早的。</small>
-        </label>
-        <label class="pfield">
-          <span>不记录的域名 <small>可选</small></span>
-          <span class="ui-input ui-input--area qlog-ignored"><textarea v-model="draft.ignored" rows="4" aria-label="不记录的域名" placeholder="一行一个，也可以用逗号隔开；连子域名一起不记" spellcheck="false" autocapitalize="off" :aria-invalid="Boolean(problems.ignored) || undefined" :aria-describedby="problems.ignored ? 'ql-ignored-err' : undefined" @blur="touched.ignored = true"></textarea></span>
-          <p v-if="problems.ignored" id="ql-ignored-err" class="ui-field-error" role="alert"><template v-for="(run, k) in glued(problems.ignored)" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></p>
-        </label>
-        <div class="qlog-danger">
-          <button class="ui-btn ui-btn--danger ui-btn--sm" type="button" @click="clearAll">清空查询日志</button>
-          <small>已经记下的全部删掉，之后照常记录</small>
-        </div>
-        <p v-if="problems.form" class="ui-field-error" role="alert"><template v-for="(run, k) in glued(problems.form)" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></p>
-      </div>
-      <footer class="pdrawer__foot">
-        <button class="ui-btn ui-btn--secondary" type="button" :disabled="settingsBusy" @click="drawer?.close()">取消</button>
-        <button class="ui-btn ui-btn--primary" type="submit" :disabled="settingsBusy" :aria-busy="settingsBusy || undefined">保存</button>
-      </footer>
-    </form>
-  </dialog>
 </template>
 
 <style>
@@ -1273,21 +1115,9 @@ onBeforeUnmount(() => {
 .logs-page .qlog-filter > :is(.qlog-lit, .qlog-filter__text) { padding-block: var(--chip-pad); overflow-wrap: anywhere; }
 .logs-page .qlog-filter > button { position: relative; flex: none; display: inline-grid; place-items: center; width: var(--h-sm); height: var(--h-sm); border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; }
 .logs-page .qlog-dest { flex: 0 1 13rem; min-width: 9rem; }
-/* 详情、设置开着时背后的页面不跟着滚 / With the detail sheet or the settings open, the page behind does not scroll */
-:root:has(.qlog-sheet[open], .qlog-drawer[open]) { overflow: hidden; }
+/* 详情开着时背后的页面不跟着滚 / With the detail sheet open, the page behind does not scroll */
+:root:has(.qlog-sheet[open]) { overflow: hidden; }
 .qlog-state { padding: var(--s-6) var(--s-5); }
-.qlog-settings { display: grid; gap: var(--s-5); }
-.qlog-hours, .qlog-mb { max-width: 12rem; }
-.qlog-hours > span, .qlog-mb > span { color: var(--l-ink-3); font-size: var(--t-2); }
-/* 不记录的域名用组件库的多行框：字是墨色 13 号，焦点只有框自己的一圈 / The ignored domains use the kit's multi-line field: ink at
-   13px, with only the field's own focus ring */
-.qlog-ignored.ui-input--area textarea { min-height: calc(var(--h-md) * 3 - var(--s-4)); overflow: auto; resize: vertical; }
-/* 选项条只占选项那么宽，不拖一截空灰底（手机上照旧占满一行） / The segmented track is as wide as its options, with no empty grey tail (full width on phones as before) */
-@media (min-width: 641px) { .qlog-settings .ui-seg { justify-self: start; } }
-.qlog-danger { display: grid; justify-items: start; gap: var(--s-1); padding-top: var(--s-4); border-top: 1px solid var(--l-hair); }
-.qlog-danger small { color: var(--l-ink-3); font-size: var(--t-1); }
-/* 成段的说明从 641 起是 12 号，和上面的提示一样 / Sentences are 12px from 641 up, like the hints above */
-@media (min-width: 641px) { .qlog-danger small { font-size: var(--t-2); } }
 
 /* 手机：整页滚动（不套内层滚动框），一条两行——域名和时间，状态点加「去向 · 来源 · 耗时 · 客户端」；行之间细线，不隔行着色。
    点开一条从底边升起整屏详情：页头、状态、三块概况、处理过程，四个去处在底部两两一行。

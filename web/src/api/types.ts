@@ -675,6 +675,9 @@ export interface QueryLogSettings {
   /** 能看到的最早那一刻，没有为 null / The earliest moment that can be seen, null when empty */
   oldest_unix_ms: number | null
   supported: boolean
+  /** 存在哪、在不在内存里、这台设备上最多能设多大；目录打不开时为 null / Where it is kept, whether in memory, and the largest
+   * cap this device allows; null when the directory is unusable */
+  storage?: { memory: boolean; path: string; limit_bytes: number } | null
 }
 
 /** 页面画的处理过程的一步 / One step of the handling as the page draws it */

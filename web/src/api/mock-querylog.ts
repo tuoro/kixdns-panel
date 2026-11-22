@@ -221,8 +221,9 @@ export function demoQueryLog(config: KConfig, now: number): Item[] {
     items.push(e)
     time -= 1_000 + Math.floor(rnd() * 14_000)
   }
-  cache = { key, items }
-  return items
+  const kept = clearedAt ? items.filter((item) => item.time_unix_ms > clearedAt) : items
+  cache = { key, items: kept }
+  return kept
 }
 
 let settings = { retention_hours: 2160, max_bytes: 500 * 1024 * 1024, ignored_domains: [] as string[], used_bytes: 327_155_712 }
@@ -230,21 +231,28 @@ let settings = { retention_hours: 2160, max_bytes: 500 * 1024 * 1024, ignored_do
 // 演示「内核太旧」：localStorage 里设 kixdns:demo-querylog-unsupported = true / Demo an old kernel: set kixdns:demo-querylog-unsupported = true in localStorage
 export const demoQueryLogSupported = (): boolean => typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-querylog-unsupported') !== 'true'
 
+// 演示机器的磁盘还能给查询日志 20 GB / The demo machine's disk can still give the query log 20 GB
+const DEMO_LIMIT = 20 * 1024 * 1024 * 1024
 export function demoQueryLogSettings(now: number): QueryLogSettings {
-  return { ...settings, oldest_unix_ms: settings.used_bytes ? now - 63 * 86_400_000 : null, supported: demoQueryLogSupported() }
+  return { ...settings, oldest_unix_ms: settings.used_bytes ? now - 63 * 86_400_000 : null, supported: demoQueryLogSupported(), storage: { memory: false, path: '/var/lib/kixdns-panel/querylog', limit_bytes: DEMO_LIMIT } }
 }
 /** 和服务端一样：只改给了的那几项，检查不过回 400，域名小写、去掉两头的点 / As the server does: only the given fields change, a failed check answers 400, domains lowercased with the dots at both ends dropped */
 export function setDemoQueryLogSettings(next: Partial<QueryLogSettings>): void {
   if (next.retention_hours !== undefined && !(next.retention_hours >= 1 && next.retention_hours <= 8760)) throw new ApiError('保存多久要在 1 到 8760 小时之间', 400, 'querylog_settings_invalid')
   if (next.max_bytes !== undefined && !(next.max_bytes >= 10 * 1024 * 1024 && next.max_bytes <= 100 * 1024 * 1024 * 1024)) throw new ApiError('最多占用要在 10 MB 到 100 GB 之间', 400, 'querylog_settings_invalid')
+  if (next.max_bytes !== undefined && next.max_bytes !== settings.max_bytes && next.max_bytes > DEMO_LIMIT) throw new ApiError(`最多占用不能超过 ${DEMO_LIMIT / 1048576} MB：这台设备的磁盘只能再给查询日志这么多`, 400, 'querylog_settings_invalid')
   const checked = next.ignored_domains ? ignoredDomains(next.ignored_domains.join('\n')) : null
   if (checked?.problem) throw new ApiError(checked.problem, 400, 'querylog_settings_invalid')
   const domains = checked?.domains
   settings = { ...settings, ...(next.retention_hours === undefined ? {} : { retention_hours: next.retention_hours }), ...(next.max_bytes === undefined ? {} : { max_bytes: next.max_bytes }), ...(domains ? { ignored_domains: [...new Set(domains)] } : {}) }
 }
+// 清空的那一刻：之后重新生成演示数据（换了配置、或者清空时还没生成过）也只留这一刻以后的 / The moment of the clear: demo data
+// generated again later (another config, or none generated yet at the clear) keeps only what comes after it
+let clearedAt = 0
 export function clearDemoQueryLog(): void {
   settings = { ...settings, used_bytes: 0 }
   cache = { key: cache?.key ?? '', items: [] }
+  clearedAt = Date.now()
 }
 
 const isGap = (item: Item): item is QueryLogGap => 'gap' in item

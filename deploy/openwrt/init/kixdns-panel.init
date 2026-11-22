@@ -42,6 +42,30 @@ panel_bind() {
 	fi
 }
 
+# 查询日志默认放内存（/tmp）：路由器的闪存小，也经不起一直写；重启就清空。要长期保留就指到 U 盘之类的外置存储：
+#   uci set kixdns-panel.main.querylog_dir='/mnt/sda1/kixdns-querylog'
+#   uci commit kixdns-panel && /etc/init.d/kixdns-panel restart
+# 写的目录所在的那一层不存在（比如 U 盘没挂上）时退回内存，免得写到闪存上去
+# The query log sits in memory (/tmp) by default: router flash is small and does not stand constant writes; a reboot
+# clears it. To keep it, point it at external storage such as a USB drive with the UCI option above. When the directory's
+# parent does not exist (a USB drive not mounted, say) it falls back to memory rather than writing to flash
+QUERYLOG_DEFAULT=/tmp/kixdns-panel/querylog
+querylog_dir() {
+	dir="$(uci -q get kixdns-panel.main.querylog_dir)"
+	case "$dir" in
+		"") ;;
+		/*)
+			if [ -d "${dir%/*}" ]; then
+				echo "$dir"
+				return
+			fi
+			logger -t kixdns-panel "查询日志目录 $dir 的上一层不存在（外置存储没挂上？），这次放内存 / the parent of the query log directory $dir does not exist (external storage not mounted?), using memory this time"
+			;;
+		*) logger -t kixdns-panel "查询日志目录要写绝对路径：$dir / the query log directory must be an absolute path: $dir" ;;
+	esac
+	echo "$QUERYLOG_DEFAULT"
+}
+
 start_service() {
 	mkdir -p /etc/kixdns-panel /etc/kixdns-panel/geo /run/kixdns-panel
 
@@ -50,6 +74,7 @@ start_service() {
 	procd_set_param env \
 		KIXDNS_PANEL_BIND="$(panel_bind)" \
 		KIXDNS_PANEL_DATABASE=/etc/kixdns-panel/panel.db \
+		KIXDNS_QUERYLOG_DIR="$(querylog_dir)" \
 		KIXDNS_CONFIG=/etc/kixdns/pipeline.json \
 		KIXDNS_CONTROL_SOCKET=/run/kixdns/admin.sock \
 		KIXDNS_SERVICE_UNIT=kixdns.service \

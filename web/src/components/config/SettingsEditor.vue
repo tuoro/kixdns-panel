@@ -20,10 +20,14 @@ const version = defineModel<string | undefined>('version')
 // problems: settings the caller found written wrong, key to one sentence: the box turns red with the sentence under it (as errors do elsewhere)
 // commit：文字框写完（离开这一格、按回车）时由使用方整理一遍的设置，key 对整理的办法（默认上游补端口）
 // commit: text settings the caller tidies once written (leaving the box, pressing Enter), key to how (默认上游 takes its ports)
+// tail：排在最后的一组，内容由使用方经 #tail 插槽给出（「查询日志」是面板自己的设置，不在配置里）；search 是搜得到它的词
+// tail: a group listed last whose content the caller supplies through the #tail slot (查询日志 is the panel's own setting,
+// not part of the config); search holds the words that find it
 const props = defineProps<{
   changed?: ReadonlySet<string>
   hiddenKeys?: readonly string[]
   lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean; help?: string }
+  tail?: { id: string; title: string; description: string; summary: string[]; search: string }
   problems?: Readonly<Record<string, string>>
   commit?: Readonly<Record<string, (value: string) => string>>
 }>()
@@ -107,7 +111,10 @@ const groups = computed(() => [
     changed: changedAny([...(SETTING_SECTIONS.find((item) => item.id === section.id)?.fields ?? []).map((field) => field.key), ...(section.id === 'network' ? ['version'] : [])]),
   })),
   { ...GEO_GROUP, summary: geoSummary(settings.value), changed: changedAny(GEO_KEYS) },
+  ...(props.tail ? [{ ...props.tail, changed: false }] : []),
 ])
+// 搜「查询日志」「保留」这类词时最后那一组也列出来 / Searching words such as 查询日志 or 保留 lists the closing group too
+const tailMatches = computed(() => Boolean(query.value && props.tail && `${props.tail.title} ${props.tail.search}`.toLowerCase().includes(query.value)))
 // 格式版本在搜索「版本」「version」时也要找得到 / The format version must turn up when searching 版本 or version
 const versionMatches = computed(() => !query.value || '格式版本 version 配置文件'.includes(query.value))
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
@@ -241,7 +248,7 @@ function removeListItem(field: SettingField, index: number): void {
 
     <div class="settings-pane">
       <button v-if="isMobile && !query" class="ui-btn ui-btn--text settings-back" type="button" @click="mobileOpen = false"><ChevronLeft :size="16" />全部设置</button>
-      <div v-if="query && !visibleSections.length" class="settings-empty"><strong>没有找到匹配的设置</strong><p>试试「缓存」「超时」，也可以搜配置文件里的字段名。</p><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="clearSearch">清除搜索</button></div>
+      <div v-if="query && !visibleSections.length && !tailMatches" class="settings-empty"><strong>没有找到匹配的设置</strong><p>试试「缓存」「超时」，也可以搜配置文件里的字段名。</p><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="clearSearch">清除搜索</button></div>
 
       <!-- 搜索时列出所有分组里的匹配，一个分组一段；平时只显示选中的那一组。
            While searching, every group's matches, one block per group; otherwise only the selected group. -->
@@ -284,6 +291,16 @@ function removeListItem(field: SettingField, index: number): void {
         <header class="settings-group__head settings-group__head--lead"><h2>{{ lead.title }}<UiHelp v-if="lead.help" :topic="lead.help" /></h2><p v-if="lead.description" class="settings-group__desc">{{ lead.description }}</p></header>
         <div class="settings-rows"><slot name="lead" /></div>
       </div>
+      <section v-if="tail && ((!query && current === tail.id) || tailMatches)" :key="`tail-${current}`" class="settings-group" :class="{ 'ui-rise': !query }">
+        <!-- 这一组自己的操作（保存）放在标题行右边：下面的框出错、多出几行时它不跟着动，点下去不会落空
+             The group's own action (save) sits on the right of the heading row: when an error adds lines below, it stays put,
+             so a press never misses -->
+        <header class="settings-group__head settings-group__head--lead settings-group__head--actions">
+          <div><h2 tabindex="-1" data-focus-landing>{{ tail.title }}</h2><p v-if="tail.description" class="settings-group__desc">{{ tail.description }}</p></div>
+          <slot name="tail-actions" />
+        </header>
+        <slot name="tail" />
+      </section>
       <div v-if="!query && current === 'geo'" :key="current" class="ui-rise">
         <header class="settings-group__head settings-group__head--lead"><h2 tabindex="-1" data-focus-landing>{{ currentGroup.title }}</h2><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
         <GeoDataEditor v-model="settings" :changed="changed" />
@@ -323,6 +340,7 @@ function removeListItem(field: SettingField, index: number): void {
 .settings-back { display: none; }
 .settings-group + .settings-group { margin-top: var(--s-6); }
 .settings-group__head { margin: 0 0 var(--s-2); }
+.settings-group__head--actions { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--s-3); }
 .settings-group__head h2 { margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
 .settings-group__head--lead { margin-bottom: var(--s-4); }
 .settings-group__head--lead h2 { font-size: var(--t-4); }

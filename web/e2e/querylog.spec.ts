@@ -95,51 +95,93 @@ test('一次只往前找那么多：没找到时说查到哪儿了，接着找�
   await expect(page.locator('.qlog-row').first()).toContainText('doubleclick')
 })
 
-test('设置只有保存多久、最多占用和不记录的域名；清空以后从头记 @responsive', async ({ page }) => {
-  await openQueryLog(page)
-  await page.getByRole('button', { name: '查询日志设置' }).click()
-  const drawer = page.locator('dialog.pdrawer[open]')
-  await expect(drawer.getByRole('heading', { name: '查询日志设置' })).toBeVisible()
-  await expect(drawer.getByRole('checkbox')).toHaveCount(0)
-  await expect(drawer).not.toContainText('只记网段')
-  await drawer.getByRole('button', { name: '自定义', exact: true }).click()
-  // 刚选「自定义」还没填时不报错；填错了离开那个框才说，框也标红 / No error the moment 自定义 is chosen; a wrong value is said once the field is left, and the field turns red
-  await expect(drawer.locator('.ui-field-error')).toHaveCount(0)
-  await drawer.getByLabel('保存多少小时').fill('0')
-  await drawer.getByLabel('保存多少小时').blur()
-  await expect(drawer.locator('#ql-hours-err')).toHaveText('保存多久填 1 到 8760 之间的整数小时')
-  await expect(drawer.getByLabel('保存多少小时')).toHaveAttribute('aria-invalid', 'true')
-  // 错误不比下面的说明小 / An error is never smaller than the hint below it
-  const size = (id: string) => drawer.locator(id).evaluate((el) => getComputedStyle(el).fontSize)
-  expect(await size('#ql-hours-err')).toBe(await size('#ql-mb-hint'))
-  await drawer.getByRole('button', { name: '保存', exact: true }).click()
-  await expect(drawer).toBeVisible()
-  // 没保存成：焦点回到有错的框 / Not saved: focus goes back to the wrong field
-  await expect(drawer.getByLabel('保存多少小时')).toBeFocused()
-  // 服务端不认的域名：说在那个框下面，不悄悄不保存 / A domain the server refuses is said under its field, never a silent no-save
-  await drawer.getByLabel('不记录的域名').fill('例子.中国')
-  await drawer.getByLabel('不记录的域名').blur()
-  await expect(drawer.locator('#ql-ignored-err')).toContainText('xn--')
-  await drawer.getByLabel('不记录的域名').fill('ads.example.com, tracker.example.com')
-  await drawer.getByLabel('保存多少小时').fill('12')
-  await drawer.getByRole('button', { name: '保存', exact: true }).click()
-  await expect(page.locator('.toast', { hasText: '查询日志设置已保存' })).toBeVisible()
+// 查询日志的设置只在「基础设置」里（日志页不再放设置按钮）：打开最后一组「查询日志」
+// The query log's settings live only in 基础设置 (the logs page no longer carries a settings button): open the closing 查询日志 group
+async function openQueryLogSettings(page: Page) {
+  await page.goto('/config?v2=1&section=settings')
+  await page.getByRole('button', { name: /^查询日志/ }).click()
+  const group = page.locator('.settings-group', { has: page.getByRole('heading', { name: '查询日志', exact: true }) })
+  await expect(group).toBeVisible()
+  return group
+}
 
-  await page.getByRole('button', { name: '查询日志设置' }).click()
-  await expect(drawer.getByLabel('保存多少小时')).toHaveValue('12')
-  await drawer.getByRole('button', { name: '清空查询日志' }).click()
+test('设置只有保存多久、最多占用和不记录的域名；清空以后从头记 @responsive', async ({ page }) => {
+  const group = await openQueryLogSettings(page)
+  await expect(group.getByRole('checkbox')).toHaveCount(0)
+  await expect(group).not.toContainText('只记网段')
+  await group.getByRole('button', { name: '自定义', exact: true }).click()
+  // 刚选「自定义」还没填时不报错；填错了离开那个框才说，框也标红 / No error the moment 自定义 is chosen; a wrong value is said once the field is left, and the field turns red
+  await expect(group.locator('.ui-field-error')).toHaveCount(0)
+  await group.getByLabel('保存多少小时').fill('0')
+  await group.getByLabel('保存多少小时').blur()
+  await expect(group.locator('#sets-ql-hours-err')).toHaveText('保存多久填 1 到 8760 之间的整数小时')
+  await expect(group.getByLabel('保存多少小时')).toHaveAttribute('aria-invalid', 'true')
+  // 错误不比下面的说明小 / An error is never smaller than the hint below it
+  const size = (id: string) => group.locator(id).evaluate((el) => getComputedStyle(el).fontSize)
+  expect(await size('#sets-ql-hours-err')).toBe(await size('#sets-ql-mb-hint'))
+  await group.getByRole('button', { name: '保存查询日志设置' }).click()
+  // 没保存成：焦点回到有错的框 / Not saved: focus goes back to the wrong field
+  await expect(group.getByLabel('保存多少小时')).toBeFocused()
+  // 服务端不认的域名：说在那个框下面，不悄悄不保存 / A domain the server refuses is said under its field, never a silent no-save
+  await group.getByLabel('不记录的域名').fill('例子.中国')
+  await group.getByLabel('不记录的域名').blur()
+  await expect(group.locator('#sets-ql-ignored-err')).toContainText('xn--')
+  await group.getByLabel('不记录的域名').fill('ads.example.com, tracker.example.com')
+  await group.getByLabel('保存多少小时').fill('12')
+  await group.getByRole('button', { name: '保存查询日志设置' }).click()
+  await expect(page.locator('.toast', { hasText: '查询日志设置已保存' })).toBeVisible()
+  await expect(group.getByLabel('保存多少小时')).toHaveValue('12')
+  // 分组列表上的概况跟着变（手机上点开一组后列表收起，按文字找） / The group list's summary follows (on phones the list folds once a
+  // group is open, so it is found by its text)
+  await expect(page.locator('.settings-nav__item', { hasText: '查询日志' })).toContainText('保存 12 小时')
+
+  await group.getByRole('button', { name: '清空查询日志' }).click()
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '清空查询日志' }).click()
   await expect(page.locator('.toast', { hasText: '查询日志已清空' })).toBeVisible()
-  await expect(page.getByText('还没有查询')).toBeVisible()
+  await expect(group.locator('#sets-ql-mb-hint')).toContainText('已用 0 MB')
+})
+
+// 说清存在哪、这台设备最多能设多大；单独保存、立即生效，日志页没有设置按钮
+// Where it is kept and the largest cap the device allows; saved on its own and effective at once, with no settings button on the
+// logs page
+test('基础设置里的查询日志一组：说清存在哪、最多能设多大，超过就不保存 @responsive', async ({ page }) => {
+  const group = await openQueryLogSettings(page)
+  await expect(group).toContainText('保存后立即生效，不用应用配置')
+  await expect(group).toContainText('存在 /var/lib/kixdns-panel/querylog')
+  await expect(group).toContainText('这台设备最多能设 20480 MB')
+  // 超过这台设备给得起的：说在框下面，不保存 / Beyond what the device can give: said under the field, not saved
+  await group.getByLabel('最多占用多少 MB').fill('30000')
+  await group.getByRole('button', { name: '保存查询日志设置' }).click()
+  await expect(group.locator('#sets-ql-mb-err')).toContainText('最多占用不能超过 20480 MB')
+  await expect(group.getByLabel('最多占用多少 MB')).toBeFocused()
+  await group.getByLabel('最多占用多少 MB').fill('64')
+  await group.getByRole('button', { name: '1 天', exact: true }).click()
+  await group.getByRole('button', { name: '保存查询日志设置' }).click()
+  await expect(page.locator('.toast', { hasText: '查询日志设置已保存' })).toBeVisible()
+  await expect(page.locator('.settings-nav__item', { hasText: '查询日志' })).toContainText('保存 1 天')
+
+  await openQueryLog(page)
+  await expect(page.getByRole('button', { name: '查询日志设置' })).toHaveCount(0)
+})
+
+test('搜基础设置时也找得到查询日志那一组', async ({ page }) => {
+  await page.goto('/config?v2=1&section=settings')
+  await page.getByLabel('搜索基础设置').fill('保存多久')
+  await expect(page.getByRole('heading', { name: '查询日志', exact: true })).toBeVisible()
+  await expect(page.getByText('没有找到匹配的设置')).toHaveCount(0)
 })
 
 test('内核不支持查询日志：以前记下的照样能看；什么也没有时说去更新内核 @responsive', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-querylog-unsupported', 'true'))
   await openQueryLog(page)
   await expect(page.getByText('当前内核不支持查询日志，下面是以前记下的')).toBeVisible()
-  await page.getByRole('button', { name: '查询日志设置' }).click()
-  await page.locator('dialog.pdrawer[open]').getByRole('button', { name: '清空查询日志' }).click()
+  // 在「基础设置」里清空，再从导航回到日志页（演示数据在页面里，不整页重开） / Clear in 基础设置, then back to the logs page
+  // through the navigation (the demo data lives in the page, so no full reload)
+  const group = await openQueryLogSettings(page)
+  await group.getByRole('button', { name: '清空查询日志' }).click()
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '清空查询日志' }).click()
+  await expect(page.locator('.toast', { hasText: '查询日志已清空' })).toBeVisible()
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
   await expect(page.getByText('当前内核不支持查询日志', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: '去系统页' })).toBeVisible()
 })
@@ -331,8 +373,8 @@ test('手机上点开再关掉看得见的那一条：列表不动 @responsive',
   await expect(row).toBeFocused()
 })
 
-test('手机上返回先关详情和设置，再返回才离开日志页 @responsive', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'mobile', '只有手机的详情和设置是整屏，记一步历史')
+test('手机上返回先关详情，再返回才离开日志页 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只有手机的详情是整屏，记一步历史')
   await useSampleConfig(page)
   await page.goto('/')
   await page.goto('/logs')
@@ -353,15 +395,6 @@ test('手机上返回先关详情和设置，再返回才离开日志页 @respon
   await expect(sheet).toBeVisible()
   await sheet.getByRole('button', { name: '关闭', exact: true }).click()
   await expect(sheet).toHaveCount(0)
-  await expect(page).toHaveURL(/\/logs$/)
-
-  // 设置也一样 / The settings the same
-  await page.getByRole('button', { name: '查询日志设置' }).click()
-  const drawer = page.locator('dialog.qlog-drawer[open]')
-  await expect(drawer).toBeVisible()
-  await expect(page).toHaveURL(/settings=1/)
-  await page.goBack()
-  await expect(drawer).toHaveCount(0)
   await expect(page).toHaveURL(/\/logs$/)
 
   await page.goBack()
@@ -428,17 +461,6 @@ test('手机上从诊断页回来、或者前进回到一条：详情开着，�
   await expect(sheet).toBeVisible()
   await page.goBack()
   await expect(sheet).toHaveCount(0)
-  // 设置也一样：前进回到设置那一步，设置跟着开 / The settings the same: forward onto the settings step opens them
-  await page.getByRole('button', { name: '查询日志设置' }).click()
-  const drawer = page.locator('dialog.qlog-drawer[open]')
-  await expect(drawer).toBeVisible()
-  await page.goBack()
-  await expect(drawer).toHaveCount(0)
-  await page.goForward()
-  await expect(page).toHaveURL(/settings=1/)
-  await expect(drawer).toBeVisible()
-  await page.goBack()
-  await expect(drawer).toHaveCount(0)
   // 再返回就离开日志页 / One more back leaves the log page
   await page.goBack()
   await expect(page).not.toHaveURL(/\/logs/)
@@ -553,7 +575,7 @@ test('连不上面板又连上：开着的第二页那条照旧开着；换了�
   await expect(page).not.toHaveURL(/dest=/)
 })
 
-test('去掉筛选、一路往前查到底：焦点落在说得通的地方，不掉到设置按钮上', async ({ page }, testInfo) => {
+test('去掉筛选、一路往前查到底：焦点落在说得通的地方，不掉到工具栏的按钮上', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', '键盘的事，桌面就够')
   await useSampleConfig(page)
   await page.goto('/logs?client=192.168.1.8')

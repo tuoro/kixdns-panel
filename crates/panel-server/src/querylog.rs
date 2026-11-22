@@ -35,12 +35,18 @@ use serde_json::{Map, Value};
 
 use crate::querylog_records::Decided;
 
-/// 默认保留 90 天 / Kept for 90 days by default
-pub const DEFAULT_RETENTION_HOURS: u32 = 2_160;
+/// 默认保留 90 天；musl 版（OpenWrt 路由器）1 天 / Kept for 90 days by default; a day on musl builds (`OpenWrt` routers)
+pub const DEFAULT_RETENTION_HOURS: u32 = if cfg!(target_env = "musl") { 24 } else { 2_160 };
 /// 保留时间最长一年 / Retention is at most a year
 pub const MAX_RETENTION_HOURS: u32 = 8_760;
-/// 默认最多占 500 MiB / At most 500 MiB by default
-pub const DEFAULT_MAX_BYTES: u64 = 500 * MIB;
+/// 默认最多占 500 MiB；musl 版（OpenWrt 路由器）16 MiB：查询日志在那里默认放内存，内存还要留给内核和智能流控
+/// At most 500 MiB by default; 16 MiB on musl builds (`OpenWrt` routers), where the query log sits in memory by default
+/// and memory is also wanted by the kernel and its flow control
+pub const DEFAULT_MAX_BYTES: u64 = if cfg!(target_env = "musl") {
+    16 * MIB
+} else {
+    500 * MIB
+};
 /// 空间上限最少 10 MiB，最多 100 GiB / The space cap is at least 10 MiB and at most 100 GiB
 pub const MIN_MAX_BYTES: u64 = 10 * MIB;
 pub const MAX_MAX_BYTES: u64 = 100 * 1024 * MIB;
@@ -52,6 +58,14 @@ pub const MAX_PAGE_SIZE: usize = 500;
 
 const MIB: u64 = 1024 * 1024;
 const HOUR_MS: u64 = 3_600_000;
+/// 查询日志给别人留的空间：在内存里至少 64 MiB 或总量的四分之一（在线更新下载、解包都在 /tmp），在磁盘上至少 16 MiB 或
+/// 总量的十分之一；按比例算出来的最多留 1 GiB，大盘上不至于为了留空间把查询日志挤没
+/// The room the query log leaves to others: in memory at least 64 MiB or a quarter of the total (the online update
+/// downloads and unpacks in /tmp), on disk at least 16 MiB or a tenth of the total; the share is held to 1 GiB, so a large
+/// nearly full disk does not squeeze the query log out just to keep room
+const MEMORY_RESERVE: u64 = 64 * MIB;
+const DISK_RESERVE: u64 = 16 * MIB;
+const RESERVE_SHARE_MAX: u64 = 1024 * MIB;
 /// 正在写的一段最大多少：上限的八分之一，在 1 MiB 到 32 MiB 之间
 /// How large the segment being written may grow: an eighth of the cap, between 1 MiB and 32 MiB
 /// 压缩的级别：实测 2 级最划算。比 1 级压得小，和它一样快；再往上压不小多少，慢得多
@@ -809,6 +823,66 @@ pub struct Usage {
     pub oldest_start_ms: Option<u64>,
 }
 
+/// 查询日志所在的文件系统 / The filesystem the query log lives on
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Storage {
+    /// 在内存里（tmpfs、ramfs）：重启就没了 / In memory (tmpfs, ramfs): gone at a reboot
+    pub memory: bool,
+    pub total: u64,
+    pub available: u64,
+}
+
+impl Storage {
+    /// 读这个目录所在文件系统的大小、剩余，是不是在内存里
+    /// Reads the size and free space of the filesystem holding this directory, and whether it is in memory
+    ///
+    /// # Errors
+    ///
+    /// 读不到文件系统的信息时。 / When the filesystem cannot be read.
+    pub fn probe(path: &Path) -> io::Result<Self> {
+        let stat = rustix::fs::statvfs(path)?;
+        Ok(Self {
+            memory: in_memory(path),
+            total: stat.f_blocks.saturating_mul(stat.f_frsize),
+            available: stat.f_bavail.saturating_mul(stat.f_frsize),
+        })
+    }
+
+    /// 这台设备上查询日志最多能占多少：已经占的加上还剩的，减去留给别人的。磁盘被别的东西占满时它会比已经占的还小，
+    /// 查询日志就让出空间
+    /// How much the query log may take on this device: what it holds plus what is free, less the room left to others.
+    /// When something else fills the disk this drops below what it holds, and the query log gives room back
+    #[must_use]
+    pub fn limit(self, used: u64) -> u64 {
+        let (share, floor) = if self.memory {
+            (self.total / 4, MEMORY_RESERVE)
+        } else {
+            (self.total / 10, DISK_RESERVE)
+        };
+        let reserve = share.min(RESERVE_SHARE_MAX).max(floor);
+        used.saturating_add(self.available)
+            .saturating_sub(reserve)
+            .min(MAX_MAX_BYTES)
+    }
+}
+
+/// tmpfs、ramfs 都在内存里 / tmpfs and ramfs both live in memory
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn in_memory(path: &Path) -> bool {
+    const TMPFS_MAGIC: i128 = 0x0102_1994;
+    const RAMFS_MAGIC: i128 = 0x8584_58f6;
+    rustix::fs::statfs(path).is_ok_and(|stat| {
+        let kind = i128::from(stat.f_type);
+        kind == TMPFS_MAGIC || kind == RAMFS_MAGIC
+    })
+}
+
+/// 别的系统不分 / Other systems do not tell
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn in_memory(_path: &Path) -> bool {
+    false
+}
+
 /// 段文件的格式 / A segment file's format
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -1478,6 +1552,31 @@ impl QueryLogStore {
         if let Err(error) = self.save_state(inner) {
             tracing::warn!(%error, "查询日志的状态文件没写成");
         }
+    }
+
+    /// 目录在哪 / Where the directory is
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// 目录所在文件系统的情况 / The filesystem the directory lives on
+    ///
+    /// # Errors
+    ///
+    /// 读不到文件系统的信息时。 / When the filesystem cannot be read.
+    pub fn storage(&self) -> io::Result<Storage> {
+        Storage::probe(&self.root)
+    }
+
+    /// 这台设备上查询日志最多能占多少，见 [`Storage::limit`]；读不到文件系统时不限
+    /// How much the query log may take on this device, see [`Storage::limit`]; unlimited when the filesystem cannot be
+    /// read
+    #[must_use]
+    pub fn device_limit(&self) -> Option<u64> {
+        self.storage()
+            .ok()
+            .map(|storage| storage.limit(self.usage().bytes))
     }
 
     #[must_use]
