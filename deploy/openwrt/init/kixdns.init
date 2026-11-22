@@ -1,4 +1,6 @@
 #!/bin/sh /etc/rc.common
+# START、STOP、USE_PROCD 由 /etc/rc.common 读取，shellcheck 看不到 / START, STOP and USE_PROCD are read by /etc/rc.common, out of shellcheck's sight
+# shellcheck shell=sh disable=SC2034
 # KixDNS Enhanced 内核 —— OpenWrt procd 版本（由 fork 提供）
 # 与 systemd unit 的行为差异：没有 ProtectSystem/User，进程直接以 root 运行；
 # 日志写文件而非 journald，面板通过 KIXDNS_SERVICE_LOG 读这个文件。

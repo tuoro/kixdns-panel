@@ -5,15 +5,18 @@ name: Check automation scripts
 # The panel and kernel workflows only run when their own files change, so scripts used
 # elsewhere (the kernel build alert added in #124, for one) never went through shellcheck on
 # a pull request. Any script change is checked here.
+# OpenWrt 的安装脚本和 procd init 脚本也一起检查 / The OpenWrt install script and procd init scripts are checked too.
 on:
   push:
     branches: [main]
     paths:
       - scripts/**
+      - deploy/openwrt/**
       - .github/workflows/lint-scripts.yml
   pull_request:
     paths:
       - scripts/**
+      - deploy/openwrt/**
       - .github/workflows/lint-scripts.yml
 
 permissions:
@@ -28,4 +31,4 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint every script
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh deploy/openwrt/install.sh deploy/openwrt/init/*.init

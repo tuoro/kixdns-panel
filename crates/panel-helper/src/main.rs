@@ -117,6 +117,13 @@ mod linux {
         // persistence semantics: enable = enable + start, disable = stop + disable. Otherwise
         // the kernel comes back by itself after a router reboot.
         if args.init_script.is_file() {
+            if !check_root_executable(&args.init_script)? {
+                return Err(format!(
+                    "init 脚本权限无效：{}（要 root 所有、组和其他用户不可写的普通文件）",
+                    args.init_script.display()
+                )
+                .into());
+            }
             let service = service_name(&args.unit);
             // 动作前记下运行 pid：restart 后要等新进程真正起来（pid 变了）再返回，
             // 否则面板拿到的还是旧进程的 active/running。
@@ -283,16 +290,25 @@ mod linux {
         }
     }
 
-    fn launch_panel_update() -> Result<(), Box<dyn std::error::Error>> {
+    /// helper 以 root 身份执行的文件（在线更新器、init 脚本）只认 root 所有、组和其他用户写不进的普通文件，不认符号链接：
+    /// 不然能改这个文件或者链接目标的人，就能借 helper 以 root 跑任意命令。读不到文件时把错误原样交出去
+    ///
+    /// Files the helper runs as root (the online updater, the init script) are trusted only as regular files owned by root
+    /// that neither group nor others can write, never through a symlink: otherwise whoever can change the file or the
+    /// link target runs any command as root through the helper. When the file cannot be read the error is handed on as is
+    fn check_root_executable(path: &Path) -> std::io::Result<bool> {
         use std::os::unix::fs::MetadataExt;
 
+        let metadata = fs::symlink_metadata(path)?;
+        Ok(!metadata.file_type().is_symlink()
+            && metadata.is_file()
+            && metadata.uid() == 0
+            && metadata.mode() & 0o022 == 0)
+    }
+
+    fn launch_panel_update() -> Result<(), Box<dyn std::error::Error>> {
         const UPDATER: &str = "/usr/local/libexec/kixdns-panel-online-update";
-        let metadata = fs::symlink_metadata(UPDATER)?;
-        if metadata.file_type().is_symlink()
-            || !metadata.is_file()
-            || metadata.uid() != 0
-            || metadata.mode() & 0o022 != 0
-        {
+        if !check_root_executable(Path::new(UPDATER))? {
             return Err("面板在线更新器权限无效".into());
         }
         // 没有 systemd-run 的平台（OpenWrt/procd、musl）暂时不支持在线更新：更新器是给
@@ -362,9 +378,42 @@ mod linux {
         use std::path::Path;
 
         use super::{
-            ServiceAction, UbusState, init_script_verbs, parse_action, reached_goal, service_name,
-            systemctl_arguments, validate_socket_path, validate_unit,
+            ServiceAction, UbusState, check_root_executable, init_script_verbs, parse_action,
+            reached_goal, service_name, systemctl_arguments, validate_socket_path, validate_unit,
         };
+
+        /// 以 root 跑的 init 脚本：组或其他用户可写的、不归 root 的、符号链接都不认；读不到的把错误交出去。
+        /// 测试以普通用户跑时自己建的文件不归 root，以 root 跑（比如在路由器上）时就归 root，两种都对得上
+        /// The init script run as root: group- or other-writable, not owned by root, or a symlink is refused; an
+        /// unreadable one hands on the error. Run as a normal user the test's own file is not root's; run as root (on a
+        /// router, say) it is, and both cases hold
+        #[test]
+        fn init_script_must_be_a_root_owned_file_nobody_else_can_write() {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+            let directory =
+                std::env::temp_dir().join(format!("kixdns-helper-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            let script = directory.join("kixdns");
+            std::fs::write(&script, "#!/bin/sh\n").unwrap();
+
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o775)).unwrap();
+            assert!(!check_root_executable(&script).unwrap(), "组可写不认");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o757)).unwrap();
+            assert!(!check_root_executable(&script).unwrap(), "其他用户可写不认");
+
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let owned_by_root = std::fs::metadata(&script).unwrap().uid() == 0;
+            assert_eq!(check_root_executable(&script).unwrap(), owned_by_root);
+
+            let link = directory.join("link");
+            symlink(&script, &link).unwrap();
+            assert!(!check_root_executable(&link).unwrap(), "符号链接不认");
+            assert!(check_root_executable(&directory.join("missing")).is_err());
+
+            std::fs::remove_dir_all(&directory).unwrap();
+        }
 
         #[test]
         fn accepts_only_fixed_service_actions() {

@@ -255,7 +255,7 @@ jobs:
 
       - name: Lint deployment scripts
         shell: bash
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh deploy/openwrt/install.sh deploy/openwrt/init/*.init
 
       - name: Verify installation policy
         shell: bash
