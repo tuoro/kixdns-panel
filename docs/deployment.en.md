@@ -150,8 +150,10 @@ The panel gained a replaceable service backend for this. The status and log swit
 The helper looks for `systemctl` first and uses it when found; only when it is missing does it fall back to the init script, and it errors only when it has neither. One binary therefore serves both Debian/Ubuntu and OpenWrt.
 
 Download and unpack it on the router and run `sh install.sh` (`START_DNS=1` also starts the kernel); the commands are in
-"安装" (installation) in `deploy/openwrt/README.md`. OpenWrt's default dnsmasq holds port 53, so move it to another port
-before enabling the kernel. From then on both the panel and the kernel update online from the System page. Running a
+"安装" (installation) in `deploy/openwrt/README.md`. Enabling the kernel hands it port 53: the DNS of OpenWrt's own
+dnsmasq moves to 5353, DHCP carries on, and the kernel passes `.lan` host names to it; disabling the kernel gives it all
+back, see "53 端口和 dnsmasq" (port 53 and dnsmasq) in `deploy/openwrt/README.md`. From then on both the panel and the
+kernel update online from the System page. Running a
 newer `install.sh` upgrades too: an upgrade is all or nothing and puts everything back when it fails, and a kernel the
 panel installed online stays as long as it is not older than the bundled one, so it is never downgraded.
 

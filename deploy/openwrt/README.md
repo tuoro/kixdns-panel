@@ -31,7 +31,7 @@ init/kixdns.init                        本仓库 deploy/openwrt/init/kixdns.ini
 init/kixdns-panel.init                  本仓库 deploy/openwrt/init/kixdns-panel.init
 init/kixdns-panel-helper.init           本仓库 deploy/openwrt/init/kixdns-panel-helper.init
 init/kixdns-panel-update.init           本仓库 deploy/openwrt/init/kixdns-panel-update.init（在线更新的一次性服务）
-etc/pipeline.json                       本仓库 deploy/config/pipeline.json（与 systemd 版同款）
+etc/pipeline.json                       本仓库 deploy/openwrt/pipeline.json（IPv4、IPv6 都听，.lan 交给 dnsmasq）
 bundle/KIXDNS_*                         自带内核的身份（scripts/fetch-kixdns-release.sh … musl 写出的七个文件）
 PANEL_BUILD_COMMIT                      面板的构建提交（CI 打的包才有）
 PANEL_RELEASE                           面板的正式版标签 vX.Y.Z（Release 里的包才有）
@@ -183,10 +183,30 @@ START_DNS=1 sh install.sh  # 装完顺手启动内核（占用 53 端口）
 匿名额度每小时 60 次，一次更新只用一次。下载和解包大约要包的 4 倍内存，备份现有面板再要 30 MB 左右，
 不够时更新器和 `install.sh` 会先说清楚，不会装到一半。
 
-OpenWrt 默认的 dnsmasq 占着 53 端口。启用内核（`START_DNS=1` 或之后手动
-`/etc/init.d/kixdns enable && /etc/init.d/kixdns start`）之前，先把 dnsmasq 换到别的端口
-（面板里改，或 `uci set dhcp.@dnsmasq[0].port=5353; uci commit dhcp; /etc/init.d/dnsmasq restart`），
-否则内核起不来。
+## 53 端口和 dnsmasq
+
+OpenWrt 自带的 dnsmasq 占着 53 端口，同时管 DHCP 和局域网主机名（`.lan`）。内核不用你先去挪它：
+
+- **启用内核**（面板「系统」页的「启动」、`START_DNS=1 sh install.sh`、`/etc/init.d/kixdns enable`）时，内核接管 53：
+  - dnsmasq 的 DNS 挪到 5353，DHCP 照常；
+  - 每个发地址的 DHCP 段补一条 `6,0.0.0.0`，照样把路由器发给客户端当 DNS（dnsmasq 不在 53 上时自己不发）；
+  - 内核 10 秒内没在 53 上收查询，就把 53 原样还回去、不启用，局域网不会没有 DNS。
+- **停用内核**（「停止」、`/etc/init.d/kixdns disable`）时，先停下内核，再把 dnsmasq 原样还回去。
+- 改了什么记在 UCI 的 `kixdns-panel.handover` 里，还的时候只撤自己改的。DHCP 段里本来就写了 DNS 选项的不动；dnsmasq 原来就不在
+  53 上（自己挪过、或者关了 DNS）的也不动。
+
+OpenWrt 安装包的默认内核配置同时听 IPv4 和 IPv6（`[::]:53`，odhcpd 把路由器的 IPv6 地址发给客户端当 DNS），并且有一条规则
+「局域网主机名交给 dnsmasq」：`.lan` 结尾的域名转给 `127.0.0.1:5353`，`openwrt.lan`、各台设备的主机名照样解析。这是新装时的
+默认配置；以前装的在面板的规则里加同样一条就行。
+
+不想让内核动 dnsmasq（比如自己用别的方式安排 53）：
+
+```sh
+touch /etc/config/kixdns-panel
+uci set kixdns-panel.main=panel
+uci set kixdns-panel.main.dnsmasq_handover='0'
+uci commit kixdns-panel
+```
 
 ## 查询日志
 

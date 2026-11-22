@@ -152,7 +152,7 @@ OpenWrt 用 procd 管进程，没有 `systemctl`/`journalctl`，发行版是 mus
 helper 先找 `systemctl`，找到就照旧用它，找不到才用 init 脚本；两个都没有才报错。所以同一份二进制既能装在 Debian/Ubuntu 上，也能装在 OpenWrt 上。
 
 在路由器上下载、解开，运行 `sh install.sh`（`START_DNS=1` 装完顺手启动内核），命令见 `deploy/openwrt/README.md` 的「安装」。
-OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先把它换到别的端口。之后面板和内核都在系统页在线更新。
+启用内核时它会接管 53 端口：OpenWrt 自带的 dnsmasq 的 DNS 挪到 5353，DHCP 照常，`.lan` 主机名由内核转给它；停用内核时原样还回去，见 `deploy/openwrt/README.md` 的「53 端口和 dnsmasq」。之后面板和内核都在系统页在线更新。
 重新运行新版本的 `install.sh` 也能升级：升级是整体的，装不成就全部放回；面板在线装上的内核只要不比包里的旧就留着，不会被降级。
 
 要自己编（以 aarch64 路由器为例；x86_64 换 target 即可）：面板和 helper 在 musl

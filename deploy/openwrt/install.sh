@@ -3,7 +3,7 @@
 #
 # 用法（在解压后的 payload 根目录执行）：
 #   sh install.sh                       # 安装或升级面板（新装时内核先不启动）
-#   START_DNS=1 sh install.sh           # 装完连内核一起启动（会占 53，先确认没有别的 DNS）
+#   START_DNS=1 sh install.sh           # 装完连内核一起启动（它接管 53 端口，dnsmasq 的 DNS 挪到 5353，DHCP 照常）
 #   sh install.sh --panel-only-update   # 只更新面板，不动内核；面板的在线更新就是这样跑的
 #
 # 升级是整体的：换文件以前先把要换的程序、页面、init 脚本、身份文件和数据库备份到 /tmp，装完等新面板稳定运行、
@@ -466,13 +466,14 @@ fi
 "$DEST_ETC/init.d/kixdns-panel-helper" start
 "$DEST_ETC/init.d/kixdns-panel" start
 
+start_dns=0
 if [ "${START_DNS:-0}" = "1" ] && [ "$PANEL_ONLY" = 0 ]; then
-	# 只有显式要求启动内核时才 enable：否则开机自启一个不用的内核会一直占着 53。
-	# Only enable the kernel when asked to start it; otherwise a self-starting but unused
-	# kernel would keep hogging port 53 after every reboot.
-	"$DEST_ETC/init.d/kixdns" enable
-	"$DEST_ETC/init.d/kixdns" start
-	kernel_message="已启动 KixDNS 内核（已设为开机自启）"
+	# 只有显式要求启动内核时才启用，而且等面板装好了再启用（见下面）：启用会接管 53 端口，装不成要回滚时不该留下一个接管了
+	# 53 的内核。不要求就不启用：开机自启一个不用的内核会一直占着 53
+	# The kernel is enabled only when asked to start it, and only once the panel is installed (below): enabling takes
+	# port 53, and a failed install rolling back must not leave a kernel holding it. Not asked, it stays disabled: a
+	# self-starting but unused kernel would hold port 53 after every reboot
+	start_dns=1
 elif [ "$kernel_was_running" = "1" ]; then
 	# 升级前内核在运行：换了程序的话装完原样拉起来，别让一次升级把 DNS 断掉；没换程序的内核没停过，start 只在 init 脚本
 	# 变了时才让 procd 重启它
@@ -488,8 +489,8 @@ elif [ "$kernel_was_running" = "1" ]; then
 elif [ "$kernel_was_enabled" = "1" ]; then
 	kernel_message="内核未启动（升级前也未在运行），仍保持开机自启；需要时执行 /etc/init.d/kixdns start"
 else
-	kernel_message="内核未启动，也未设为开机自启（确认 53 端口空闲后执行 /etc/init.d/kixdns enable && /etc/init.d/kixdns start）
-注意：OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先停掉或在面板里把 dnsmasq 挪到别的端口"
+	kernel_message="内核未启动，也未设为开机自启。在面板里点「启动」（或执行 /etc/init.d/kixdns enable）就会启动它并接管 53 端口：
+dnsmasq 的 DNS 挪到 5353，DHCP 照常，局域网主机名（.lan）由内核转给它；停用内核时 53 原样还给 dnsmasq"
 fi
 
 wait_panel_healthy "$new_version" ||
@@ -505,6 +506,20 @@ old_querylog="$DEST_STATE/querylog"
 if [ -d "$old_querylog" ] && [ "$(uci -q get kixdns-panel.main.querylog_dir)" != "/etc/kixdns-panel/querylog" ]; then
 	rm -rf "$old_querylog"
 	say "查询日志改放内存（重启清空），已删掉以前写在闪存上的 $old_querylog；要长期保留见 README 的「查询日志」"
+fi
+
+# 启用内核 = 接管 53 端口并启动（init 脚本的 enable）；10 秒内没在 53 上收查询，它会把 53 还给 dnsmasq、不启用
+# Enabling the kernel = taking port 53 and starting (enable in the init script); when it is not taking queries on 53
+# within 10 seconds, 53 goes back to dnsmasq and nothing is enabled
+if [ "$start_dns" = 1 ]; then
+	if "$DEST_ETC/init.d/kixdns" enable && "$DEST_ETC/init.d/kixdns" start; then
+		kernel_message="已启动 KixDNS 内核（已设为开机自启）"
+		if [ "$(uci -q get kixdns-panel.handover)" = dnsmasq ]; then
+			kernel_message="$kernel_message；53 端口由它接管，dnsmasq 的 DNS 挪到 5353，DHCP 照常"
+		fi
+	else
+		kernel_message="KixDNS 内核没能启动，53 端口仍由 dnsmasq 负责；查看原因：/var/log/kixdns.log"
+	fi
 fi
 
 say "$kernel_message"
