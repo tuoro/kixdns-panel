@@ -475,6 +475,77 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # OpenWrt（procd、musl）是正式支持的平台：面板和服务助手要能编成 musl 静态二进制。glibc 的构建只在合并以后跑，这里
+  # PR 上也跑，只在 musl 上才出现的编译问题在合并前就能看到。两个架构都在原生 runner 上编，C 依赖（ring、bundled
+  # SQLite）用 Ubuntu 的 musl-tools 编，不需要交叉工具链。
+  # OpenWrt (procd, musl) is a supported platform: the panel and the service helper must build as static musl binaries. The glibc
+  # build runs only after a merge; this one runs on pull requests too, so a compile failure that only shows on musl is seen before
+  # merging. Both architectures build on native runners, and the C dependencies (ring, bundled SQLite) build with Ubuntu's
+  # musl-tools, so no cross toolchain is needed.
+  build-musl:
+    name: Build Linux ${{ matrix.arch }} (musl)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+
+    steps:
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends musl-tools
+
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+
+      - name: Cache panel build
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
+        with:
+          workspaces: . -> target
+
+      - name: Build panel server and service control helper
+        run: |
+          cargo build --package kixdns-panel-server --package kixdns-panel-helper \
+            --release --locked --target ${{ matrix.target }}
+
+      # OpenWrt 上没有 glibc 的动态加载器：二进制里不能有 PT_INTERP，能在 runner 上直接跑起来才算编对了
+      # OpenWrt has no glibc dynamic loader: the binaries must carry no PT_INTERP, and running them on the runner shows the build is sound
+      - name: Verify static musl binaries
+        shell: bash
+        run: |
+          for binary in kixdns-panel-server kixdns-panel-helper; do
+            path="target/${{ matrix.target }}/release/${binary}"
+            if readelf --program-headers --wide "$path" | grep -q 'INTERP'; then
+              printf '%s 不是静态链接 / is not statically linked\n' "$binary" >&2
+              exit 1
+            fi
+            "$path" --help > /dev/null
+          done
+
+      # 给在 OpenWrt 上试 PR 的人直接拿去用，不进 Release / For anyone trying a pull request on OpenWrt; not part of a release
+      - name: Upload musl binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: kixdns-panel-linux-${{ matrix.arch }}-musl
+          path: |
+            target/${{ matrix.target }}/release/kixdns-panel-server
+            target/${{ matrix.target }}/release/kixdns-panel-helper
+          if-no-files-found: error
+          retention-days: 7
+
   acceptance:
     name: Accept packaged installation
     if: github.event_name != 'pull_request'
