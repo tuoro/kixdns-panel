@@ -253,67 +253,6 @@ jobs:
           (cd web && npx vitest run src/config-model/kernel-fixtures.test.ts)
           tools/kernel-config-check/target/debug/kernel-config-check < "$KERNEL_FIXTURES"
 
-      # 前端 e2e 只在 PR 改了 web/ 或这个 workflow 时跑；发布和手动触发照跑全套。
-      # 推到 main 的提交在 PR 上已经按合并后的结果测过，不再重跑；只改 Rust、脚本、锁文件的 PR 也不跑。
-      # 用变量接住 git diff 再判断：管道接 grep -q 时，文件名多到写满管道缓冲，git 会被 SIGPIPE 打断，pipefail 下误判成没改。
-      - name: Decide whether web acceptance tests run
-        id: acceptance
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          case "$EVENT" in
-            release|workflow_dispatch) run=true ;;
-            pull_request)
-              git fetch --no-tags --depth=1 origin "$BASE_SHA"
-              changed="$(git diff --name-only "$BASE_SHA" HEAD -- web .github/workflows/build-panel.yml)"
-              if [[ -n "$changed" ]]; then run=true; else run=false; fi
-              ;;
-            *) run=false ;;
-          esac
-          echo "run=$run" >> "$GITHUB_OUTPUT"
-          echo "Web acceptance tests: $run"
-
-      - name: Resolve Playwright version
-        if: steps.acceptance.outputs.run == 'true'
-        id: playwright
-        working-directory: web
-        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Playwright browser
-        if: steps.acceptance.outputs.run == 'true'
-        id: playwright-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
-
-      - name: Install browser for web acceptance tests
-        if: steps.acceptance.outputs.run == 'true'
-        working-directory: web
-        run: |
-          if [[ "${{ steps.playwright-cache.outputs.cache-hit }}" == "true" ]]; then
-            npx playwright install-deps chromium
-          else
-            npx playwright install --with-deps chromium
-          fi
-
-      - name: Verify web workflows
-        if: steps.acceptance.outputs.run == 'true'
-        working-directory: web
-        run: npm run test:e2e
-
-      - name: Upload web acceptance report
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: panel-playwright-report
-          path: |
-            playwright-report
-            test-results
-          if-no-files-found: ignore
-          retention-days: 7
-
       - name: Lint deployment scripts
         shell: bash
         run: shellcheck scripts/*.sh
@@ -334,10 +273,127 @@ jobs:
         shell: bash
         run: bash scripts/test-unit-name-rule.sh
 
+  # 前端 e2e 只在 PR 改了 web/ 或这个 workflow 时跑；发布和手动触发照跑全套。
+  # 推到 main 的提交在 PR 上已经按合并后的结果测过，不再重跑；只改 Rust、脚本、锁文件的 PR 也不跑。
+  # PR 上检出的是 GitHub 把 PR 合进当前 main 的合并提交：第一个父提交就是当前 main，只和它比才是这个 PR 自己的改动。
+  # 和 pull_request.base.sha 比不行：它停在 PR 开出来时的 main，main 之后改过 web/ 或这个 workflow，每个旧 PR 都会被误判成改了。
+  # 用变量接住 git diff 再判断：管道接 grep -q 时，文件名多到写满管道缓冲，git 会被 SIGPIPE 打断，pipefail 下误判成没改。
+  # Web e2e runs only when a PR changes web/ or this workflow; releases and manual runs run it all.
+  # Pushes to main were tested as merged on their PR and are not run again; PRs touching only Rust, scripts or lock files skip it.
+  # A PR run checks out GitHub's merge of the PR into the current main: its first parent is that main, so only comparing against it
+  # gives this PR's own changes. pull_request.base.sha does not: it stays at main as of when the PR was opened, so once main
+  # changes web/ or this workflow every older PR would be taken as changing them.
+  # git diff goes into a variable before the test: piped into grep -q, a long file list fills the pipe buffer, git dies of SIGPIPE
+  # and pipefail reads that as no change.
+  e2e-scope:
+    name: Decide web acceptance tests
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.acceptance.outputs.run }}
+    steps:
+      - name: Checkout the merge commit and its parents
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Decide whether web acceptance tests run
+        id: acceptance
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          case "$EVENT" in
+            release|workflow_dispatch) run=true ;;
+            pull_request)
+              changed="$(git diff --name-only HEAD^1 HEAD -- web .github/workflows/build-panel.yml)"
+              if [[ -n "$changed" ]]; then run=true; else run=false; fi
+              ;;
+            *) run=false ;;
+          esac
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "Web acceptance tests: $run"
+
+  # 一份跑全部用例要十几分钟，拆成 4 份并行，每份照旧 4 个 worker（playwright.config.ts）。fullyParallel 下按用例拆，4 份各约 170 个。
+  # e2e 用 Vite 开发服务器的演示模式，不用编 Rust，所以单独成 job、不跟 Verify panel 抢时间。
+  # One run of every test takes over ten minutes, so it is split into 4 parallel shards, each still with 4 workers
+  # (playwright.config.ts). With fullyParallel the split is per test, about 170 each. The e2e tests use the Vite dev server in demo
+  # mode and need no Rust build, so they are a job of their own instead of lengthening Verify panel.
+  e2e:
+    name: Verify web workflows (${{ matrix.shard }}/4)
+    needs: e2e-scope
+    if: needs.e2e-scope.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Resolve Playwright version
+        id: playwright
+        working-directory: web
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browser
+        id: playwright-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install browser for web acceptance tests
+        working-directory: web
+        shell: bash
+        run: |
+          if [[ "${{ steps.playwright-cache.outputs.cache-hit }}" == "true" ]]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+
+      - name: Verify web workflows
+        working-directory: web
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/4
+
+      - name: Upload web acceptance report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: panel-playwright-report-${{ matrix.shard }}
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   build:
     name: Build Linux ${{ matrix.arch }}
-    if: github.event_name != 'pull_request'
-    needs: [kernel, geosite, verify]
+    # e2e 推到 main 时不跑（跳过），发布时跑：跳过照常构建，跑了就要通过；上游失败或取消都不构建
+    # e2e is skipped on pushes to main and runs on releases: a skip still builds, a run has to pass; any failed or cancelled
+    # upstream job stops the build
+    if: >-
+      !cancelled() && github.event_name != 'pull_request'
+      && needs.kernel.result == 'success' && needs.geosite.result == 'success' && needs.verify.result == 'success'
+      && needs.e2e-scope.result == 'success'
+      && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
+    needs: [kernel, geosite, verify, e2e-scope, e2e]
     permissions:
       actions: read
       contents: read
