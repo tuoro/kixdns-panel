@@ -12,6 +12,7 @@ use super::MAX_ARTIFACT_BYTES;
 use super::MAX_RELEASE_MANIFEST_BYTES;
 use super::PANEL_CACHE_TTL;
 use super::PANEL_REPOSITORY;
+use super::PREVIOUS_DROPPED_KEY;
 use super::PanelUpdateNotice;
 use super::RELEASE_MANIFEST_NAME;
 use super::REMOTE_CACHE_TTL;
@@ -24,7 +25,7 @@ use super::UpdateNotifications;
 use super::VersionKey;
 use super::VersionSource;
 use super::storage::regular_file_exists;
-use super::validation::kernel_architecture;
+use super::validation::kernel_asset_key;
 use super::validation::kernel_asset_name;
 use super::validation::parse_kernel_version;
 use super::validation::parse_panel_release_version;
@@ -72,9 +73,9 @@ pub(super) fn remote_version(
     }
     validate_declared_capabilities(&manifest.config_capabilities)
         .map_err(UpdateError::Verification)?;
-    let architecture = kernel_architecture();
-    let expected = manifest.assets.get(architecture).ok_or_else(|| {
-        UpdateError::Verification(format!("这一版没有本机架构（{architecture}）的内核包"))
+    let asset_key = kernel_asset_key();
+    let expected = manifest.assets.get(&asset_key).ok_or_else(|| {
+        UpdateError::Verification(format!("这一版没有本机（{asset_key}）的内核包"))
     })?;
     let name = kernel_asset_name(tag);
     if expected.name != name {
@@ -272,9 +273,6 @@ impl UpdateManager {
     }
 
     async fn kixdns_update_notice(&self) -> Result<KixdnsUpdateNotice, UpdateError> {
-        if cfg!(target_env = "musl") {
-            return Err(UpdateError::MuslUnsupported);
-        }
         let latest = self.latest_remote().await?;
         let active = self.active_version().await?;
         let current = match active.as_ref() {
@@ -315,10 +313,16 @@ impl UpdateManager {
                 (None, Some(error.to_string()))
             }
         };
+        let previous_dropped_for_space = previous.is_none()
+            && matches!(
+                self.database.get_setting(PREVIOUS_DROPPED_KEY).await,
+                Ok(Some(_))
+            );
         Ok(KixdnsKernel {
             binary_present,
             active,
             previous,
+            previous_dropped_for_space,
             latest,
             remote_error,
         })

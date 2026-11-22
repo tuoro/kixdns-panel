@@ -13,6 +13,7 @@ use super::MAX_ARTIFACT_BYTES;
 use super::MAX_BINARY_BYTES;
 use super::MAX_BUILD_IDENTITY_BYTES;
 use super::MAX_CAPABILITIES_BYTES;
+use super::PREVIOUS_DROPPED_KEY;
 use super::PREVIOUS_VERSION_KEY;
 use super::RemoteVersion;
 use super::ServiceHost;
@@ -22,6 +23,9 @@ use super::UpdateManager;
 use super::VersionKey;
 use super::VersionManifest;
 use super::VersionSource;
+use super::space;
+use super::space::Room;
+use super::space::StoragePlan;
 use super::storage::bundled_binary_is_current;
 use super::storage::list_installed;
 use super::storage::load_bundled_manifest;
@@ -29,10 +33,14 @@ use super::storage::load_verified_version;
 use super::storage::locate_version_directory;
 use super::storage::prune_versions;
 use super::storage::read_regular_file;
+use super::storage::reclaimable_bytes;
 use super::storage::regular_file_exists;
+use super::storage::remove_other_versions;
 use super::storage::store_version;
+use super::storage::stored_binary_size;
 use super::storage::update_stored_capabilities;
 use super::validation::kernel_architecture;
+use super::validation::kernel_libc;
 use super::validation::persist;
 use super::validation::sha256;
 use super::validation::sync_directory;
@@ -140,6 +148,13 @@ pub(super) fn verify_kernel_source(
         return Err(UpdateError::Verification(
             "内核包的来源说明和发布清单对不上".to_owned(),
         ));
+    }
+    let libc = source.libc.as_deref().unwrap_or("gnu");
+    if libc != kernel_libc() {
+        return Err(UpdateError::Verification(format!(
+            "内核包是 {libc} 版，这个面板要 {} 版",
+            kernel_libc()
+        )));
     }
     if source.control_protocol != super::CONTROL_PROTOCOL_VERSION {
         return Err(UpdateError::Verification(format!(
@@ -347,9 +362,6 @@ impl UpdateManager {
         config: &Value,
         host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
-        if cfg!(target_env = "musl") {
-            return Err(UpdateError::MuslUnsupported);
-        }
         let _guard = self.apply_lock.lock().await;
         let latest = self.fetch_latest().await?;
         self.update_locked(&latest, expected, config, host).await
@@ -371,8 +383,9 @@ impl UpdateManager {
         if self.active_version().await?.as_ref() == Some(&key) {
             return self.installed_version(&key, true).await;
         }
-        self.install_resolved(latest, config).await?;
-        self.activate_locked(&key, config, host).await
+        let plan = self.install_resolved(latest, config).await?;
+        self.activate_locked(&key, config, host, plan == StoragePlan::KeepPrevious)
+            .await
     }
 
     /// 回到上一个内核。切换成功后原来的内核成了上一个，再回退一次就换回来。
@@ -389,7 +402,10 @@ impl UpdateManager {
             .previous_key(active.as_ref())
             .await
             .ok_or_else(|| UpdateError::Conflict("本机没有上一个内核".to_owned()))?;
-        self.activate_locked(&previous, config, host).await
+        // 回退时两个版本都已经在本地：换下来的那个照常留作上一个，再回退一次就换回来
+        // On a rollback both versions are already local: the one switched out stays as the previous, so rolling back again
+        // switches back
+        self.activate_locked(&previous, config, host, true).await
     }
 
     /// 正在运行旧轨道的内核（Action 构建或更早的 Release）、而且它们从没被换下过时返回它。
@@ -673,10 +689,17 @@ impl UpdateManager {
         &self,
         version: &RemoteVersion,
         config: &Value,
-    ) -> Result<(), UpdateError> {
+    ) -> Result<StoragePlan, UpdateError> {
         let key = VersionKey::remote(version)?;
+        let active = self.active_version().await?;
         if self.version_exists(&key)? {
-            return Ok(());
+            // 已经在本地：这次只多写替换前的那一份 / Already local: this time only the candidate is written
+            let size = stored_binary_size(&self.versions_path, &key)?;
+            let plan = self
+                .storage_plan(active.as_ref(), &key, size, false)
+                .await?;
+            self.make_room(plan, active.as_ref(), &key).await?;
+            return Ok(plan);
         }
         // 发布清单已经说了这一版认哪些配置字段：当前配置用不了就不必下载。
         // The release manifest already says which config fields this version knows: when
@@ -708,6 +731,12 @@ impl UpdateManager {
         ensure_config_supported(config, &extracted.config_capabilities)
             .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
         validate_elf(&extracted.binary)?;
+        // 下载、校验都过了、还没写盘：这时才知道新内核多大，先看放不放得下
+        // Downloaded and verified but not written yet: only now is the new kernel's size known, so check the room first
+        let plan = self
+            .storage_plan(active.as_ref(), &key, extracted.binary.len() as u64, true)
+            .await?;
+        self.make_room(plan, active.as_ref(), &key).await?;
         let manifest = VersionManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
             source: Some(VersionSource::Fork),
@@ -738,17 +767,154 @@ impl UpdateManager {
         })
         .await
         .map_err(|error| UpdateError::Install(error.to_string()))??;
-        Ok(())
+        Ok(plan)
     }
 
+    /// musl 版存新内核前看空间，决定这次留不留上一个，见 [`space`]；别的构建总是留下上一个。
+    /// `target` 是要换上的版本，`binary_size` 是它的大小，`store_new` 说它这次还要不要存进版本目录。
+    /// A musl build checks the room before storing a new kernel and decides whether this update keeps the previous
+    /// one, see [`space`]; other builds always keep it. `target` is the version being switched to, `binary_size` its
+    /// size, and `store_new` says whether it still has to go into the version store this time.
+    async fn storage_plan(
+        &self,
+        active: Option<&VersionKey>,
+        target: &VersionKey,
+        binary_size: u64,
+        store_new: bool,
+    ) -> Result<StoragePlan, UpdateError> {
+        if !self.space_aware {
+            return Ok(StoragePlan::KeepPrevious);
+        }
+        let versions_path = Arc::clone(&self.versions_path);
+        let binary_path = Arc::clone(&self.binary_path);
+        let free_space = self.free_space;
+        let active = active.cloned();
+        let target = target.clone();
+        tokio::task::spawn_blocking(move || {
+            let binary_directory = binary_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .ok_or_else(|| UpdateError::Install("目标二进制缺少父目录".to_owned()))?;
+            let available = free_space(&versions_path)?;
+            let keep: Vec<&VersionKey> = active.iter().chain([&target]).collect();
+            let reclaimable = reclaimable_bytes(&versions_path, &keep)?;
+            // 留下上一个时，还没进本地库存的当前内核要先存一份（adopt_active_version）
+            // Keeping the previous kernel first stores the current one when it is not local yet (adopt_active_version)
+            let active_stored = match active.as_ref() {
+                Some(key) => regular_file_exists(
+                    &locate_version_directory(&versions_path, key)?.join("kixdns"),
+                )?,
+                None => true,
+            };
+            let keep_extra = if active_stored {
+                0
+            } else {
+                fs::symlink_metadata(binary_path.as_path()).map_or(0, |metadata| metadata.len())
+            };
+            let stored = if store_new { binary_size } else { 0 };
+            if space::same_filesystem(&versions_path, binary_directory)? {
+                return Ok(space::plan(Room {
+                    available,
+                    reclaimable,
+                    keep_extra,
+                    incoming: stored.saturating_add(binary_size),
+                }));
+            }
+            // 程序在另一个文件系统上：替换前写的那一份单独看 / The binary on another filesystem: the candidate is checked there
+            let binary_room = free_space(binary_directory)?;
+            let candidate = binary_size.saturating_add(space::margin(binary_room));
+            if binary_room < candidate {
+                return Ok(StoragePlan::Refuse {
+                    needed: candidate,
+                    available: binary_room,
+                });
+            }
+            Ok(space::plan(Room {
+                available,
+                reclaimable,
+                keep_extra,
+                incoming: stored,
+            }))
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
+    }
+
+    /// 按这次的存法腾地方：放不下就不更新；只存当前时先删掉活动版本和要换上的版本以外的旧版本、忘掉上一个
+    /// Makes room for this update's plan: no room refuses the update; keeping the current kernel only first removes the
+    /// versions other than the active one and the one being switched to, and forgets the previous kernel
+    async fn make_room(
+        &self,
+        plan: StoragePlan,
+        active: Option<&VersionKey>,
+        target: &VersionKey,
+    ) -> Result<(), UpdateError> {
+        match plan {
+            StoragePlan::KeepPrevious => Ok(()),
+            StoragePlan::Refuse { needed, available } => Err(UpdateError::Conflict(format!(
+                "这台设备空间不够，没有更新内核：要大约 {} 可用空间（新内核要写两份，再给设备留出余量），\
+                 只有 {}（已经算上可以删掉的旧版本）。腾出空间后再试",
+                space::format_mib(needed),
+                space::format_mib(available),
+            ))),
+            StoragePlan::CurrentOnly => {
+                let versions_path = Arc::clone(&self.versions_path);
+                let active = active.cloned();
+                let target = target.clone();
+                tokio::task::spawn_blocking(move || {
+                    let keep: Vec<&VersionKey> = active.iter().chain([&target]).collect();
+                    remove_other_versions(&versions_path, &keep)
+                })
+                .await
+                .map_err(|error| UpdateError::Install(error.to_string()))??;
+                self.forget_previous().await;
+                Ok(())
+            }
+        }
+    }
+
+    /// 忘掉上一个内核：它的目录已经删了，留着记录只会让回退指向不存在的版本
+    /// Forgets the previous kernel: its directory is gone, and keeping the record would only point a rollback at a
+    /// version that is not there
+    async fn forget_previous(&self) {
+        if let Err(error) = self.database.delete_setting(PREVIOUS_VERSION_KEY).await {
+            tracing::warn!(%error, "没能清掉上一个内核的记录");
+        }
+    }
+
+    /// 记下这次更新是不是因为空间不够没留上一个，页面据此说明 / Records whether this update kept no previous kernel for lack of
+    /// room, so the page can say so
+    async fn note_previous_dropped(&self, dropped: bool) {
+        let result = if dropped {
+            self.database
+                .set_setting(
+                    PREVIOUS_DROPPED_KEY,
+                    unix_timestamp().to_string(),
+                    unix_timestamp(),
+                )
+                .await
+        } else {
+            self.database.delete_setting(PREVIOUS_DROPPED_KEY).await
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, "没能记下这次更新有没有留下上一个内核");
+        }
+    }
+
+    /// 换上 `key` 这一版。`keep_previous` 为假（musl 版空间不够，见 `space`）时，换下来的内核不进本地库存，也不记成
+    /// 上一个；切换失败照样用切换前读进内存的那份换回去
+    /// Switches to the version `key`. With `keep_previous` false (a musl build short of room, see `space`) the kernel
+    /// switched out is neither stored locally nor recorded as the previous one; a failed switch still goes back using the
+    /// copy read into memory before the switch
     pub(super) async fn activate_locked(
         &self,
         key: &VersionKey,
         config: &Value,
         host: &dyn ServiceHost,
+        keep_previous: bool,
     ) -> Result<InstalledVersion, UpdateError> {
         let replaced = self.active_version().await?;
-        if let Some(active) = replaced.as_ref() {
+        if let Some(active) = replaced.as_ref().filter(|_| keep_previous) {
             self.adopt_active_version(active).await?;
             if let Err(error) = self.capture_active_capabilities(active, host).await {
                 tracing::warn!(%error, "无法记录当前 KixDNS 的配置能力");
@@ -796,13 +962,23 @@ impl UpdateManager {
                 "记录活动版本失败，已恢复原版本：{error}"
             )));
         }
-        let previous = match replaced.filter(|replaced| replaced != key) {
-            Some(replaced) => {
-                self.remember_replaced(&replaced, key).await;
-                Some(replaced)
+        let replaced = replaced.filter(|replaced| replaced != key);
+        let previous = if keep_previous {
+            match replaced {
+                Some(replaced) => {
+                    self.remember_replaced(&replaced, key).await;
+                    Some(replaced)
+                }
+                None => self.previous_key(Some(key)).await,
             }
-            None => self.previous_key(Some(key)).await,
+        } else {
+            if let Some(replaced) = replaced.as_ref() {
+                self.note_legacy_replaced(replaced, key).await;
+            }
+            self.forget_previous().await;
+            None
         };
+        self.note_previous_dropped(!keep_previous).await;
         let versions_path = Arc::clone(&self.versions_path);
         let active = key.clone();
         match tokio::task::spawn_blocking(move || {
@@ -823,14 +999,21 @@ impl UpdateManager {
     /// when an old-track kernel gave way to a fork release. A failed write only affects the
     /// rollback target; the switch itself is done and stays.
     async fn remember_replaced(&self, replaced: &VersionKey, active: &VersionKey) {
-        let now = unix_timestamp();
         if let Err(error) = self
             .database
-            .set_setting(PREVIOUS_VERSION_KEY, replaced.encoded(), now)
+            .set_setting(PREVIOUS_VERSION_KEY, replaced.encoded(), unix_timestamp())
             .await
         {
             tracing::warn!(%error, "内核已切换，但没能记下上一个内核");
         }
+        self.note_legacy_replaced(replaced, active).await;
+    }
+
+    /// 旧轨道的内核被 fork 发布版换下时记一笔：之后用户自己回退到旧内核的，启动时不再替换。不留上一个时也要记
+    /// Notes when an old-track kernel gave way to a fork release, so one the user goes back to is not replaced again at
+    /// start-up. Noted even when no previous kernel is kept
+    async fn note_legacy_replaced(&self, replaced: &VersionKey, active: &VersionKey) {
+        let now = unix_timestamp();
         if replaced.source != VersionSource::Fork
             && active.source == VersionSource::Fork
             && let Err(error) = self

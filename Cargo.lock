@@ -1010,6 +1010,7 @@ dependencies = [
  "regex-syntax",
  "reqwest",
  "rusqlite",
+ "rustix",
  "secrecy",
  "semver",
  "serde",

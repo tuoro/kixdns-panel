@@ -44,6 +44,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
 zstd = "0.14"
 
+# 存内核前看剩余空间（statvfs），见 src/updates/space.rs / The room left before storing a kernel (statvfs), see src/updates/space.rs
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs", "std"] }
+
 [dev-dependencies]
 maxminddb-writer = "0.1"
 # 停住时钟的测试（start_paused）要它 / Tests on a paused clock (start_paused) need it

@@ -182,7 +182,8 @@ OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先把它换到�
 - 服务状态优先用 `ubus call service list` 问 procd：实例在但没 running 判为 failed（触发「起不来就退回」），服务不在列表才判为 inactive；ubus 不可用才退回 pid 文件 + `/proc/<pid>`
 - 日志页的级别取每行时间戳之后的第一个词（INFO/WARN/ERROR），不再整行搜关键字，避免 `terror.example.com`、`no error` 误判
 - 启停按钮对应 init 脚本的 `enable start` / `stop disable`，与 systemd 的持久化语义一致
-- 在线更新（面板自更新、内核在线更新）在 musl 上暂不支持：更新器目前是 glibc 包，面板会给出明确提示，等 musl 版安装包发布后再打开
+- 内核在线更新取 `-musl` 内核包；存之前先看闪存还剩多少：够就照常留下上一个，只够放新内核就不留上一个（系统页会说明），放不下就不更新。新内核起不来时照样自动换回原来的，见 `deploy/openwrt/README.md`
+- 面板自更新在 musl 上暂不支持：更新器和面板安装包都还是给 systemd、glibc 的，面板会给出明确提示
 
 ## 首次访问
 
