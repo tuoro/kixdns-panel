@@ -16,6 +16,13 @@ PACKAGE=${1:?用法：$0 <安装包 tar.gz> <镜像>}
 IMAGE=${2:?用法：$0 <安装包 tar.gz> <镜像>}
 NAME=kixdns-openwrt-acceptance
 PORT=5738
+# 容器自己的 docker 网络，地址事先定好：OpenWrt 里把 eth0 配成静态的 WAN，交给 netifd 管
+# The container's own docker network with addresses fixed in advance: inside OpenWrt eth0 is a static WAN that netifd
+# manages
+NETWORK=kixdns-openwrt-acceptance
+SUBNET=172.30.53
+WAN_ADDRESS=${SUBNET}.2
+HOST_ADDRESS=${SUBNET}.1
 WORK="$(mktemp -d)"
 SERVER_PID=""
 
@@ -35,6 +42,7 @@ cleanup() {
   fi
   [[ -z ${SERVER_PID} ]] || kill "${SERVER_PID}" 2>/dev/null || true
   docker rm -f "${NAME}" >/dev/null 2>&1 || true
+  docker network rm "${NETWORK}" >/dev/null 2>&1 || true
   rm -rf -- "${WORK}"
 }
 trap cleanup EXIT
@@ -52,8 +60,6 @@ wait_until() {
   done
   fail "${seconds} 秒内没有等到：${what}"
 }
-
-container_ip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${NAME}"; }
 
 # 面板接口：带着会话 cookie 和 CSRF 头 / The panel API, with the session cookie and the CSRF header
 api() {
@@ -77,12 +83,13 @@ main() {
   package_name="$(basename "${PACKAGE}" .tar.gz)"
 
   log "启动 OpenWrt 容器 ${IMAGE}"
-  # 默认的网络配置会把容器的 eth0 收进 br-lan、换成 192.168.1.1，容器就断网了，宿主机也连不上它。换成一个空网桥当 LAN
-  # （照样有 192.168.1.1，dnsmasq 照样在上面发 DHCP），eth0 留给 docker
+  # 默认的网络配置会把容器的 eth0 收进 br-lan、换成 192.168.1.1，容器就断网了，宿主机也连不上它（preinit 收尾时也会清掉
+  # eth0 上的地址）。照真路由器的样子来：LAN 是一个空网桥（照样有 192.168.1.1，dnsmasq 照样在上面发 DHCP），eth0 是静态的
+  # WAN，地址、网关、DNS 都交给 netifd
   # The default network config takes the container's eth0 into br-lan as 192.168.1.1, cutting the container off and the
-  # host from it. The LAN becomes an empty bridge instead (still 192.168.1.1, still served by dnsmasq), and eth0 stays
-  # docker's
-  cat >"${WORK}/network" <<'UCI'
+  # host from it (the end of preinit flushes eth0's addresses too). It is set up as on a real router: the LAN is an empty
+  # bridge (still 192.168.1.1, still served by dnsmasq) and eth0 a static WAN whose address, gateway and DNS netifd manages
+  cat >"${WORK}/network" <<UCI
 config interface 'loopback'
 	option device 'lo'
 	option proto 'static'
@@ -101,6 +108,13 @@ config interface 'lan'
 	option proto 'static'
 	option ipaddr '192.168.1.1/24'
 	option ip6assign '60'
+
+config interface 'wan'
+	option device 'eth0'
+	option proto 'static'
+	option ipaddr '${WAN_ADDRESS}/24'
+	option gateway '${HOST_ADDRESS}'
+	list dns '1.1.1.1'
 UCI
   # 防火墙不归这里验：全部放行，宿主机才连得上面板。启动以后再关不行，LAN 起来时它会重新加载
   # The firewall is not under test here: everything is accepted, so the host reaches the panel. Stopping it after boot is
@@ -111,25 +125,17 @@ config defaults
 	option output 'ACCEPT'
 	option forward 'ACCEPT'
 UCI
-  docker create --name "${NAME}" --privileged "${IMAGE}" /sbin/init >/dev/null
+  docker network create --subnet "${SUBNET}.0/24" --gateway "${HOST_ADDRESS}" "${NETWORK}" >/dev/null
+  docker create --name "${NAME}" --network "${NETWORK}" --ip "${WAN_ADDRESS}" --privileged "${IMAGE}" /sbin/init >/dev/null
   docker cp "${WORK}/network" "${NAME}:/etc/config/network"
   docker cp "${WORK}/firewall" "${NAME}:/etc/config/firewall"
   docker start "${NAME}" >/dev/null
   wait_until 60 "procd 和 ubus 起来" owrt 'ubus call system board'
   owrt 'grep DISTRIB_DESCRIPTION /etc/openwrt_release'
-  # preinit 收尾时会清掉 eth0 上的 IPv4 地址（它在那里配过故障恢复用的地址），docker 给的地址也跟着没了：照 docker 的记录补回来
-  # The end of preinit flushes the IPv4 addresses on eth0 (it set a failsafe one there), taking docker's with it: put it
-  # back as docker recorded it
-  local address prefix gateway
-  address="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${NAME}")"
-  prefix="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPPrefixLen}}{{end}}' "${NAME}")"
-  gateway="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "${NAME}")"
-  owrt "ip -4 address show dev eth0 | grep -q '${address}/' || ip address add '${address}/${prefix}' dev eth0
-    ip link set eth0 up; ip route show default | grep -q . || ip route add default via '${gateway}' dev eth0"
-  wait_until 20 "宿主机连得上容器" ping -c 1 -W 1 "${address}"
+  wait_until 30 "WAN 起来、宿主机连得上容器" ping -c 1 -W 1 "${WAN_ADDRESS}"
   # 让面板听所有地址，宿主机才连得上 / The panel listens on every address, so the host can reach it
   owrt "touch /etc/config/kixdns-panel; uci set kixdns-panel.main=panel; uci set kixdns-panel.main.bind='0.0.0.0:${PORT}'; uci commit kixdns-panel"
-  PANEL="$(container_ip):${PORT}"
+  PANEL="${WAN_ADDRESS}:${PORT}"
   # dnsmasq 认得的一个主机名，用来看 .lan 有没有交给它 / A host name dnsmasq knows, to see whether .lan reaches it
   owrt 'echo "10.9.9.9 probehost" >> /etc/hosts; /etc/init.d/dnsmasq restart'
   wait_until 20 "dnsmasq 在 53 上" dnsmasq_on 53
@@ -182,8 +188,7 @@ UCI
     cd /root/package && tar -czf /root/release.tar.gz ${package_name}"
   mkdir -p "${WORK}/release/download/v${version}"
   docker cp "${NAME}:/root/release.tar.gz" "${WORK}/release/download/v${version}/${package_name}.tar.gz"
-  local gateway digest size
-  gateway="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "${NAME}")"
+  local gateway=${HOST_ADDRESS} digest size
   digest="$(sha256sum "${WORK}/release/download/v${version}/${package_name}.tar.gz" | cut -d' ' -f1)"
   size="$(stat -c %s "${WORK}/release/download/v${version}/${package_name}.tar.gz")"
   cat >"${WORK}/release/release.json" <<JSON
