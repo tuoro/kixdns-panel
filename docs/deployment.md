@@ -166,13 +166,11 @@ cd web && npm ci && npm run build
 也可以用发行版自带的 musl/gcc 工具链（x86_64 上是 `apt install musl-tools`，aarch64 需对应的
 musl 交叉编译器并设 `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` 与 `CC_aarch64_unknown_linux_musl`）。
 
-`bin/kixdns` 是内核，来自 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) 的构建，不在本仓库；
-目前 Release 只发布 glibc 内核，musl 内核尚未发布，在那之前 OpenWrt 上要么自己用同一套 musl 工具链
-编一份内核，要么先只跑面板。
+`bin/kixdns` 是内核，取 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) Release 里的 musl 版（从 `2026.11.22.2` 起发布）。
 
-然后按 `deploy/openwrt/README.md` 的「目录布局与来源」把二进制、前端、`geo/`、init 脚本和
-`pipeline.json` 打进 payload，再用 `sh deploy/openwrt/install.sh` 装面板（`START_DNS=1` 装完顺手启动内核）。
-OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先把它换到别的端口。
+安装包用 `scripts/package-openwrt.sh` 拼（CI 每次也打一份，在 Actions 的运行页面下载；面板在 OpenWrt 上能自更新以前，还不随 Release 发布），
+步骤见 `deploy/openwrt/README.md` 的「打包」。在路由器上解开后执行 `sh install.sh`（`START_DNS=1` 装完顺手启动内核）。
+OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先把它换到别的端口。升级时，面板在线装上的内核只要不比包里的旧就留着，不会被降级。
 
 与 systemd 版的差异：
 

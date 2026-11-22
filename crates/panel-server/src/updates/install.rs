@@ -261,7 +261,13 @@ impl UpdateManager {
         let Some((active, replaced)) = self.locate_active().await? else {
             return Ok(());
         };
-        self.adopt_active_version(&active).await?;
+        if self.room_to_store_active(&active).await? {
+            self.adopt_active_version(&active).await?;
+        } else {
+            tracing::warn!(
+                "这台设备空间不够，启动时没把当前内核存进本地库存：系统页会显示为未知版本，在线更新照常可用"
+            );
+        }
         // 切换换好了程序、还没记下指针就断了：把那次切换做完，指针原来指的那个就是被换下的上一个
         // A switch that replaced the binary and was cut short before recording the pointer: finish it, so the kernel
         // the pointer named is the previous one it replaced
@@ -871,6 +877,26 @@ impl UpdateManager {
                 Ok(())
             }
         }
+    }
+
+    /// 启动时把当前内核存进本地库存（多占一份内核）放不放得下：只有 musl 版看空间，见 [`space`]；已经存过的不用再存
+    /// Whether storing the current kernel locally at start-up (one more copy of it) fits: only musl builds look at the
+    /// room, see [`space`]; one already stored needs no second copy
+    async fn room_to_store_active(&self, active: &VersionKey) -> Result<bool, UpdateError> {
+        if !self.space_aware || self.version_exists(active)? {
+            return Ok(true);
+        }
+        let versions_path = Arc::clone(&self.versions_path);
+        let binary_path = Arc::clone(&self.binary_path);
+        let free_space = self.free_space;
+        tokio::task::spawn_blocking(move || {
+            let size =
+                fs::symlink_metadata(binary_path.as_path()).map_or(0, |metadata| metadata.len());
+            let available = free_space(&versions_path)?;
+            Ok(available >= size.saturating_add(space::margin(available)))
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
     /// 忘掉上一个内核：它的目录已经删了，留着记录只会让回退指向不存在的版本

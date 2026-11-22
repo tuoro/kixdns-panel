@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # 从内核仓库的 GitHub Release 取一个版本给完整安装包：发布清单、GitHub 记下的资源、包内
 # SHA256SUMS 和来源说明一一对上之后，写出二进制和完整包要带的身份文件。
+# 第五个参数是 C 库：默认 gnu；OpenWrt 安装包取 musl，包名和清单的键都多一个 -musl，
+# 来源说明的 libc 要是 musl，程序还得是静态链接。
 # Fetches one version from the kernel repository's GitHub Releases for the full package:
 # once the release manifest, the assets GitHub lists, the package's SHA256SUMS and its
 # source note all agree, writes the binary and the identity files the full package carries.
+# The fifth argument is the C library: gnu by default; the OpenWrt package takes musl, whose
+# package name and manifest key carry an extra -musl, whose source note says libc musl, and
+# whose program must be statically linked.
 set -Eeuo pipefail
 
 fail() {
@@ -16,7 +21,7 @@ require_command() {
 }
 
 usage() {
-  printf '用法：%s <仓库> <版本|latest> <x86_64|arm64> <输出目录>\n' "$0" >&2
+  printf '用法：%s <仓库> <版本|latest> <x86_64|arm64> <输出目录> [gnu|musl]\n' "$0" >&2
   exit 2
 }
 
@@ -31,13 +36,14 @@ elf_machine() {
 }
 
 main() {
-  [[ $# -eq 4 ]] || usage
+  [[ $# -eq 4 || $# -eq 5 ]] || usage
   local repository=$1
   local version=$2
   local architecture=$3
   local output=$4
+  local libc=${5:-gnu}
   local work release name asset asset_id asset_size asset_digest manifest expected_sha256
-  local expected_size package entries checksum_names source capabilities machine
+  local expected_size package entries checksum_names source capabilities machine key
 
   for command in gh jq sha256sum unzip readelf stat; do
     require_command "${command}"
@@ -49,6 +55,11 @@ main() {
     arm64) machine='AArch64' ;;
     *) fail "架构无效：${architecture}" ;;
   esac
+  case ${libc} in
+    gnu) key=${architecture} ;;
+    musl) key="${architecture}-musl" ;;
+    *) fail "C 库无效：${libc}" ;;
+  esac
   if [[ ${version} == latest ]]; then
     version="$(gh api "repos/${repository}/releases/latest" --jq .tag_name)"
   fi
@@ -57,7 +68,7 @@ main() {
   release="$(gh api "repos/${repository}/releases/tags/${version}")"
   jq -e '.draft == false and .prerelease == false' <<< "${release}" >/dev/null ||
     fail "${version} 不是正式发布"
-  name="kixdns-${version}-linux-${architecture}.zip"
+  name="kixdns-${version}-linux-${key}.zip"
   asset="$(jq -c --arg name "${name}" \
     '[.assets[] | select(.name == $name)] | if length == 1 then .[0] else empty end' <<< "${release}")"
   [[ -n ${asset} ]] || fail "${version} 缺少 ${name}"
@@ -77,7 +88,7 @@ main() {
   package="${work}/download/${name}"
 
   jq -e --arg repository "${repository}" --arg version "${version}" \
-    --arg architecture "${architecture}" --arg name "${name}" '
+    --arg key "${key}" --arg name "${name}" '
       .schema_version == 1
       and .repository == $repository
       and .version == $version
@@ -85,12 +96,12 @@ main() {
       and ((.upstream_commit // "") | test("^([0-9a-f]{40})?$"))
       and .control_protocol == 1
       and (.config_capabilities | type == "array")
-      and .assets[$architecture].name == $name
-      and (.assets[$architecture].sha256 | test("^[0-9a-f]{64}$"))
-      and (.assets[$architecture].size | type == "number" and . > 0)
+      and .assets[$key].name == $name
+      and (.assets[$key].sha256 | test("^[0-9a-f]{64}$"))
+      and (.assets[$key].size | type == "number" and . > 0)
     ' "${manifest}" >/dev/null || fail "发布清单和 ${version} 对不上"
-  expected_sha256="$(jq -r --arg architecture "${architecture}" '.assets[$architecture].sha256' "${manifest}")"
-  expected_size="$(jq -r --arg architecture "${architecture}" '.assets[$architecture].size' "${manifest}")"
+  expected_sha256="$(jq -r --arg key "${key}" '.assets[$key].sha256' "${manifest}")"
+  expected_size="$(jq -r --arg key "${key}" '.assets[$key].size' "${manifest}")"
   [[ $(sha256sum -- "${package}" | awk '{ print $1 }') == "${expected_sha256}" ]] ||
     fail "${name} 的校验值和发布清单对不上"
   [[ $(stat -c %s -- "${package}") == "${expected_size}" && ${asset_size} == "${expected_size}" ]] ||
@@ -113,13 +124,14 @@ main() {
 
   source="${work}/package/KIXDNS_SOURCE.json"
   capabilities="${work}/package/KIXDNS_CAPABILITIES.json"
-  jq -e --slurpfile manifest "${manifest}" --arg architecture "${architecture}" '
+  jq -e --slurpfile manifest "${manifest}" --arg architecture "${architecture}" --arg libc "${libc}" '
       .schema_version == 1
       and .repository == $manifest[0].repository
       and .version == $manifest[0].version
       and .commit == $manifest[0].commit
       and (.upstream_commit // null) == ($manifest[0].upstream_commit // null)
       and .arch == $architecture
+      and (.libc // "gnu") == $libc
       and .control_protocol == $manifest[0].control_protocol
     ' "${source}" >/dev/null || fail "${name} 的来源说明和发布清单对不上"
   jq -e --slurpfile manifest "${manifest}" '
@@ -127,6 +139,10 @@ main() {
     ' "${capabilities}" >/dev/null || fail "${name} 的配置能力和发布清单对不上"
   [[ $(elf_machine "${work}/package/kixdns") == "${machine}" ]] ||
     fail "${name} 里的程序不是 ${architecture} 架构"
+  # 没有 glibc 的系统上没有动态加载器 / Systems without glibc have no dynamic loader
+  if [[ ${libc} == musl ]] && LC_ALL=C readelf -l -- "${work}/package/kixdns" | grep -q 'INTERP'; then
+    fail "${name} 里的程序不是静态链接"
+  fi
 
   install -d -- "${output}"
   install -m 0755 -- "${work}/package/kixdns" "${output}/kixdns"
@@ -137,7 +153,7 @@ main() {
   printf '%s\n' "${name}" > "${output}/KIXDNS_ARTIFACT_NAME"
   printf 'sha256:%s\n' "${expected_sha256}" > "${output}/KIXDNS_ARTIFACT_DIGEST"
   sha256sum -- "${output}/kixdns" | awk '{ print $1 }' > "${output}/KIXDNS_BINARY_SHA256"
-  printf 'KixDNS %s（%s）：%s\n' "${version}" "${architecture}" "$(cat "${output}/KIXDNS_BUILD_COMMIT")"
+  printf 'KixDNS %s（%s）：%s\n' "${version}" "${key}" "$(cat "${output}/KIXDNS_BUILD_COMMIT")"
 }
 
 main "$@"

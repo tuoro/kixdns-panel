@@ -62,6 +62,18 @@ start_service() {
 		KIXDNS_VERSIONS=/etc/kixdns-panel/versions \
 		KIXDNS_BUNDLED_METADATA=/etc/kixdns-panel/bundle \
 		KIXDNS_WEB_ROOT=/usr/share/kixdns-panel/web
+	# install.sh 写下的自带内核身份：只认这三项，值只能是字母和数字
+	# The bundled kernel's identity written by install.sh: only these three keys, values letters and digits only
+	if [ -f /etc/kixdns-panel/panel.env ]; then
+		while IFS='=' read -r key value; do
+			case "$key" in
+				KIXDNS_INSTALLED_SOURCE | KIXDNS_INSTALLED_COMMIT | KIXDNS_INSTALLED_SOURCE_ID) ;;
+				*) continue ;;
+			esac
+			case "$value" in *[!0-9A-Za-z]* | "") continue ;; esac
+			procd_append_param env "$key=$value"
+		done </etc/kixdns-panel/panel.env
+	fi
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1
