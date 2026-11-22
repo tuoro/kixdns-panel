@@ -2196,10 +2196,6 @@ fn map_update_error(error: UpdateError) -> AppError {
         UpdateError::Unsupported => {
             AppError::ServiceUnavailable("update_unsupported", "当前平台不支持自动更新".to_owned())
         }
-        UpdateError::MuslUnsupported => AppError::ServiceUnavailable(
-            "update_unsupported",
-            UpdateError::MuslUnsupported.to_string(),
-        ),
     }
 }
 

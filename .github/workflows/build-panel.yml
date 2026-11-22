@@ -260,7 +260,7 @@ jobs:
 
       - name: Lint deployment scripts
         shell: bash
-        run: shellcheck scripts/*.sh deploy/openwrt/install.sh deploy/openwrt/init/*.init
+        run: shellcheck scripts/*.sh deploy/openwrt/*.sh deploy/openwrt/init/*.init
 
       - name: Verify installation policy
         shell: bash
@@ -607,14 +607,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # OpenWrt 安装包：build-musl 编的面板和服务助手、musl 内核、前端、GeoSite、procd init 脚本，按 scripts/package-openwrt.sh
-  # 拼好（本机也能跑同一个脚本）。现在只做成 CI 产物、不进 Release：面板在 OpenWrt 上还不能自更新，等它能了再发布，
-  # 第一批用户装上的版本才能在面板里升级。PR 上也拼一遍，打包坏了合并前就知道
-  # The OpenWrt package: the panel and service helper build-musl built, the musl kernel, the web console, GeoSite and the
-  # procd init scripts, put together by scripts/package-openwrt.sh (which also runs locally). For now it is only a CI
-  # artifact and not part of a release: the panel cannot update itself on OpenWrt yet, and publishing waits until it can,
-  # so the first users get a version they can upgrade from the panel. Pull requests package it too, so a broken package
-  # shows before the merge
+  # OpenWrt 安装包：build-musl 编的面板和服务助手、musl 内核、前端、GeoSite、procd init 脚本和在线更新器，按
+  # scripts/package-openwrt.sh 拼好（本机也能跑同一个脚本）。发布正式版时和 systemd 的包一起进 Release，OpenWrt 上的面板
+  # 在线更新取的就是它。PR 上也拼一遍，打包坏了合并前就知道
+  # The OpenWrt package: the panel and service helper build-musl built, the musl kernel, the web console, GeoSite, the
+  # procd init scripts and the online updater, put together by scripts/package-openwrt.sh (which also runs locally). A
+  # stable release carries it next to the systemd packages, and the panel's online update on OpenWrt takes it from there.
+  # Pull requests package it too, so a broken package shows before the merge
   package-openwrt:
     name: Package OpenWrt ${{ matrix.arch }}
     needs: [kernel, geosite, build-musl]
@@ -665,6 +664,7 @@ jobs:
       - name: Package for OpenWrt
         env:
           PANEL_BUILD_COMMIT: ${{ github.sha }}
+          PANEL_RELEASE: ${{ github.event_name == 'release' && github.ref_name || '' }}
         run: |
           bash scripts/package-openwrt.sh "${{ matrix.arch }}" dist/musl dist/kernel-musl \
             dist/builtin-geo web/dist dist
@@ -673,6 +673,15 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kixdns-panel-openwrt-${{ matrix.arch }}
+          path: dist/kixdns-panel-openwrt-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Stage OpenWrt release package
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: kixdns-panel-release-openwrt-${{ matrix.arch }}
           path: dist/kixdns-panel-openwrt-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 7
@@ -710,7 +719,8 @@ jobs:
     if: >-
       !cancelled() && github.event_name == 'release'
       && needs.build.result == 'success' && needs.acceptance.result == 'success'
-    needs: [build, acceptance]
+      && needs.package-openwrt.result == 'success'
+    needs: [build, acceptance, package-openwrt]
     permissions:
       actions: read
       contents: write
@@ -728,7 +738,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           shopt -s nullglob
-          packages=(dist/*.zip)
-          [[ ${#packages[@]} -eq 2 ]]
+          # systemd 的两个 zip 和 OpenWrt 的两个 tar.gz / The two systemd zips and the two OpenWrt tar.gz files
+          packages=(dist/*.zip dist/*.tar.gz)
+          [[ ${#packages[@]} -eq 4 ]]
           gh release upload "${GITHUB_REF_NAME}" "${packages[@]}" \
             --repo "$GITHUB_REPOSITORY" --clobber

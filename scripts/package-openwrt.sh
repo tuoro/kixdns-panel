@@ -42,7 +42,7 @@ check_program() {
 main() {
   [[ $# -eq 6 ]] || usage
   local architecture=$1 programs=$2 kernel=$3 geo=$4 web=$5 output=$6
-  local root machine name package file
+  local root machine name package file version
   root="$(cd "$(dirname "$0")/.." && pwd)"
   for command in jq readelf tar find; do
     command -v "${command}" >/dev/null || fail "缺少命令 ${command}"
@@ -77,6 +77,7 @@ main() {
   cp -- "${kernel}/kixdns" "${package}/bin/kixdns"
   cp -- "${programs}/kixdns-panel-server" "${package}/bin/kixdns-panel-server"
   cp -- "${programs}/kixdns-panel-helper" "${package}/libexec/kixdns-panel-helper"
+  cp -- "${root}/deploy/openwrt/panel-update.sh" "${package}/libexec/kixdns-panel-update"
   cp -R -- "${web}/." "${package}/web/"
   for file in geosite.dat geosite.json geoip.dat LICENSE; do
     if [[ -f ${geo}/${file} ]]; then
@@ -87,11 +88,23 @@ main() {
   cp -- "${root}/deploy/config/pipeline.json" "${package}/etc/pipeline.json"
   cp -- "${kernel}"/KIXDNS_* "${package}/bundle/"
   if [[ -n ${PANEL_BUILD_COMMIT:-} ]]; then
+    [[ ${PANEL_BUILD_COMMIT} =~ ^[0-9a-f]{40}$ ]] || fail "PANEL_BUILD_COMMIT 不是 40 位提交号"
     printf '%s\n' "${PANEL_BUILD_COMMIT}" > "${package}/PANEL_BUILD_COMMIT"
+  fi
+  # 正式版的包记下 Release 标签：面板按它判断有没有新版，在线更新器核对下载的包就是那个 Release 的。它必须是面板程序
+  # 的版本，不然面板启动时就不认
+  # A release package records its release tag: the panel decides from it whether a newer one exists, and the online
+  # updater checks that the package it downloaded belongs to that release. It must be the panel program's version, or the
+  # panel refuses it at start-up
+  if [[ -n ${PANEL_RELEASE:-} ]]; then
+    [[ ${PANEL_RELEASE} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "PANEL_RELEASE 不是 vX.Y.Z：${PANEL_RELEASE}"
+    version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "${root}/crates/panel-server/Cargo.toml" | head -n 1)"
+    [[ ${PANEL_RELEASE} == "v${version}" ]] || fail "PANEL_RELEASE ${PANEL_RELEASE} 与面板版本 ${version} 不一致"
+    printf '%s\n' "${PANEL_RELEASE}" > "${package}/PANEL_RELEASE"
   fi
   # 上传成 CI 产物时执行位会丢，装的时候 install.sh 也会再设一遍 / Exec bits are lost as a CI artifact; install.sh sets them again
   chmod 0755 "${package}/install.sh" "${package}/bin/kixdns" "${package}/bin/kixdns-panel-server" \
-    "${package}/libexec/kixdns-panel-helper" "${package}"/init/*.init
+    "${package}/libexec/kixdns-panel-helper" "${package}/libexec/kixdns-panel-update" "${package}"/init/*.init
 
   # 校验表先写在包外面，免得把自己也算进去 / The checksum list is written outside the package first so it does not list itself
   (

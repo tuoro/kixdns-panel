@@ -235,10 +235,16 @@ pub(super) fn to_panel_update_notice(
     })
 }
 
+/// 这台设备在 Release 里该取的面板安装包：musl 构建只出现在 `OpenWrt` 安装包里，在线更新也取 `OpenWrt` 的包
+/// （deploy/openwrt/panel-update.sh 取的是同一个名字）
+/// The panel package this device takes from a release: musl builds ship only in the `OpenWrt` package, so the online
+/// update takes the `OpenWrt` package too (deploy/openwrt/panel-update.sh takes the same name)
 pub(super) fn panel_release_asset_name() -> &'static str {
-    match std::env::consts::ARCH {
-        "aarch64" => "kixdns-panel-linux-arm64.zip",
-        _ => "kixdns-panel-linux-x86_64.zip",
+    match (std::env::consts::ARCH, cfg!(target_env = "musl")) {
+        ("aarch64", false) => "kixdns-panel-linux-arm64.zip",
+        ("aarch64", true) => "kixdns-panel-openwrt-arm64.tar.gz",
+        (_, false) => "kixdns-panel-linux-x86_64.zip",
+        (_, true) => "kixdns-panel-openwrt-x86_64.tar.gz",
     }
 }
 
@@ -329,9 +335,6 @@ impl UpdateManager {
     }
 
     pub async fn panel_update_notice(&self) -> Result<PanelUpdateNotice, UpdateError> {
-        if cfg!(target_env = "musl") {
-            return Err(UpdateError::MuslUnsupported);
-        }
         if let Some(cached) = self.panel_cache.read().await.as_ref()
             && cached.loaded_at.elapsed() < PANEL_CACHE_TTL
         {

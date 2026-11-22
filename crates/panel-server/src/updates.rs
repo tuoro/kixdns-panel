@@ -593,15 +593,6 @@ pub enum UpdateError {
     Conflict(String),
     #[error("当前平台不支持自动更新")]
     Unsupported,
-    /// musl 构建（OpenWrt 等）的面板自更新：更新器和面板安装包都还是给 systemd、glibc 的，先禁用并给出明确提示。
-    /// 内核在线更新已经按 libc 取包，不受这一条影响
-    /// Panel self-update on a musl build (`OpenWrt` etc.): the updater and the panel package are still for systemd and
-    /// glibc, so it is disabled with a clear message. Kernel online updates take the package by libc and are not
-    /// affected
-    #[error(
-        "当前是 musl 构建，面板暂不支持在线自更新（OpenWrt 安装包尚未发布）；内核可以照常在线更新"
-    )]
-    MuslUnsupported,
 }
 
 impl UpdateError {

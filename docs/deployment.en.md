@@ -7,7 +7,7 @@
 - Linux x86_64/ARM64 with systemd
 - GLIBC 2.35 or later: Ubuntu 22.04, Debian 12 or newer distributions
 - Requires `systemctl`, `sha256sum`, `getent`. One-line install and the download examples also need `curl`, `jq`, `unzip`
-- OpenWrt (procd, no systemd): no GLIBC needed, but you build the musl binaries yourself; see [OpenWrt / procd](#openwrt--procd-no-systemd). The official releases carry no such package
+- OpenWrt (procd, no systemd): no GLIBC needed; the official releases carry statically linked musl OpenWrt packages, `kixdns-panel-openwrt-<arch>.tar.gz`; see [OpenWrt / procd](#openwrt--procd-no-systemd)
 
 The full package is published on the panel's [GitHub Releases](https://github.com/tuoro/kixdns-panel/releases). It contains KixDNS Enhanced, Panel Server, the frontend static assets, the service units and the install scripts.
 
@@ -137,7 +137,7 @@ KixDNS listens on `0.0.0.0:53` by default. Before changing the host, the install
 
 ### OpenWrt / procd (no systemd)
 
-OpenWrt runs services under procd: there is no `systemctl` and no `journalctl`, and the distribution is musl rather than GLIBC, so the glibc packages in the official releases cannot run there. `deploy/openwrt/` in this repository holds what is needed: three init scripts, the panel's start-up settings, a sample `pipeline.json` and an install script.
+OpenWrt runs services under procd: there is no `systemctl` and no `journalctl`, and the distribution is musl rather than GLIBC, so it has packages of its own: `kixdns-panel-openwrt-x86_64.tar.gz` and `kixdns-panel-openwrt-arm64.tar.gz` in the official releases, with the panel, the service helper and the kernel all statically linked against musl. Their contents come from `deploy/openwrt/` in this repository: four init scripts, the panel's start-up settings, a sample `pipeline.json`, an install script and the online updater.
 
 The panel gained a replaceable service backend for this. The status and log switches are opt-in; the init-script switch has a default path `/etc/init.d/kixdns` and is used only when there is no `systemctl`. Without these parameters the behaviour is the unchanged systemd one:
 
@@ -149,7 +149,13 @@ The panel gained a replaceable service backend for this. The status and log swit
 
 The helper looks for `systemctl` first and uses it when found; only when it is missing does it fall back to the init script, and it errors only when it has neither. One binary therefore serves both Debian/Ubuntu and OpenWrt.
 
-Build from source (aarch64 router shown; swap the target for x86_64). On musl the panel and helper link
+Download and unpack it on the router and run `sh install.sh` (`START_DNS=1` also starts the kernel); the commands are in
+"安装" (installation) in `deploy/openwrt/README.md`. OpenWrt's default dnsmasq holds port 53, so move it to another port
+before enabling the kernel. From then on both the panel and the kernel update online from the System page. Running a
+newer `install.sh` upgrades too: an upgrade is all or nothing and puts everything back when it fails, and a kernel the
+panel installed online stays as long as it is not older than the bundled one, so it is never downgraded.
+
+To build it yourself (aarch64 router shown; swap the target for x86_64): On musl the panel and helper link
 C code (bundled SQLite, zstd, ring), so besides `rustup target add` you need a musl C cross toolchain;
 the simplest is cargo-zigbuild:
 
@@ -168,10 +174,7 @@ musl cross compiler with `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` and `C
 (published from `2026.11.22.2`).
 
 The package is put together by `scripts/package-openwrt.sh` (CI builds one every run, downloadable from the Actions run
-page; until the panel can update itself on OpenWrt it is not part of a release); see "打包" (packaging) in
-`deploy/openwrt/README.md`. Unpack it on the router and run `sh install.sh` (`START_DNS=1` also starts the kernel).
-OpenWrt's default dnsmasq holds port 53, so move it to another port before enabling the kernel. An upgrade keeps a kernel
-the panel installed online as long as it is not older than the bundled one, so it is never downgraded.
+page); see "打包" (packaging) in `deploy/openwrt/README.md`.
 
 Differences from the systemd version:
 
@@ -182,7 +185,7 @@ Differences from the systemd version:
 - the logs page takes the level from the first word after each line's timestamp (INFO/WARN/ERROR) instead of scanning the whole line, so `terror.example.com` and `no error` are not misread
 - the start/stop buttons drive the init script's `enable start` / `stop disable`, matching systemd's persistence
 - kernel online updates take the `-musl` kernel package and check the room on the flash before storing it: with room the previous kernel is kept as usual, with room for the new one only no previous kernel is kept (the System page says so), and with no room there is no update. A new kernel that does not start is still switched back automatically; see `deploy/openwrt/README.md`
-- panel self-update is not supported on musl yet: the updater and the panel package are still for systemd and glibc, and the panel says so clearly
+- the panel's online update takes this architecture's OpenWrt package from the release: the helper starts the one-shot procd service `kixdns-panel-update` to run the updater, which checks the package against the SHA-256 GitHub publishes and the package's `SHA256SUMS`, then replaces only the panel with `install.sh --panel-only-update`: the kernel keeps running, DNS stays up, and a failed install is put back whole. Downloads and unpacking happen in `/tmp` (memory); read the log with `logread -e kixdns-panel-update`; see "面板在线更新" (panel online update) in `deploy/openwrt/README.md`
 
 ## First access
 
