@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, CircleAlert, Clock, Download, FileSearch, Search, SlidersHorizontal, X } from '@lucide/vue'
+import { Check, CircleAlert, Clock, Download, FileSearch, Search, X } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ApiError, apiRequest, isPanelDown } from '../../api/client'
@@ -12,14 +12,13 @@ import { knownRegions, lookupRegions } from '../../ip-region'
 import { answerOf, clockText, dayText, destinationOptions, detailFacts, domainParts, glueText, isGap, itemOf, latencyText, literalParts, regionAddresses, requestLine, routeOf, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
 import type { KernelPipeline } from '../../request-destinations'
 import { errorMessage } from '../../utils'
-// 设置抽屉沿用配置页的抽屉样式（正式落地时挪进组件库） / The settings drawer uses the config page's drawer styles (moved into the kit when this lands)
+// 手机的整屏详情沿用配置页的抽屉样式（正式落地时挪进组件库） / The phone's full-screen detail uses the config page's drawer styles (moved into the kit when this lands)
 import '../../styles/config-v2.css'
 import UiDotText from '../ui/UiDotText.vue'
 import UiEmpty from '../ui/UiEmpty.vue'
 import UiNewItemsBanner from '../ui/UiNewItemsBanner.vue'
 import UiSelect from '../ui/UiSelect.vue'
 import UiTabs from '../ui/UiTabs.vue'
-import QueryLogSettingsForm from './QueryLogSettingsForm.vue'
 import { usePhone } from '../../config-v2/phone'
 
 // 查询日志：每次查询一行，按时间倒序，一条也不折叠。点开一行看处理过程，旁边能直接去建规则、去诊断再测、只看这个客户端、
@@ -699,74 +698,6 @@ function download(): void {
   URL.revokeObjectURL(url)
 }
 
-// ---------- 设置 / settings ----------
-// 表单本身（框、检查、读写）在 QueryLogSettingsForm，「基础设置」里的「查询日志」一组也用它；这里只管抽屉的开关和保存后做什么
-// The form itself (fields, checks, reads and writes) is QueryLogSettingsForm, which the 查询日志 group in 基础设置 uses too;
-// this only opens and closes the drawer and decides what follows a save
-const drawer = ref<HTMLDialogElement | null>(null)
-const form = ref<InstanceType<typeof QueryLogSettingsForm> | null>(null)
-const settingsBusy = computed(() => form.value?.busy ?? false)
-async function openSettings(fromUrl = false): Promise<void> {
-  let s: QueryLogSettings
-  try {
-    s = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings')
-  } catch (error) {
-    toast.error(`没能读到查询日志设置：${errorMessage(error)}`)
-    return
-  }
-  settings.value = s
-  form.value?.reset(s)
-  await nextTick()
-  drawer.value?.showModal()
-  // 手机上同详情一样记一步历史：返回手势先关设置；从地址栏打开的（前进）那一步已经在了 / On phones, as for the detail, a history step:
-  // the back gesture closes the settings first; opened from the address bar (forward), that step is already there
-  if (phone.value && fromUrl) pushedDrawer = stepBehind('settings')
-  else if (phone.value) {
-    pushedDrawer = true
-    void router.push({ query: { ...route.query, settings: '1' } })
-  }
-}
-let pushedDrawer = false
-function onDrawerClose(): void {
-  if (!pushedDrawer) return
-  pushedDrawer = false
-  router.back()
-}
-// 正在保存时 Esc 不关：关了就看不到保存失败的提示 / Esc does not close while saving: closed, a failed save would go unseen
-function onDrawerCancel(event: Event): void { if (settingsBusy.value) event.preventDefault() }
-watch(() => route.query.settings, (value) => {
-  // 前进键回到设置那一步：设置跟着开 / Forward onto the settings step: the settings open with it
-  if (value !== undefined) {
-    if (phone.value && loaded.value && !drawer.value?.open) void openSettings(true)
-    return
-  }
-  if (!drawer.value?.open) return
-  pushedDrawer = false
-  drawer.value.close()
-})
-async function saveSettings(): Promise<void> {
-  const outcome = await form.value?.save()
-  if (!outcome) return
-  // 什么都没改：关上就好，不写、不重读，开着的详情也不动 / Nothing changed: just close, with no write and no reload, and an open detail stays
-  if (outcome.status === 'unchanged') { drawer.value?.close(); return }
-  if (outcome.status === 'failed') {
-    // 保存途中设置已经关了（手机的返回手势）：失败用提示条说，不留在看不见的框里 / The settings closed while saving (a phone's back
-    // gesture): the failure is said in a toast, not left in a drawer nobody sees
-    if (!drawer.value?.open) toast.error(`查询日志设置没保存：${outcome.text}`)
-    return
-  }
-  if (outcome.status !== 'saved') return
-  drawer.value?.close()
-  toast.success('查询日志设置已保存')
-  // 保存时间变短、上限变小会删掉旧的：重读一遍 / A shorter retention or a smaller cap deletes old records: read again
-  const { before, next } = outcome
-  if (before && (next.retention_hours < before.retention_hours || next.max_bytes < before.max_bytes)) void load()
-}
-function onCleared(): void {
-  drawer.value?.close()
-  toast.success('查询日志已清空')
-  void load()
-}
 // 只有按下和松开都在遮罩上才关：从框里拖选文字拖到外面不算点了遮罩 / Close only when the press and the release are both on the backdrop:
 // dragging a text selection out of a field is not a click on the backdrop
 let pressedOn: EventTarget | null = null
@@ -783,8 +714,8 @@ watch([newestMs, today, loaded, loadError, items], () => {
   emit('facts', [`最近一条 ${newestMs.value ? timeText(newestMs.value, today.value) : '—'}`])
 }, { immediate: true })
 
-// 每个筛选各看各的：写 id、settings 这类不是筛选的参数不会触发重读 / Each filter is watched on its own, so writing a parameter that is
-// not a filter (id, settings) never triggers a reload
+// 每个筛选各看各的：写 id 这类不是筛选的参数不会触发重读 / Each filter is watched on its own, so writing a parameter that is not a
+// filter (id, say) never triggers a reload
 watch([() => route.query.q, () => route.query.dest, () => route.query.client, () => route.query.rule, () => route.query.in, () => route.query.phase, () => route.query.upstream, () => route.query.qname], () => { void load() })
 onMounted(async () => {
   // 配置、日志、设置一起读：日志先到就先画，名字等配置到了再换成配置页上的叫法；慢网络上少等两趟。地址栏里带着去向时先等配置，
@@ -792,10 +723,12 @@ onMounted(async () => {
   // The config, the log and the settings are read together: the log is drawn as soon as it lands and its names switch to the config
   // page's once the config arrives; on a slow network that saves two round trips. With a destination in the address bar the config comes
   // first, since destinations such as an upstream group are recognised only through it
-  void apiRequest<QueryLogSettings>('/api/v1/querylog/settings').then((s) => { settings.value = s }, () => { /* 设置抽屉打开时再读 / Read again when the drawer opens */ })
-  // 刷新时地址栏里还挂着设置那一步：去掉，不自己打开；后面一步历史正是去掉它的这一页时退回去，不留两个一样的
-  // A reload with the settings step still in the address bar: it is dropped, not reopened; when the history step behind is that same page
-  // without it, it is gone back over, so no two identical entries remain
+  // 设置只用来认出「不再记录」的域名，改在「基础设置」里 / The settings serve only to know the domains not recorded; they are changed in
+  // 基础设置
+  void apiRequest<QueryLogSettings>('/api/v1/querylog/settings').then((s) => { settings.value = s }, () => { /* 不再记录的标记等下次 / The not-recorded marks wait for next time */ })
+  // 以前的设置抽屉留在地址栏里的 settings 参数：去掉；后面一步历史正是去掉它的这一页时退回去，不留两个一样的
+  // A settings parameter left in the address bar by the former settings drawer: it is dropped; when the history step behind is that
+  // same page without it, it is gone back over, so no two identical entries remain
   if (route.query.settings !== undefined) {
     if (stepBehind('settings')) router.back()
     else setQuery({ settings: undefined })
@@ -842,14 +775,12 @@ onBeforeUnmount(() => {
   <!-- 目录打不开、一条也没有：只留上面那条提示，不摆一排用不了的工具 / The directory unusable and nothing listed: only the notice above
        stays, with no row of tools that cannot work -->
   <section v-if="(supported || entries.length) && !waitingForPanel && !(unavailable && !entries.length)" class="log-console ui-card qlog" role="tabpanel" aria-labelledby="logs-tab-query">
-    <!-- 工具行：搜索、去向、右端设置和下载 / The toolbar: search, destination, settings and download at the right end -->
+    <!-- 工具行：搜索、去向、右端下载；查询日志的设置在「基础设置」里 / The toolbar: search, destination, download at the right end; the query
+         log's settings live in 基础设置 -->
     <header class="log-toolbar">
       <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="q" aria-label="搜索域名或客户端" placeholder="搜索域名或客户端" maxlength="253" autocapitalize="off" spellcheck="false" /></label>
       <UiSelect class="qlog-dest" :model-value="dest" :options="options" label="按去向筛选" @update:model-value="setQuery({ dest: $event || undefined })" />
       <div class="log-toolbar__end">
-        <!-- 带字：只有图标时找不到设置在哪（「基础设置」里也有一组「查询日志」） / With a label: an icon alone left the settings hard to
-             find (基础设置 has a 查询日志 group too) -->
-        <button class="ui-btn ui-btn--secondary" type="button" title="查询日志设置" aria-label="查询日志设置" @click="openSettings()"><SlidersHorizontal :size="16" aria-hidden="true" />设置</button>
         <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="下载已列出的查询" aria-label="下载已列出的查询" :disabled="!entries.length" @click="download"><Download :size="16" aria-hidden="true" /></button>
       </div>
     </header>
@@ -987,21 +918,6 @@ onBeforeUnmount(() => {
     </div>
   </dialog>
 
-  <dialog ref="drawer" class="pdrawer qlog-drawer" aria-labelledby="ql-settings-title" @close="onDrawerClose" @cancel="onDrawerCancel" @pointerdown="onPress" @click="onBackdrop($event, () => { if (!settingsBusy) drawer?.close() })">
-    <form class="pdrawer__panel" novalidate @submit.prevent="saveSettings">
-      <header class="pdrawer__head">
-        <h2 id="ql-settings-title">查询日志设置</h2>
-        <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" :disabled="settingsBusy" @click="drawer?.close()"><X :size="16" /></button>
-      </header>
-      <div class="pdrawer__body">
-        <QueryLogSettingsForm ref="form" v-model:settings="settings" id-prefix="ql" @cleared="onCleared" />
-      </div>
-      <footer class="pdrawer__foot">
-        <button class="ui-btn ui-btn--secondary" type="button" :disabled="settingsBusy" @click="drawer?.close()">取消</button>
-        <button class="ui-btn ui-btn--primary" type="submit" :disabled="settingsBusy" :aria-busy="settingsBusy || undefined">保存</button>
-      </footer>
-    </form>
-  </dialog>
 </template>
 
 <style>
@@ -1199,8 +1115,8 @@ onBeforeUnmount(() => {
 .logs-page .qlog-filter > :is(.qlog-lit, .qlog-filter__text) { padding-block: var(--chip-pad); overflow-wrap: anywhere; }
 .logs-page .qlog-filter > button { position: relative; flex: none; display: inline-grid; place-items: center; width: var(--h-sm); height: var(--h-sm); border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; }
 .logs-page .qlog-dest { flex: 0 1 13rem; min-width: 9rem; }
-/* 详情、设置开着时背后的页面不跟着滚 / With the detail sheet or the settings open, the page behind does not scroll */
-:root:has(.qlog-sheet[open], .qlog-drawer[open]) { overflow: hidden; }
+/* 详情开着时背后的页面不跟着滚 / With the detail sheet open, the page behind does not scroll */
+:root:has(.qlog-sheet[open]) { overflow: hidden; }
 .qlog-state { padding: var(--s-6) var(--s-5); }
 
 /* 手机：整页滚动（不套内层滚动框），一条两行——域名和时间，状态点加「去向 · 来源 · 耗时 · 客户端」；行之间细线，不隔行着色。
