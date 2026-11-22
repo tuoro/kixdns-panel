@@ -100,13 +100,21 @@ config interface 'lan'
 	option ipaddr '192.168.1.1/24'
 	option ip6assign '60'
 UCI
+  # 防火墙不归这里验：全部放行，宿主机才连得上面板。启动以后再关不行，LAN 起来时它会重新加载
+  # The firewall is not under test here: everything is accepted, so the host reaches the panel. Stopping it after boot is
+  # not enough, as it reloads when the LAN comes up
+  cat >"${WORK}/firewall" <<'UCI'
+config defaults
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'ACCEPT'
+UCI
   docker create --name "${NAME}" --privileged "${IMAGE}" /sbin/init >/dev/null
   docker cp "${WORK}/network" "${NAME}:/etc/config/network"
+  docker cp "${WORK}/firewall" "${NAME}:/etc/config/firewall"
   docker start "${NAME}" >/dev/null
   wait_until 60 "procd 和 ubus 起来" owrt 'ubus call system board'
   owrt 'grep DISTRIB_DESCRIPTION /etc/openwrt_release'
-  # 防火墙不归这里验：关掉，宿主机才连得上面板 / The firewall is not under test here: off, so the host reaches the panel
-  owrt '/etc/init.d/firewall stop; /etc/init.d/firewall disable' >/dev/null 2>&1 || true
   # 让面板听所有地址，宿主机才连得上 / The panel listens on every address, so the host can reach it
   owrt "touch /etc/config/kixdns-panel; uci set kixdns-panel.main=panel; uci set kixdns-panel.main.bind='0.0.0.0:${PORT}'; uci commit kixdns-panel"
   PANEL="$(container_ip):${PORT}"
