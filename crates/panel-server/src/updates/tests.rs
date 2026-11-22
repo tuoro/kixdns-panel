@@ -2329,3 +2329,54 @@ async fn a_device_without_room_for_the_new_kernel_is_left_alone() {
         assert!(fixture.versions_path.join(kept.directory_name()).is_dir());
     }
 }
+
+/// musl 版启动时：空间不够就不把自带的内核再存一份进本地库存，照样认得出它；空间够照常存
+/// A musl build at start-up: short of room it does not store the bundled kernel locally a second time yet still knows
+/// it; with room it stores it as usual
+#[tokio::test]
+async fn start_up_stores_the_bundled_kernel_only_with_room() {
+    for (room, stored) in [(1_u64 << 20, false), (1 << 30, true)] {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        let binary = test_elf();
+        let bundled_metadata = directory.path().join("bundle");
+        write_fork_bundle_metadata(&bundled_metadata, &binary, TEST_VERSION);
+        let versions_path = directory.path().join("versions");
+        let mut manager = UpdateManager::new(
+            database,
+            UpdateSettings {
+                installed_source: Some("fork".to_owned()),
+                installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
+                installed_source_id: Some(77),
+                bundled_metadata,
+                versions_path: versions_path.clone(),
+                ..test_settings(directory.path())
+            },
+        )
+        .unwrap();
+        manager.space_aware = true;
+        manager.free_space = if stored {
+            |_| Ok(1 << 30)
+        } else {
+            |_| Ok(1 << 20)
+        };
+        std::fs::create_dir_all(directory.path().join("bin")).unwrap();
+        std::fs::write(directory.path().join("bin/kixdns"), &binary).unwrap();
+
+        manager.initialize_installed_version().await.unwrap();
+
+        let expected = VersionKey::tracked(VersionSource::Fork, 77, TEST_BUILD_COMMIT).unwrap();
+        assert_eq!(
+            manager.active_version().await.unwrap(),
+            Some(expected.clone()),
+            "room {room}"
+        );
+        assert_eq!(
+            versions_path.join(expected.directory_name()).is_dir(),
+            stored,
+            "room {room}"
+        );
+    }
+}

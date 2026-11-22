@@ -19,7 +19,8 @@
 
 ```
 install.sh                              本文件所在目录的 install.sh
-bin/kixdns                              KixDNS 内核，来自 fork tuoro/kixdns 的构建产物（不在本仓库）
+README.md LICENSE                       本文件、本仓库的 LICENSE
+bin/kixdns                              KixDNS 内核：tuoro/kixdns Release 里的 kixdns-<版本>-linux-<架构>-musl.zip
 bin/kixdns-panel-server                 本仓库 crates/panel-server 的 musl 构建
 libexec/kixdns-panel-helper             本仓库 crates/panel-helper 的 musl 构建
 web/                                    本仓库 web/ 执行 npm run build 的产物
@@ -29,7 +30,14 @@ init/kixdns.init                        本仓库 deploy/openwrt/init/kixdns.ini
 init/kixdns-panel.init                  本仓库 deploy/openwrt/init/kixdns-panel.init
 init/kixdns-panel-helper.init           本仓库 deploy/openwrt/init/kixdns-panel-helper.init
 etc/pipeline.json                       本仓库 deploy/config/pipeline.json（与 systemd 版同款）
+bundle/KIXDNS_*                         自带内核的身份（scripts/fetch-kixdns-release.sh … musl 写出的七个文件）
+PANEL_BUILD_COMMIT                      面板的构建提交（CI 打的包才有）
+SHA256SUMS                              上面每个文件的 SHA-256
 ```
+
+`bundle/` 让面板认出自带的内核是哪一版：`install.sh` 把它放进 `/etc/kixdns-panel/bundle`，再把来源、
+提交和发布编号写进 `/etc/kixdns-panel/panel.env`，面板的 init 脚本读这三项。手工拼的包没有 `bundle/`
+也能装，只是面板认不出自带的内核，系统页显示为未知版本，第一次在线更新之后就认得了。
 
 `install.sh` 把它们装到（`ROOT` 默认 `/`）：
 
@@ -107,22 +115,22 @@ cd web && npm ci && npm run build                   # 产物在 web/dist，对�
 
 ## 打包
 
-按上面的「目录布局与来源」把文件放进一个目录（就是 payload 根），`install.sh`、`init/`
-直接取本目录内容；`etc/pipeline.json` 取自 `deploy/config/pipeline.json`（和 systemd 版同一份，
-内核要的是 `bind_udp`/`bind_tcp` + 带 `id` 的 `pipelines` 数组）：
+CI 的 `Package OpenWrt` 每次都会打出 `kixdns-panel-openwrt-<架构>.tar.gz`，在 Actions 的运行页面下载（保留 7 天）。
+面板在 OpenWrt 上能自更新以前，它还不随 Release 发布。
+
+本机打包用同一个脚本 `scripts/package-openwrt.sh`，它核对三个程序都是这个架构的静态链接程序、内核是 musl 版，
+再按上面的目录拼好并写出 `SHA256SUMS`：
 
 ```bash
-pkg=/tmp/kixdns-panel-openwrt
-mkdir -p "$pkg"/{bin,libexec,web,geo,init,etc}
-cp target/aarch64-unknown-linux-musl/release/kixdns-panel-server "$pkg/bin/"
-cp target/aarch64-unknown-linux-musl/release/kixdns-panel-helper "$pkg/libexec/"
-cp -a web/dist/. "$pkg/web/"
-cp deploy/openwrt/install.sh "$pkg/"
-cp deploy/openwrt/init/*.init "$pkg/init/"
-cp deploy/config/pipeline.json "$pkg/etc/pipeline.json"
-# geo/ 放 fetch-builtin-geosite.sh 生成的 geosite.dat/geosite.json/geoip.dat
-# bin/kixdns 放内核二进制
-tar -C "$pkg" -czf kixdns-panel-openwrt-aarch64.tar.gz .
+# musl 内核和它的身份（要 gh、jq、GNU 的 sha256sum/stat、readelf）
+bash scripts/fetch-kixdns-release.sh tuoro/kixdns latest arm64 dist/kernel-musl musl
+# GeoSite
+bash scripts/fetch-builtin-geosite.sh <GeoSite 版本> dist/builtin-geo
+# 面板和服务助手（见上面的「交叉编译」），放进同一个目录
+mkdir -p dist/musl && cp target/aarch64-unknown-linux-musl/release/kixdns-panel-{server,helper} dist/musl/
+(cd web && npm ci && npm run build)
+bash scripts/package-openwrt.sh arm64 dist/musl dist/kernel-musl dist/builtin-geo web/dist dist
+# -> dist/kixdns-panel-openwrt-arm64.tar.gz
 ```
 
 ## 安装
@@ -135,6 +143,9 @@ START_DNS=1 sh install.sh  # 装完顺手启动内核（占用 53 端口）
 升级时（重复执行 `install.sh`）脚本会先记下内核原来是否在运行、是否开机自启：原来在运行的，
 装完会自动重新 `start`（不会因为升级把 DNS 断掉）；原来就设了开机自启的也保持自启。`START_DNS=1`
 依然是显式要求启动内核的意思。
+
+升级也不会把内核降级：正在用的内核是面板在线更新装上的、而且不比包里自带的旧，就留着它，只换面板；
+包里的更新时照常换上包里的。
 
 OpenWrt 默认的 dnsmasq 占着 53 端口。启用内核（`START_DNS=1` 或之后手动
 `/etc/init.d/kixdns enable && /etc/init.d/kixdns start`）之前，先把 dnsmasq 换到别的端口

@@ -11,6 +11,7 @@ on:
       - crates/panel-helper/**
       - deploy/**
       - scripts/fetch-kixdns-release.sh
+      - scripts/package-openwrt.sh
       - scripts/npm-audit.py
       - scripts/test-npm-audit.py
       - scripts/check-kernel-regex-versions.py
@@ -41,6 +42,7 @@ on:
       - crates/panel-helper/**
       - deploy/**
       - scripts/fetch-kixdns-release.sh
+      - scripts/package-openwrt.sh
       - scripts/npm-audit.py
       - scripts/test-npm-audit.py
       - scripts/check-kernel-regex-versions.py
@@ -101,9 +103,12 @@ jobs:
         shell: bash
         run: |
           version="$(gh api "repos/${KIXDNS_KERNEL_REPOSITORY}/releases/latest" --jq .tag_name)"
+          # glibc 版给完整包，musl 版给 OpenWrt 安装包 / glibc for the full package, musl for the OpenWrt package
           for architecture in x86_64 arm64; do
-            bash scripts/fetch-kixdns-release.sh \
-              "$KIXDNS_KERNEL_REPOSITORY" "$version" "$architecture" "dist/kernel-$architecture"
+            for libc in gnu musl; do
+              bash scripts/fetch-kixdns-release.sh \
+                "$KIXDNS_KERNEL_REPOSITORY" "$version" "$architecture" "dist/kernel-$architecture-$libc" "$libc"
+            done
           done
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
@@ -599,6 +604,76 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/kixdns-panel-server
             target/${{ matrix.target }}/release/kixdns-panel-helper
+          if-no-files-found: error
+          retention-days: 7
+
+  # OpenWrt 安装包：build-musl 编的面板和服务助手、musl 内核、前端、GeoSite、procd init 脚本，按 scripts/package-openwrt.sh
+  # 拼好（本机也能跑同一个脚本）。现在只做成 CI 产物、不进 Release：面板在 OpenWrt 上还不能自更新，等它能了再发布，
+  # 第一批用户装上的版本才能在面板里升级。PR 上也拼一遍，打包坏了合并前就知道
+  # The OpenWrt package: the panel and service helper build-musl built, the musl kernel, the web console, GeoSite and the
+  # procd init scripts, put together by scripts/package-openwrt.sh (which also runs locally). For now it is only a CI
+  # artifact and not part of a release: the panel cannot update itself on OpenWrt yet, and publishing waits until it can,
+  # so the first users get a version they can upgrade from the panel. Pull requests package it too, so a broken package
+  # shows before the merge
+  package-openwrt:
+    name: Package OpenWrt ${{ matrix.arch }}
+    needs: [kernel, geosite, build-musl]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web console
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Download musl panel programs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kixdns-panel-linux-${{ matrix.arch }}-musl
+          path: dist/musl
+
+      - name: Fetch verified musl kernel release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KIXDNS_KERNEL_VERSION: ${{ needs.kernel.outputs.version }}
+        run: |
+          bash scripts/fetch-kixdns-release.sh \
+            "$KIXDNS_KERNEL_REPOSITORY" "$KIXDNS_KERNEL_VERSION" "${{ matrix.arch }}" dist/kernel-musl musl
+
+      - name: Fetch built-in GeoSite
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GEOSITE_RELEASE: ${{ needs.geosite.outputs.release }}
+        run: bash scripts/fetch-builtin-geosite.sh "$GEOSITE_RELEASE" dist/builtin-geo
+
+      - name: Package for OpenWrt
+        env:
+          PANEL_BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          bash scripts/package-openwrt.sh "${{ matrix.arch }}" dist/musl dist/kernel-musl \
+            dist/builtin-geo web/dist dist
+
+      - name: Upload OpenWrt package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: kixdns-panel-openwrt-${{ matrix.arch }}
+          path: dist/kixdns-panel-openwrt-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 

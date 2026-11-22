@@ -164,14 +164,14 @@ cd web && npm ci && npm run build
 You can also use a native musl/gcc toolchain (`apt install musl-tools` on x86_64; for aarch64 the matching
 musl cross compiler with `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` and `CC_aarch64_unknown_linux_musl` set).
 
-`bin/kixdns` is the kernel, built in the fork [tuoro/kixdns](https://github.com/tuoro/kixdns), not this
-repository. Releases currently publish only the glibc kernel; the musl kernel is not published yet, so until
-then build one from the kernel repo with the same musl toolchain, or run just the panel.
+`bin/kixdns` is the kernel, the musl build from the fork [tuoro/kixdns](https://github.com/tuoro/kixdns)'s Releases
+(published from `2026.11.22.2`).
 
-Then pack the binaries, frontend, `geo/`, init scripts and `pipeline.json` into a payload following
-`deploy/openwrt/README.md` ("Directory layout and sources"), and run `sh deploy/openwrt/install.sh`
-(`START_DNS=1` also starts the kernel). OpenWrt's default dnsmasq holds port 53, so move it to another port
-before enabling the kernel.
+The package is put together by `scripts/package-openwrt.sh` (CI builds one every run, downloadable from the Actions run
+page; until the panel can update itself on OpenWrt it is not part of a release); see "打包" (packaging) in
+`deploy/openwrt/README.md`. Unpack it on the router and run `sh install.sh` (`START_DNS=1` also starts the kernel).
+OpenWrt's default dnsmasq holds port 53, so move it to another port before enabling the kernel. An upgrade keeps a kernel
+the panel installed online as long as it is not older than the bundled one, so it is never downgraded.
 
 Differences from the systemd version:
 
