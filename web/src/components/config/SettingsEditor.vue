@@ -292,7 +292,13 @@ function removeListItem(field: SettingField, index: number): void {
         <div class="settings-rows"><slot name="lead" /></div>
       </div>
       <section v-if="tail && ((!query && current === tail.id) || tailMatches)" :key="`tail-${current}`" class="settings-group" :class="{ 'ui-rise': !query }">
-        <header class="settings-group__head settings-group__head--lead"><h2 tabindex="-1" data-focus-landing>{{ tail.title }}</h2><p v-if="tail.description" class="settings-group__desc">{{ tail.description }}</p></header>
+        <!-- 这一组自己的操作（保存）放在标题行右边：下面的框出错、多出几行时它不跟着动，点下去不会落空
+             The group's own action (save) sits on the right of the heading row: when an error adds lines below, it stays put,
+             so a press never misses -->
+        <header class="settings-group__head settings-group__head--lead settings-group__head--actions">
+          <div><h2 tabindex="-1" data-focus-landing>{{ tail.title }}</h2><p v-if="tail.description" class="settings-group__desc">{{ tail.description }}</p></div>
+          <slot name="tail-actions" />
+        </header>
         <slot name="tail" />
       </section>
       <div v-if="!query && current === 'geo'" :key="current" class="ui-rise">
@@ -334,6 +340,7 @@ function removeListItem(field: SettingField, index: number): void {
 .settings-back { display: none; }
 .settings-group + .settings-group { margin-top: var(--s-6); }
 .settings-group__head { margin: 0 0 var(--s-2); }
+.settings-group__head--actions { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--s-3); }
 .settings-group__head h2 { margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
 .settings-group__head--lead { margin-bottom: var(--s-4); }
 .settings-group__head--lead h2 { font-size: var(--t-4); }

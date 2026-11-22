@@ -131,7 +131,9 @@ test('设置只有保存多久、最多占用和不记录的域名；清空以�
   await group.getByRole('button', { name: '保存查询日志设置' }).click()
   await expect(page.locator('.toast', { hasText: '查询日志设置已保存' })).toBeVisible()
   await expect(group.getByLabel('保存多少小时')).toHaveValue('12')
-  await expect(page.getByRole('button', { name: /^查询日志/ })).toContainText('保存 12 小时')
+  // 分组列表上的概况跟着变（手机上点开一组后列表收起，按文字找） / The group list's summary follows (on phones the list folds once a
+  // group is open, so it is found by its text)
+  await expect(page.locator('.settings-nav__item', { hasText: '查询日志' })).toContainText('保存 12 小时')
 
   await group.getByRole('button', { name: '清空查询日志' }).click()
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '清空查询日志' }).click()
@@ -156,7 +158,7 @@ test('基础设置里的查询日志一组：说清存在哪、最多能设多�
   await group.getByRole('button', { name: '1 天', exact: true }).click()
   await group.getByRole('button', { name: '保存查询日志设置' }).click()
   await expect(page.locator('.toast', { hasText: '查询日志设置已保存' })).toBeVisible()
-  await expect(page.getByRole('button', { name: /^查询日志/ })).toContainText('保存 1 天')
+  await expect(page.locator('.settings-nav__item', { hasText: '查询日志' })).toContainText('保存 1 天')
 
   await openQueryLog(page)
   await expect(page.getByRole('button', { name: '查询日志设置' })).toHaveCount(0)

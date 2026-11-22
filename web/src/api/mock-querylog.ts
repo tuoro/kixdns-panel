@@ -221,8 +221,9 @@ export function demoQueryLog(config: KConfig, now: number): Item[] {
     items.push(e)
     time -= 1_000 + Math.floor(rnd() * 14_000)
   }
-  cache = { key, items }
-  return items
+  const kept = clearedAt ? items.filter((item) => item.time_unix_ms > clearedAt) : items
+  cache = { key, items: kept }
+  return kept
 }
 
 let settings = { retention_hours: 2160, max_bytes: 500 * 1024 * 1024, ignored_domains: [] as string[], used_bytes: 327_155_712 }
@@ -245,9 +246,13 @@ export function setDemoQueryLogSettings(next: Partial<QueryLogSettings>): void {
   const domains = checked?.domains
   settings = { ...settings, ...(next.retention_hours === undefined ? {} : { retention_hours: next.retention_hours }), ...(next.max_bytes === undefined ? {} : { max_bytes: next.max_bytes }), ...(domains ? { ignored_domains: [...new Set(domains)] } : {}) }
 }
+// 清空的那一刻：之后重新生成演示数据（换了配置、或者清空时还没生成过）也只留这一刻以后的 / The moment of the clear: demo data
+// generated again later (another config, or none generated yet at the clear) keeps only what comes after it
+let clearedAt = 0
 export function clearDemoQueryLog(): void {
   settings = { ...settings, used_bytes: 0 }
   cache = { key: cache?.key ?? '', items: [] }
+  clearedAt = Date.now()
 }
 
 const isGap = (item: Item): item is QueryLogGap => 'gap' in item

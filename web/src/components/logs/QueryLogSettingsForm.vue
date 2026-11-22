@@ -168,7 +168,8 @@ defineExpose({ reset, save, busy })
 @media (min-width: 641px) { .qlog-settings .ui-seg { justify-self: start; } }
 .qlog-danger { display: grid; justify-items: start; gap: var(--s-1); padding-top: var(--s-4); border-top: 1px solid var(--l-hair); }
 .qlog-danger small { color: var(--l-ink-3); font-size: var(--t-1); }
-/* 成段的说明从 641 起是 12 号，和上面的提示一样 / Sentences are 12px from 641 up, like the hints above */
-@media (min-width: 641px) { .qlog-danger small { font-size: var(--t-2); } }
+/* 成段的说明从 641 起是 12 号，和上面的提示一样；框下面的错也一样大，不比说明小 / Sentences are 12px from 641 up, like the hints
+   above; an error under a field is as large, never smaller than the hint */
+@media (min-width: 641px) { .qlog-danger small, .qlog-settings .ui-field-error { font-size: var(--t-2); } }
 .qlog-keep { white-space: nowrap; }
 </style>

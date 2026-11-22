@@ -116,20 +116,11 @@ async function saveQueryLog(): Promise<void> {
         <p v-if="querylogError" class="ui-field-error" role="alert">{{ querylogError }} <button class="ui-btn ui-btn--text ui-btn--sm" type="button" @click="loadQueryLog">重试</button></p>
         <template v-else>
           <QueryLogSettingsForm ref="querylogForm" v-model:settings="querylog" id-prefix="sets-ql" @cleared="toast.success('查询日志已清空')" />
-          <div class="sets__querylog-actions">
-            <button class="ui-btn ui-btn--primary" type="button" :disabled="!querylog || querylogForm?.busy" :aria-busy="querylogForm?.busy || undefined" @click="saveQueryLog">保存查询日志设置</button>
-          </div>
         </template>
+      </template>
+      <template #tail-actions>
+        <button v-if="!querylogError" class="ui-btn ui-btn--primary" type="button" :disabled="!querylog || querylogForm?.busy" :aria-busy="querylogForm?.busy || undefined" @click="saveQueryLog">保存查询日志设置</button>
       </template>
     </SettingsEditor>
   </section>
 </template>
-
-<style scoped>
-/* 查询日志一组自己的保存按钮：它不在配置草稿里，页头的「应用」管不到 / The 查询日志 group's own save button: it is not in the config
-   draft, so the page header's 应用 does not cover it */
-.sets__querylog-actions { display: flex; justify-content: flex-end; margin-top: var(--s-5); }
-/* 查询日志一组自己的保存按钮：它不在配置草稿里，页头的「应用」管不到 / The 查询日志 group's own save button: it is not in the config
-   draft, so the page header's 应用 does not cover it */
-.sets__querylog-actions { display: flex; justify-content: flex-end; margin-top: var(--s-5); }
-</style>
