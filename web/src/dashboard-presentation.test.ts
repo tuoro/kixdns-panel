@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { RequestLatency } from './api/types'
-import { MIN_HEALTH_SAMPLES, cacheComposition, latencyBands, latencyBasis, latencyHealth, rcodeDistribution, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from './dashboard-presentation'
+import type { FlowControl, RequestLatency } from './api/types'
+import { MIN_HEALTH_SAMPLES, cacheComposition, flowView, latencyBands, latencyBasis, latencyHealth, rcodeDistribution, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from './dashboard-presentation'
 import { emptyOverview } from './dashboard-state'
 import { formatPercent, upstreamSuccessRate } from './utils'
 
@@ -145,5 +145,46 @@ describe('响应速度', () => {
     expect(at(80)).toBe('degraded')
     expect(at(79)).toBe('unhealthy')
     expect(latencyHealth({ samples: 0, avg_ms: 0, within_10ms: 0, within_100ms: 0, within_1s: 0 })).toBe('pending')
+  })
+})
+
+describe('flowView', () => {
+  const flow = (over: Partial<FlowControl> = {}): FlowControl => ({
+    enabled: true,
+    refused: { capacity: 30, memory: 0, connection: 0, queue: 900, stuck: 4, unanswered: 0 },
+    turns: 5,
+    stuck: 2,
+    memory_room: null,
+    clients: [
+      { client: '192.168.1.20', refused: 800, age_seconds: 90 },
+      { client: '192.168.1.33', refused: 40, age_seconds: 7200 },
+    ],
+    recent: { refused: { capacity: 10, memory: 0, connection: 0, queue: 600, stuck: 0, unanswered: 0 }, turns: 1 },
+    ...over,
+  })
+  const now = 1_800_000_000_000
+
+  it('按最近一小时算，只列拦过的防线和这一小时里被拦过的设备', () => {
+    const view = flowView(flow(), 3_540, false, now)
+    expect(view.period).toBe('最近一小时')
+    expect(view.refused.map((row) => [row.label, row.count])).toEqual([['处理不过来时排不下', 600], ['处理不过来时发得多', 10]])
+    expect(view.total).toBe(610)
+    expect(view.turns).toBe(1)
+    expect(view.clients).toEqual([{ client: '192.168.1.20', refused: 800, ago: '1 分钟前' }])
+    expect(view.memory).toBeNull()
+  })
+
+  it('没有窗口时按启动以来，设备都列', () => {
+    const view = flowView(flow({ recent: null }), null, false, now)
+    expect(view.period).toBe('启动以来')
+    expect(view.total).toBe(934)
+    expect(view.turns).toBe(5)
+    expect(view.clients.map((client) => client.client)).toEqual(['192.168.1.20', '192.168.1.33'])
+  })
+
+  it('内存：两倍余量以上充足，一到两倍紧张，不到一倍见底', () => {
+    expect(flowView(flow({ memory_room: 2 }), 3_600).memory).toEqual({ label: '充足', tone: 'ok' })
+    expect(flowView(flow({ memory_room: 1.56 }), 3_600).memory).toEqual({ label: '紧张，剩底线的 1.6 倍', tone: 'warn' })
+    expect(flowView(flow({ memory_room: 0.8 }), 3_600).memory).toEqual({ label: '见底', tone: 'bad' })
   })
 })

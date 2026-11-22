@@ -124,6 +124,40 @@ export interface MetricsSnapshot {
   request_latency_recent: RequestLatency | null
   /** 各上游 `recent` 与 `request_latency_recent` 实际覆盖的秒数，最长一小时；面板还没有可比的采样时为 null。 */
   recent_window_seconds: number | null
+  /** 智能流控；内核 2026.11.23 起提供，更早的内核为 null。 */
+  flow?: FlowControl | null
+}
+
+/** 各道防线拦下几次 / What each defence refused */
+export interface FlowRefused {
+  /** 内核忙、查询排着长队时，在途占着自己那一份的设备 */
+  capacity: number
+  /** 内存不够 */
+  memory: number
+  /** 内存不够时的 TCP、DoH 新连接 */
+  connection: number
+  /** 按设备轮流时这台设备的队排满了 */
+  queue: number
+  /** 这台设备卡住的查询留够了 */
+  stuck: number
+  /** 上游最近不回答这台设备 */
+  unanswered: number
+}
+
+export interface FlowControl {
+  enabled: boolean
+  /** 内核启动以来 */
+  refused: FlowRefused
+  /** 内核启动以来开始按设备轮流过几次 */
+  turns: number
+  /** 卡住了、留着接着等的查询 */
+  stuck: number
+  /** 一分钟内读到的还剩几倍余量：2 以上算够，1 以下算没了；没有这样的读数时为 null */
+  memory_room: number | null
+  /** 被拦得最多的几台设备，次数多的在前；次数是上限 */
+  clients: { client: string; refused: number; age_seconds: number }[]
+  /** 与 `recent_window_seconds` 同一个窗口；没有窗口时为 null */
+  recent: { refused: FlowRefused; turns: number } | null
 }
 
 export interface QueryStatsSnapshot {

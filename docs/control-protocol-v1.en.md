@@ -75,6 +75,15 @@ Since enhanced build p20, the following series are added. When they are missing,
 - `kixdns_upstream_rcodes_total{upstream,rcode}`: count of response codes in upstream answers. `rcode` is the hickory variant name (`NoError`, `NXDomain`, `ServFail`, `Refused` and so on).
 - `kixdns_upstream_via_total{upstream,transport,via}`: `transport` is the transport selected for this address. `via` is the transport that actually brought the answer back. `transport="udp"` with `via="tcp"` means TCP fallback.
 
+From kernel 2026.11.23, flow control's series follow; an older kernel has none of them, and the panel then shows no 智能流控 (flow control) card on the overview:
+
+- `kixdns_flow_control_enabled`: whether it is on, 1 or 0.
+- `kixdns_flow_refused_total{defence="capacity|memory|connection|queue|stuck|unanswered"}`: what each defence refused: a device holding its share in flight while the kernel is busy, too little memory, new TCP and DoH connections with too little memory, no room in a device's queue while devices take turns, enough of a device's stuck queries kept, and an upstream not answering the device of late.
+- `kixdns_flow_turns_total`: how many times devices began taking turns.
+- `kixdns_flow_stuck`: the stuck queries kept waiting.
+- `kixdns_flow_memory_room`: how many margins of memory were left as read within the last minute, 2 or more enough and under 1 none left; with few queries in flight the kernel does not read memory and the line is absent.
+- `kixdns_flow_refused_client_total{client}`, `kixdns_flow_refused_client_age_seconds{client}`: the devices refused most (at most 8), each with how often it was refused (an upper bound) and how many seconds ago it last was.
+
 Label values must be escaped and may come only from the bounded sets of Pipelines, rules and upstreams in the config.
 
 ### `POST /v1/config/validate`
