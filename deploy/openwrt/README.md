@@ -24,6 +24,7 @@ bin/kixdns                              KixDNS 内核：tuoro/kixdns Release 里
 bin/kixdns-panel-server                 本仓库 crates/panel-server 的 musl 构建
 libexec/kixdns-panel-helper             本仓库 crates/panel-helper 的 musl 构建
 libexec/kixdns-panel-update             面板在线更新器：本仓库 deploy/openwrt/panel-update.sh
+libexec/kixdns-panel-uninstall          卸载脚本：本仓库 deploy/openwrt/uninstall.sh
 web/                                    本仓库 web/ 执行 npm run build 的产物
 geo/geosite.dat geo/geosite.json geo/geoip.dat
                                         完整 GeoSite 包（scripts/fetch-builtin-geosite.sh 生成）
@@ -50,6 +51,7 @@ SHA256SUMS                              上面每个文件的 SHA-256
 /usr/bin/kixdns-panel-server            面板
 /usr/libexec/kixdns-panel-helper        root helper（唯一能启停服务的东西）
 /usr/libexec/kixdns-panel-update        面板在线更新器（helper 经一次性服务 kixdns-panel-update 运行它）
+/usr/libexec/kixdns-panel-uninstall     卸载脚本（见下面的「卸载」）
 /usr/share/kixdns-panel/web             前端静态资源
 /usr/share/kixdns-panel/geo             GeoSite 种子
 /etc/init.d/{kixdns,kixdns-panel,kixdns-panel-helper,kixdns-panel-update}
@@ -228,6 +230,18 @@ uci commit kixdns-panel
 
 目录的上一层（这里是 `/mnt/sda1`）不存在时，比如 U 盘没挂上，面板这次照样放内存，不会写到闪存上去。
 以前的版本把查询日志写在闪存上的 `/etc/kixdns-panel/querylog`，升级时会删掉，腾出 overlay。
+
+## 卸载
+
+```sh
+sh /usr/libexec/kixdns-panel-uninstall               # 卸掉面板和内核；配置、数据库、内核版本库留着，重装就回来
+sh /usr/libexec/kixdns-panel-uninstall --purge       # 连配置和数据一起删，找不回来
+sh /usr/libexec/kixdns-panel-uninstall --keep-kernel # 只卸面板，内核照常运行
+```
+
+卸内核之前先停用它：接管过的 53 端口原样还给 dnsmasq，局域网不会没有 DNS。留下的是 `/etc/kixdns-panel`（数据库、
+内核版本库、身份文件）、`/etc/kixdns`（内核配置）和 `/etc/config/kixdns-panel`（UCI 设置）；查询日志在内存里，一起清掉。
+`--keep-kernel` 时内核的程序、init 脚本、配置和它接管的 53 端口都不动，以后 `/etc/init.d/kixdns disable` 照样会把 53 还回去。
 
 ## 面板的监听地址
 

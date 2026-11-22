@@ -78,6 +78,7 @@ main() {
   cp -- "${programs}/kixdns-panel-server" "${package}/bin/kixdns-panel-server"
   cp -- "${programs}/kixdns-panel-helper" "${package}/libexec/kixdns-panel-helper"
   cp -- "${root}/deploy/openwrt/panel-update.sh" "${package}/libexec/kixdns-panel-update"
+  cp -- "${root}/deploy/openwrt/uninstall.sh" "${package}/libexec/kixdns-panel-uninstall"
   cp -R -- "${web}/." "${package}/web/"
   for file in geosite.dat geosite.json geoip.dat LICENSE; do
     if [[ -f ${geo}/${file} ]]; then
@@ -107,7 +108,8 @@ main() {
   fi
   # 上传成 CI 产物时执行位会丢，装的时候 install.sh 也会再设一遍 / Exec bits are lost as a CI artifact; install.sh sets them again
   chmod 0755 "${package}/install.sh" "${package}/bin/kixdns" "${package}/bin/kixdns-panel-server" \
-    "${package}/libexec/kixdns-panel-helper" "${package}/libexec/kixdns-panel-update" "${package}"/init/*.init
+    "${package}/libexec/kixdns-panel-helper" "${package}/libexec/kixdns-panel-update" \
+    "${package}/libexec/kixdns-panel-uninstall" "${package}"/init/*.init
 
   # 校验表先写在包外面，免得把自己也算进去 / The checksum list is written outside the package first so it does not list itself
   (
