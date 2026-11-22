@@ -11,12 +11,13 @@
 - **运行概览**：查询量、成功率、缓存命中、延迟与每小时趋势，上游状态、请求分布、规则命中、查询排行
 - **配置管理**：规则、上游组、域名映射、拦截列表、基础设置用表单编辑，也可以直接改 JSON；GeoIP/GeoSite 数据托管（完整包自带 GeoSite）；保存前由 KixDNS 自身校验，热加载失败自动回滚，保留版本历史
 - **拦截列表**：订阅 AdGuard、Adblock 格式的拦截列表和 hosts 文件，也可以自己写规则；按天或按周自动更新，下载失败时继续使用上一次成功的版本，并标明日期
-- **查询日志**：每一次查询从哪个客户端来、命中哪条规则、谁回答的、回了什么，逐步看处理过程；按域名或客户端搜索、按去向筛选，可以下载
+- **查询日志**：每一次查询从哪个客户端来、命中哪条规则、谁回答的、回了什么，逐步看处理过程；按域名或客户端搜索、按去向筛选，可以下载；保存多久、最多占用多少可以设，不会超过设备剩余的空间
 - **DNS 诊断**：对本机 KixDNS 发起查询，可以指定客户端 IP，逐步展示命中的规则、缓存与上游；改规则时可以先拿没保存的草稿试跑
-- **运行日志与操作审计**：KixDNS journal 实时查看，面板里的每次操作都有记录
+- **运行日志与操作审计**：实时查看 KixDNS 的运行日志，面板里的每次操作都有记录
 - **内核更新**：在面板内把 KixDNS 更新到 fork 最新发布的日期版本，或回到上一个，激活失败自动恢复
 - **面板自更新**：系统页一键更新到最新正式版，双重校验摘要，不动 KixDNS
-- **安全**：Argon2id 认证、HttpOnly 会话、CSRF 防护、登录限流；面板进程不以 root 运行
+- **OpenWrt**：路由器上一条命令装好；启动 KixDNS 时自动接管 53 端口，dnsmasq 照常管 DHCP 和局域网主机名
+- **安全**：Argon2id 认证、HttpOnly 会话、CSRF 防护、登录限流；systemd 版的面板进程不以 root 运行
 - 桌面与手机均可用
 
 ## 内核
@@ -25,13 +26,9 @@
 
 ## 安装
 
-需要带 systemd 的 Linux x86_64/ARM64，GLIBC 2.35 及以上（Ubuntu 22.04、Debian 12 或更新）。一键安装另需 `curl`、`jq`、`unzip`。
+### Linux（systemd）
 
-OpenWrt（24.10、25.12，x86_64、arm64）用自己的一条命令，在路由器上执行；装好后面板和内核都在系统页在线更新，见 [`deploy/openwrt/`](deploy/openwrt/README.md)：
-
-```sh
-uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/openwrt/one-click-install.sh | sh
-```
+需要 x86_64 或 ARM64，GLIBC 2.35 及以上（Ubuntu 22.04、Debian 12 或更新），另需 `curl`、`jq`、`unzip`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh | sudo bash
@@ -41,13 +38,19 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 
 主机上已有 KixDNS 时，安装器会说明迁移会做什么，并在你同意后迁移为增强版：配置和运行状态保留，卸载面板时可恢复原来的 KixDNS；不同意则什么都不改。**不要把 `5738` 直接暴露到公网**，跨网络访问请走 HTTPS 反向代理。
 
-固定版本安装、手动安装、反向代理、权限模型和卸载见[部署指南](docs/deployment.md)。每个版本的变化见 [Releases](https://github.com/tuoro/kixdns-panel/releases)。
+固定版本安装、手动安装、反向代理、权限模型见[部署指南](docs/deployment.md)。卸载：`sudo kixdns-panel-uninstall`。
 
-卸载：
+### OpenWrt
 
-```bash
-sudo kixdns-panel-uninstall
+支持 OpenWrt 24.10 和 25.12，x86_64 和 arm64。在路由器上执行：
+
+```sh
+uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/openwrt/one-click-install.sh | sh
 ```
+
+装完打开 `http://<路由器 LAN 地址>:5738`。在「系统」页启动 KixDNS 时，它接管 53 端口，dnsmasq 的 DNS 挪到 5353、DHCP 照常；停止时原样还回去。更新、卸载和常用设置见 [`deploy/openwrt/`](deploy/openwrt/README.md)。
+
+每个版本的变化见 [Releases](https://github.com/tuoro/kixdns-panel/releases)。
 
 ## 开发
 
@@ -60,6 +63,7 @@ VITE_DEMO_MODE=true npm run dev   # 演示数据模式
 ## 文档
 
 - [部署指南](docs/deployment.md)：安装、权限、内核更新、运维与卸载
+- [OpenWrt](deploy/openwrt/README.md)：在路由器上安装和使用；[实现、编译和打包](deploy/openwrt/DEVELOPMENT.md)
 - [系统架构](docs/architecture.md)：组件边界、构建流水线与安全设计
 - [增强控制协议 v1](docs/control-protocol-v1.md)：面板与 KixDNS 之间的本机接口
 - [配置能力契约](docs/config-capabilities.md)：新配置字段的兼容规则

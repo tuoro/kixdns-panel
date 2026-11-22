@@ -19,7 +19,7 @@ Panel Web ---- Panel Server ---- SQLite
                     +---- config/pipeline.json
                     +---- versions/<source>-<package-id>-<commit>/
                     +---- geo/<kind>-<sha256>.<ext>
-                    +---- systemd (via root helper)
+                    +---- systemd or procd (via root helper)
                     +---- GitHub API / Release download
                     |
                     v
@@ -36,7 +36,7 @@ The panel depends only on the versioned [control protocol](control-protocol-v1.e
 
 ## Kernel source
 
-Each time the fork's `main` advances, it publishes a dated version `YYYY.MM.DD`. Another release on the same day is `YYYY.MM.DD.N`. Each release carries kernel packages for two architectures, `kixdns-<版本>-linux-<架构>.zip`, and a manifest, `manifest.json`. The manifest states the repository, version, commit, the upstream commit it is based on, control protocol, configuration capabilities, and the size and SHA-256 of each package. A package contains `kixdns`, `KIXDNS_SOURCE.json` (the same identity plus the architecture), `KIXDNS_CAPABILITIES.json` and `SHA256SUMS`. Before release, the build runs in an Ubuntu 22.04 container, the GLIBC baseline is checked, and a DNS smoke test runs. The fork also runs a separate dependency audit once a day.
+Each time the fork's `main` advances, it publishes a dated version `YYYY.MM.DD`. Another release on the same day is `YYYY.MM.DD.N`. Each release carries kernel packages for two architectures: the glibc build `kixdns-<版本>-linux-<架构>.zip` and the statically linked musl build for OpenWrt, `kixdns-<版本>-linux-<架构>-musl.zip`; plus a manifest, `manifest.json`. The manifest states the repository, version, commit, the upstream commit it is based on, control protocol, configuration capabilities, and the size and SHA-256 of each package. A package contains `kixdns`, `KIXDNS_SOURCE.json` (the same identity plus the architecture), `KIXDNS_CAPABILITIES.json` and `SHA256SUMS`. Before release, the build runs in an Ubuntu 22.04 container, the GLIBC baseline is checked, and a DNS smoke test runs. The fork also runs a separate dependency audit once a day.
 
 The panel compares versions part by part: year, month, day, and the number of the release that day. It prompts for an update only for a newer dated version.
 
@@ -51,7 +51,8 @@ The panel and the kernel use separate workflows, so a panel commit is not mistak
 - **Kernel**: built and released by the fork's release process (see above).
 - **Panel**: `build-panel.yml` watches only Panel Server, Web, the deployment scripts and the panel dependencies. Each run first picks the fork's latest release once (the same version for both architectures). `scripts/fetch-kixdns-release.sh` downloads it and checks the manifest, asset digests, the in-package `SHA256SUMS`, the source description, configuration capabilities and the ELF architecture. It does not recompile KixDNS. This step also runs on PRs. Stable releases are published through the panel's GitHub Release.
 - Release builds run in an Ubuntu 22.04 container and refuse binaries that depend on symbols above `GLIBC_2.35`. The full package also has to run install, in-place upgrade, panel integration, systemd control and uninstall acceptance on a temporary Ubuntu 22.04 machine.
-- PRs run only the validation for the matching boundary and do not upload installable packages. Documentation-only changes do not trigger packaging.
+- **OpenWrt packages**: the panel and the service helper are built as static musl programs and, with the fork's musl kernel, put together by `scripts/package-openwrt.sh` into `kixdns-panel-openwrt-<arch>.tar.gz`. Inside OpenWrt's official rootfs containers (x86_64 and arm64, each against 25.12 and 24.10) they go through install, starting and stopping the kernel, online update, rollback, uninstall and one-command install acceptance; no release is published without it.
+- PRs run only the validation for the matching boundary and publish nothing. OpenWrt packages are built and accepted on PRs too, kept as CI artifacts for 7 days. Documentation-only changes do not trigger packaging.
 
 Each kernel package carries `KIXDNS_CAPABILITIES.json`, which is written into `SHA256SUMS` together with the binary and the source description.
 
@@ -61,7 +62,7 @@ The full package separately records `PANEL_BUILD_COMMIT`, the kernel's `KIXDNS_B
 
 **Processes and permissions**
 
-- Panel Server runs under a separate non-root account. The systemd unit enables read-only system directories, a private temporary directory and address family restrictions.
+- Panel Server runs under a separate non-root account. The systemd unit enables read-only system directories, a private temporary directory and address family restrictions. OpenWrt has no separate account: the panel runs as root and listens only on the LAN interface's address by default, and the helper runs only init scripts and an updater that root owns and nobody else can write.
 - Start/stop and self-update are forwarded through the root helper: a dedicated Unix socket (`0600`) plus `SO_PEERCRED` validation of the UID. It accepts only the unit determined at install time with `start`, `stop`, `restart`, and the fixed `panel-update`.
 - It does not accept arbitrary commands or shell fragments. KixDNS has no reload action, and the panel does not provide one either.
 - The control protocol runs only over a local Unix socket (`0660`) and does not listen on a network port.
@@ -81,7 +82,8 @@ The full package separately records `PANEL_BUILD_COMMIT`, the kernel's `KIXDNS_B
 - The release tag, the manifest, and the asset size and digest recorded by GitHub agree item by item. The repository, version, commit, upstream commit, architecture and control protocol in the package's `KIXDNS_SOURCE.json` agree with the manifest, and so do the configuration capabilities.
 - Before install, the outer and in-package SHA-256, the ELF and the architecture are validated. They are validated once more before activation. After replacement, the health check must pass, otherwise the previous state is restored.
 - Configuration save, history restore and version activation share the backend capability registry. An incompatible version is refused before the service is stopped. The panel does not automatically delete or downgrade user fields.
-- Panel self-update accepts only this project's latest stable Release and validates the asset digest and the in-package digest. The transaction does not change KixDNS's binary, configuration, identity or start/stop state.
+- Panel self-update accepts only this project's latest stable Release and validates the asset digest and the in-package digest. The transaction does not change KixDNS's binary, configuration, identity or start/stop state. On OpenWrt a one-shot procd service runs the updater, which downloads the OpenWrt package from the GitHub API's asset address and puts everything back when the install fails.
+- Kernel online updates take the package matching the host's libc (a musl panel takes the `-musl` package and checks that the program has no dynamic loader). On OpenWrt the room left on flash is checked before a new kernel is stored; with room for the new one only, no previous kernel is kept.
 - Geo data is accepted over HTTPS only. Each resolution and redirect pins a public address and checks it again. Size and file count are limited. Files are stored content-addressed with mode `0640`, and `kixdns` has read-only access through the shared group.
 - The GeoSite bundled in the package is kept read-only in `/usr/share/kixdns-panel/geo`. On import, its SHA-256 and size are checked against `geosite.json`, then it is copied into content-addressed storage, with its source recorded as its download link. On a fresh install, a one-time marker left by the install script triggers the import on first start. If GeoSite already exists, the server refuses the import. An upgrade does not change the user's data or configuration.
 - When a GeoSite category is picked on the 配置 (Configuration) page, the panel reads each category's domain count and attributes the way the kernel reads them (`.dat` is protobuf, the rest are read as V2Ray JSON; names are case-insensitive; for categories with the same name, the file loaded later wins), and caches the result per file. It reads only files it knows: the configuration being edited, the manifest and the copy in the package. It does not accept paths sent from the page.
@@ -91,7 +93,8 @@ The full package separately records `PANEL_BUILD_COMMIT`, the kernel's `KIXDNS_B
 - When a KixDNS not installed by this panel is found, it is migrated only if the user explicitly agrees (answering `y` in the terminal, or `--replace-existing`). Otherwise the host is not changed. The panel manages only the enhanced build it installed itself.
 - Migration keeps the original running state and backs up the original unit and start/stop state. If the enhanced build cannot start, everything is rolled back. Choosing to remove the enhanced build at uninstall is enough to restore it. The KixDNS on early 仅安装面板 (panel-only install) hosts is never deleted by the uninstaller.
 - The installer turns off the local listener of systemd-resolved only when the user agrees, and records the original `resolv.conf` for rollback and for restoring on uninstall. Other programs occupying port 53 are only reported and not touched.
+- On OpenWrt, enabling the kernel takes port 53 over from dnsmasq: dnsmasq's DNS moves to 5353, DHCP carries on with a DNS option added, and `.lan` host names go from the kernel to dnsmasq; a kernel that does not come up gives it back automatically. Disabling the kernel gives everything back, undoing only the changes it recorded in UCI.
 
 ## Runtime platforms
 
-The production target is Linux x86_64/ARM64 with systemd. Panel Server stays cross-platform at compile time. Windows services and named pipes may serve as adapter implementations of the same interface.
+The production targets are Linux x86_64/ARM64 with systemd, and OpenWrt 24.10 and 25.12 (procd, x86_64/arm64). Panel Server stays cross-platform at compile time. Windows services and named pipes may serve as adapter implementations of the same interface.
