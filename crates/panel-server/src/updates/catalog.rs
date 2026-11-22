@@ -236,9 +236,9 @@ pub(super) fn to_panel_update_notice(
 }
 
 /// 这台设备在 Release 里该取的面板安装包：musl 构建只出现在 `OpenWrt` 安装包里，在线更新也取 `OpenWrt` 的包
-/// （deploy/openwrt/panel-update.sh 取的是同一个名字）
+/// （deploy/openwrt/one-click-install.sh 取的是同一个名字）
 /// The panel package this device takes from a release: musl builds ship only in the `OpenWrt` package, so the online
-/// update takes the `OpenWrt` package too (deploy/openwrt/panel-update.sh takes the same name)
+/// update takes the `OpenWrt` package too (deploy/openwrt/one-click-install.sh takes the same name)
 pub(super) fn panel_release_asset_name() -> &'static str {
     match (std::env::consts::ARCH, cfg!(target_env = "musl")) {
         ("aarch64", false) => "kixdns-panel-linux-arm64.zip",

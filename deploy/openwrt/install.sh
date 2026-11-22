@@ -508,7 +508,7 @@ CHANGING=0
 old_querylog="$DEST_STATE/querylog"
 if [ -d "$old_querylog" ] && [ "$(uci -q get kixdns-panel.main.querylog_dir)" != "/etc/kixdns-panel/querylog" ]; then
 	rm -rf "$old_querylog"
-	say "查询日志改放内存（重启清空），已删掉以前写在闪存上的 $old_querylog；要长期保留见 README 的「查询日志」"
+	say "查询日志改放内存（重启清空），已删掉以前写在闪存上的 $old_querylog；要长期保留见 README 的「常用设置」"
 fi
 
 # 启用内核 = 接管 53 端口并启动（init 脚本的 enable）；10 秒内没在 53 上收查询，它会把 53 还给 dnsmasq、不启用

@@ -139,53 +139,15 @@ KixDNS 默认监听 `0.0.0.0:53`。安装器在改动主机之前按配置里的
 
 ### OpenWrt / procd（没有 systemd）
 
-OpenWrt 用 procd 管进程，没有 `systemctl`/`journalctl`，发行版是 musl 而不是 GLIBC，所以有单独的安装包：正式 Release 里的 `kixdns-panel-openwrt-x86_64.tar.gz` 和 `kixdns-panel-openwrt-arm64.tar.gz`，面板、服务助手和内核都是 musl 静态链接的。包的内容来自本仓库的 `deploy/openwrt/`：四个 init 脚本、面板启动参数、示例 `pipeline.json`、安装脚本和在线更新器。
+OpenWrt 有单独的安装包，面板、服务助手和内核都是 musl 静态链接的，支持 OpenWrt 24.10 和 25.12、x86_64 和 arm64。在路由器上执行：
 
-面板为此增加了可替换的服务后端。状态、日志两个开关只在显式给出时才生效；init 脚本开关有默认路径 `/etc/init.d/kixdns`，只在找不到 `systemctl` 时才用到。不给这些参数就是原来的 systemd 行为：
-
-| systemd 下的做法 | OpenWrt 上的替代 | 开关 |
-| --- | --- | --- |
-| `systemctl show --property=ActiveState,SubState,MainPID` 读状态 | `ubus call service list`（分得清「用户停掉」和「崩了没被拉起」），ubus 不可用才退回 pid 文件 + `/proc/<pid>` | `--service-pidfile` / `KIXDNS_SERVICE_PIDFILE` |
-| `journalctl -u kixdns -o json` 读日志 | 直接读日志文件（只读末尾 8 MiB），按文件绝对字节偏移翻页 | `--service-log` / `KIXDNS_SERVICE_LOG` |
-| helper 调 `systemctl start|stop|restart` | 没有 `systemctl` 时执行 init 脚本的 `enable start` / `stop disable` / `restart` | `--init-script`（默认 `/etc/init.d/kixdns`） |
-
-helper 先找 `systemctl`，找到就照旧用它，找不到才用 init 脚本；两个都没有才报错。所以同一份二进制既能装在 Debian/Ubuntu 上，也能装在 OpenWrt 上。
-
-在路由器上下载、解开，运行 `sh install.sh`（`START_DNS=1` 装完顺手启动内核），命令见 `deploy/openwrt/README.md` 的「安装」。
-启用内核时它会接管 53 端口：OpenWrt 自带的 dnsmasq 的 DNS 挪到 5353，DHCP 照常，`.lan` 主机名由内核转给它；停用内核时原样还回去，见 `deploy/openwrt/README.md` 的「53 端口和 dnsmasq」。之后面板和内核都在系统页在线更新。
-重新运行新版本的 `install.sh` 也能升级：升级是整体的，装不成就全部放回；面板在线装上的内核只要不比包里的旧就留着，不会被降级。
-
-要自己编（以 aarch64 路由器为例；x86_64 换 target 即可）：面板和 helper 在 musl
-上要链 C 代码（bundled SQLite、zstd、ring），所以除了 `rustup target add` 还要一个 musl 的 C 交叉
-工具链，最省事是用 cargo-zigbuild：
-
-```bash
-rustup target add aarch64-unknown-linux-musl
-pip install ziglang cargo-zigbuild
-cargo zigbuild --release --locked --target aarch64-unknown-linux-musl \
-  -p kixdns-panel-server -p kixdns-panel-helper
-cd web && npm ci && npm run build
+```sh
+uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/openwrt/one-click-install.sh | sh
 ```
 
-也可以用发行版自带的 musl/gcc 工具链（x86_64 上是 `apt install musl-tools`，aarch64 需对应的
-musl 交叉编译器并设 `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` 与 `CC_aarch64_unknown_linux_musl`）。
+装完打开 `http://<路由器 LAN 地址>:5738`。在面板「系统」页点「启动」，内核就接管 53 端口：dnsmasq 的 DNS 挪到 5353，DHCP 照常，`.lan` 主机名转给 dnsmasq；点「停止」原样还回去。面板和内核都在「系统」页在线更新。
 
-`bin/kixdns` 是内核，取 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) Release 里的 musl 版（从 `2026.11.22.2` 起发布）。
-
-安装包用 `scripts/package-openwrt.sh` 拼（CI 每次也打一份，在 Actions 的运行页面下载），步骤见 `deploy/openwrt/README.md` 的「打包」。
-
-与 systemd 版的差异：
-
-- 进程以 root 运行，没有 `ProtectSystem` 和独立运行账号；因此 helper 的 `--allowed-uid` 是 0，它也只执行 root 所有、组和其他用户写不进的 init 脚本
-- 面板默认只听 LAN 口当前的 IPv4 地址，不听 `0.0.0.0`；要改用 UCI 的 `kixdns-panel.main.bind`，见 `deploy/openwrt/README.md` 的「面板的监听地址」
-- OpenWrt 的 `/var` 是 tmpfs，数据库必须放在 overlay 上（安装脚本放 `/etc/kixdns-panel/`），否则重启就丢
-- 卸载用 `sh /usr/libexec/kixdns-panel-uninstall`（`--purge` 连配置和数据一起删，`--keep-kernel` 只卸面板），见 `deploy/openwrt/README.md` 的「卸载」
-- 查询日志默认放内存（`/tmp/kixdns-panel/querylog`，重启清空），默认保存 1 天、最多 16 MB；能设多大按这台设备的剩余空间算，要长期保留可以用 UCI 放到 U 盘上，见 `deploy/openwrt/README.md` 的「查询日志」
-- 服务状态优先用 `ubus call service list` 问 procd：实例在但没 running 判为 failed（触发「起不来就退回」），服务不在列表才判为 inactive；ubus 不可用才退回 pid 文件 + `/proc/<pid>`
-- 日志页的级别取每行时间戳之后的第一个词（INFO/WARN/ERROR），不再整行搜关键字，避免 `terror.example.com`、`no error` 误判
-- 启停按钮对应 init 脚本的 `enable start` / `stop disable`，与 systemd 的持久化语义一致
-- 内核在线更新取 `-musl` 内核包；存之前先看闪存还剩多少：够就照常留下上一个，只够放新内核就不留上一个（系统页会说明），放不下就不更新。新内核起不来时照样自动换回原来的，见 `deploy/openwrt/README.md`
-- 面板在线更新取 Release 里本架构的 OpenWrt 安装包：helper 起一次性 procd 服务 `kixdns-panel-update` 跑更新器，按 GitHub 公布的 SHA-256 和包里的 `SHA256SUMS` 校验后用 `install.sh --panel-only-update` 只换面板，内核不停、DNS 不断，装不成就整个放回。下载和解包在 `/tmp`（内存），日志用 `logread -e kixdns-panel-update` 看，见 `deploy/openwrt/README.md` 的「面板在线更新」
+和 systemd 版不同的地方：面板默认只听 LAN 口的地址，查询日志默认放内存，进程以 root 运行。启用 DNS、更新、卸载和常用设置见 [`deploy/openwrt/README.md`](../deploy/openwrt/README.md)，实现细节和自己编译打包见 [`deploy/openwrt/DEVELOPMENT.md`](../deploy/openwrt/DEVELOPMENT.md)。
 
 ## 首次访问
 
