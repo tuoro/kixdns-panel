@@ -29,7 +29,9 @@ cleanup() {
   local status=$?
   if ((status != 0)) && docker inspect "${NAME}" >/dev/null 2>&1; then
     printf '\n---- 容器里的日志 / logs from the container ----\n' >&2
-    docker exec "${NAME}" sh -c 'logread | tail -80; echo; tail -40 /var/log/kixdns.log 2>/dev/null' >&2 || true
+    docker exec "${NAME}" sh -c 'logread | tail -80; echo; tail -40 /var/log/kixdns.log 2>/dev/null
+      echo; ip addr; ip route; netstat -lnt; nft list ruleset 2>/dev/null | head -60' >&2 || true
+    docker inspect -f '{{json .NetworkSettings.Networks}}' "${NAME}" >&2 || true
   fi
   [[ -z ${SERVER_PID} ]] || kill "${SERVER_PID}" 2>/dev/null || true
   docker rm -f "${NAME}" >/dev/null 2>&1 || true
