@@ -423,6 +423,12 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     spawn_metrics_sampler(state.clone());
     querylog::spawn_querylog_collector(state.clone());
     updates::spawn_legacy_kernel_replacement(state.clone());
+    // procd 后端（OpenWrt）的内核日志写在内存盘上：一直跑着时也按大小滚 / The procd backend's (`OpenWrt`'s) kernel log lives on
+    // a RAM disk: it rolls by size while the kernel keeps running too
+    #[cfg(unix)]
+    if let Some(logfile) = settings.service_log.clone() {
+        crate::operations::spawn_service_log_rollover(logfile);
+    }
     let api = api_router(state);
 
     let index_file = settings.web_root.join("index.html");

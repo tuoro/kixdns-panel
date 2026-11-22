@@ -68,8 +68,8 @@ SHA256SUMS                              上面每个文件的 SHA-256
 ```
 
 注意 OpenWrt 的 `/var` 是 tmpfs：数据库若放 `/var/lib/...`（上游默认）重启就丢，所以这里
-统一改到 `/etc/kixdns-panel/`。日志放 `/var/log` 也是 tmpfs，重启即清空，需要长期保留就自行
-做日志轮转或改到 overlay。
+统一改到 `/etc/kixdns-panel/`。内核日志放 `/var/log` 也是 tmpfs，重启即清空；它占的是内存，所以内核启动时、
+以及内核一直跑着时面板每 5 分钟看一眼，超过 8 MiB 就挪到 `kixdns.log.1`（换掉上一份）、原文件从头再写，最多占 16 MiB 左右。
 
 日志写在内存里，所以内核默认的日志级别和 systemd 版一样是 `info,kixdns::engine::phases=warn`：
 启动、重载、告警照常记，**逐请求的应答记录不记**。每个查询一行约 250 字节，只增不减地占着路由器的内存，
