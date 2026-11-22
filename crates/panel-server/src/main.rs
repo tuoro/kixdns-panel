@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -176,10 +177,15 @@ impl Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // 颜色码只给终端：标准输出接到 journald 或 OpenWrt 的 logd 时，转义序列会原样记进日志，
+    // `logread` 和日志文件里就满是 `[2m`、`[32m`
+    // Colour codes are for terminals only: with stdout going to journald or OpenWrt's logd the
+    // escape sequences are stored verbatim, filling `logread` and log files with `[2m` and `[32m`
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     let args = Args::parse();
