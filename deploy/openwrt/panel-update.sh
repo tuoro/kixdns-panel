@@ -48,7 +48,9 @@ write_status() {
 	state=$1
 	message=$2
 	[ -d "${STATUS_DIRECTORY}" ] || mkdir -p "${STATUS_DIRECTORY}" || return 1
-	[ -d "${STATUS_DIRECTORY}" ] && [ ! -L "${STATUS_DIRECTORY}" ] || return 1
+	if [ ! -d "${STATUS_DIRECTORY}" ] || [ -L "${STATUS_DIRECTORY}" ]; then
+		return 1
+	fi
 	chmod 0755 "${STATUS_DIRECTORY}" || return 1
 	temporary="${STATUS_DIRECTORY}/.status.$$"
 	# jshn 负责 JSON 转义；它用到没设过的变量，在 set -u 下跑不了 / jshn takes care of JSON escaping; it reads variables
@@ -261,7 +263,9 @@ main() {
 	tar -xozf "${archive}" -C "${WORK}/package" || fail "解开安装包失败"
 	rm -f -- "${archive}"
 	package="${WORK}/package/${package_name}"
-	[ -f "${package}/SHA256SUMS" ] && [ -f "${package}/install.sh" ] || fail "安装包目录结构无效"
+	if [ ! -f "${package}/SHA256SUMS" ] || [ ! -f "${package}/install.sh" ]; then
+		fail "安装包目录结构无效"
+	fi
 	(cd "${package}" && sha256sum -c -s SHA256SUMS) || fail "安装包里的文件与 SHA256SUMS 不符"
 	[ "$(cat "${package}/PANEL_RELEASE" 2>/dev/null)" = "${tag}" ] || fail "安装包记录的版本与 Release ${tag} 不一致"
 
