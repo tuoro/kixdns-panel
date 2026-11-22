@@ -25,6 +25,21 @@ die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 
 mkdir -p "$DEST_BIN" "$DEST_LIBEXEC" "$DEST_SHARE" "$DEST_STATE/geo" "$ROOT/etc/kixdns" "$ROOT/var/log" "$ROOT/run/kixdns-panel"
 
+# 升级时先记下内核原来是否在运行 / 是否开机自启：下面要停掉旧进程才能替换二进制，
+# 装完得把原来在运行的重新拉起来，否则升级一次 DNS 就断了；提示也要按真实状态写。
+# On upgrade, remember whether the kernel was running / enabled before we stop it to replace
+# the binaries, so we can bring it back afterwards and report the real state.
+kernel_was_running=0
+kernel_was_enabled=0
+if [ -x "$DEST_ETC/init.d/kixdns" ]; then
+	if pidof kixdns >/dev/null 2>&1 || [ -f "$ROOT/var/run/kixdns.pid" ]; then
+		kernel_was_running=1
+	fi
+	if "$DEST_ETC/init.d/kixdns" enabled >/dev/null 2>&1; then
+		kernel_was_enabled=1
+	fi
+fi
+
 # 先停旧实例，避免 "Text file busy"
 for svc in kixdns-panel kixdns-panel-helper kixdns; do
 	[ -x "$DEST_ETC/init.d/$svc" ] && "$DEST_ETC/init.d/$svc" stop 2>/dev/null || true
@@ -67,8 +82,17 @@ if [ "${START_DNS:-0}" = "1" ]; then
 	"$DEST_ETC/init.d/kixdns" enable
 	"$DEST_ETC/init.d/kixdns" start
 	say "已启动 KixDNS 内核（已设为开机自启）"
+elif [ "$kernel_was_running" = "1" ]; then
+	# 升级前内核在运行：装完原样拉起来，别让一次升级把 DNS 断掉。
+	# The kernel was running before the upgrade: bring it back so the upgrade does not break DNS.
+	"$DEST_ETC/init.d/kixdns" start
+	say "内核升级前在运行，已重新启动"
 else
-	say "内核未启动，也未设为开机自启（确认 53 端口空闲后执行 /etc/init.d/kixdns enable && /etc/init.d/kixdns start）"
+	if [ "$kernel_was_enabled" = "1" ]; then
+		say "内核未启动（升级前也未在运行），仍保持开机自启；需要时执行 /etc/init.d/kixdns start"
+	else
+		say "内核未启动，也未设为开机自启（确认 53 端口空闲后执行 /etc/init.d/kixdns enable && /etc/init.d/kixdns start）"
+	fi
 	say "注意：OpenWrt 默认的 dnsmasq 占着 53 端口，启用内核前要先停掉或在面板里把 dnsmasq 挪到别的端口"
 fi
 

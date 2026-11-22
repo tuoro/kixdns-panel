@@ -123,9 +123,13 @@ tar -C "$pkg" -czf kixdns-panel-openwrt-aarch64.tar.gz .
 ## 安装
 
 ```sh
-sh install.sh              # 只装面板，内核不启动、也不设为开机自启
+sh install.sh              # 全新安装只装面板，内核不启动、也不设为开机自启
 START_DNS=1 sh install.sh  # 装完顺手启动内核（占用 53 端口）
 ```
+
+升级时（重复执行 `install.sh`）脚本会先记下内核原来是否在运行、是否开机自启：原来在运行的，
+装完会自动重新 `start`（不会因为升级把 DNS 断掉）；原来就设了开机自启的也保持自启。`START_DNS=1`
+依然是显式要求启动内核的意思。
 
 OpenWrt 默认的 dnsmasq 占着 53 端口。启用内核（`START_DNS=1` 或之后手动
 `/etc/init.d/kixdns enable && /etc/init.d/kixdns start`）之前，先把 dnsmasq 换到别的端口
