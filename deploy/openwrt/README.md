@@ -179,8 +179,9 @@ START_DNS=1 sh install.sh  # 装完顺手启动内核（占用 53 端口）
 1. 面板请 helper 起一次性 procd 服务 `kixdns-panel-update`，由它运行 `/usr/libexec/kixdns-panel-update`。它是自己的
    procd 实例，安装时停掉面板和 helper，它也照样跑完；它不开机自启，跑完就退出。
 2. 更新器用 `uclient-fetch` 读 `tuoro/kixdns-panel` 的最新正式版，不会降级；只认 Release 里这个仓库这个标签下、
-   已上传完的 `kixdns-panel-openwrt-<架构>.tar.gz`，下载到 `/tmp`（内存，不多写闪存），按 GitHub 公布的 SHA-256、
-   包里的 `SHA256SUMS` 和 `PANEL_RELEASE` 校验，包里只许有普通文件和目录。
+   已上传完的 `kixdns-panel-openwrt-<架构>.tar.gz`，从 GitHub API 的资产地址下载（跳转到
+   `release-assets.githubusercontent.com`，不走 `github.com`，连不上会再试，最多 3 次）到 `/tmp`（内存，不多写闪存），
+   按 GitHub 公布的 SHA-256、包里的 `SHA256SUMS` 和 `PANEL_RELEASE` 校验，包里只许有普通文件和目录。
 3. 校验通过后运行包里的 `install.sh --panel-only-update`：只换面板，内核不停、DNS 不断；装不成就整个放回去。
 
 进度和结果写在 `/var/lib/kixdns-panel-update/status.json`，系统页据此显示；完整输出用 `logread -e kixdns-panel-update` 看。
