@@ -1092,8 +1092,113 @@ fn truncate(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
+/// procd 后端的内核日志写在内存盘上（OpenWrt 的 /var/log）：超过这么大就滚一次 / The procd backend's kernel log lives on a RAM
+/// disk (`OpenWrt`'s /var/log): past this size it is rolled
+pub const SERVICE_LOG_ROLL_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(unix)]
+const SERVICE_LOG_CHECK_EVERY: Duration = Duration::from_mins(5);
+
+/// 每 5 分钟看一眼内核日志，超过 [`SERVICE_LOG_ROLL_BYTES`] 就滚一次。init 脚本只在内核启动时滚，内核一直跑着时日志会一直长，
+/// 占的是路由器的内存
+/// Looks at the kernel log every 5 minutes and rolls it past [`SERVICE_LOG_ROLL_BYTES`]. The init script rolls only when the
+/// kernel starts, so a kernel left running would grow its log for good, in the router's memory
+#[cfg(unix)]
+pub fn spawn_service_log_rollover(logfile: PathBuf) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(SERVICE_LOG_CHECK_EVERY);
+        loop {
+            tick.tick().await;
+            let path = logfile.clone();
+            match tokio::task::spawn_blocking(move || {
+                roll_service_log(&path, SERVICE_LOG_ROLL_BYTES)
+            })
+            .await
+            {
+                Ok(Ok(true)) => {
+                    tracing::info!(path = %logfile.display(), "内核日志超过 8 MiB，滚到 .1");
+                }
+                Ok(Ok(false)) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, path = %logfile.display(), "内核日志没滚成");
+                }
+                Err(error) => tracing::warn!(%error, "滚内核日志的任务异常结束"),
+            }
+        }
+    });
+}
+
+/// 日志超过 `limit` 就把内容复制到 `<日志>.1`（换掉上一份），再把原文件截成 0。内核以追加方式写（`>>`），截短以后接着从头写，
+/// 不用重启它。返回滚了没有；文件不存在、不是普通文件、没超过都不滚
+/// Past `limit`, the log's content is copied to `<log>.1` (replacing the previous one) and the file truncated to 0. The
+/// kernel appends (`>>`), so after the truncation it carries on from the start with no restart. Returns whether it rolled;
+/// a missing file, one that is not a regular file, or one within the limit is left alone
+#[cfg(unix)]
+pub(crate) fn roll_service_log(path: &std::path::Path, limit: u64) -> std::io::Result<bool> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_file() || metadata.len() <= limit {
+        return Ok(false);
+    }
+    let mut rolled = path.as_os_str().to_owned();
+    rolled.push(".1");
+    let rolled = PathBuf::from(rolled);
+    // 先删掉旧的 .1 再复制：是符号链接也不跟着写过去 / The old .1 goes first, then the copy: a symlink there is not written
+    // through
+    match std::fs::remove_file(&rolled) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::copy(path, &rolled)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .set_len(0)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
+    /// 内核日志超过上限才滚：内容挪到 .1（换掉上一份），原文件截成 0，之后接着追加；没超过、不存在、是目录都不动
+    /// The kernel log rolls only past the limit: its content moves to .1 (replacing the previous one), the file is truncated
+    /// to 0 and appending carries on; within the limit, missing or a directory, nothing happens
+    #[cfg(unix)]
+    #[test]
+    fn the_service_log_rolls_past_its_limit() {
+        use std::io::Write;
+
+        let directory = tempfile::tempdir().unwrap();
+        let log = directory.path().join("kixdns.log");
+        assert!(
+            !super::roll_service_log(&log, 10).unwrap(),
+            "a missing log is left alone"
+        );
+        std::fs::write(&log, "0123456789").unwrap();
+        assert!(
+            !super::roll_service_log(&log, 10).unwrap(),
+            "at the limit nothing rolls"
+        );
+        std::fs::write(directory.path().join("kixdns.log.1"), "older").unwrap();
+        let mut writer = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        writer.write_all(b"abc\n").unwrap();
+        assert!(super::roll_service_log(&log, 10).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("kixdns.log.1")).unwrap(),
+            "0123456789abc\n"
+        );
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+        // 一直开着、以追加方式写的那一方接着从头写 / The writer that kept it open in append mode carries on from the start
+        writer.write_all(b"after\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "after\n");
+        assert!(
+            !super::roll_service_log(directory.path(), 0).unwrap(),
+            "a directory is left alone"
+        );
+    }
+
     use hickory_proto::op::{Message, MessageType};
     use serde_json::json;
     use tokio::net::UdpSocket;
