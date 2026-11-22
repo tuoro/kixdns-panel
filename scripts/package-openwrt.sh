@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 拼 OpenWrt 安装包：目录结构照 deploy/openwrt/README.md 的「目录布局与来源」，包里带上自带内核的身份（bundle/），
+# 拼 OpenWrt 安装包：目录结构照 deploy/openwrt/DEVELOPMENT.md 的「安装包」，包里带上自带内核的身份（bundle/），
 # 三个程序都得是这个架构的静态链接程序。写出 <输出目录>/kixdns-panel-openwrt-<架构>/ 和同名的 .tar.gz。
 # CI 和本机都用这一份：本机拼出来的包就能直接拿去真机或虚拟机上试。
-# Assembles the OpenWrt package: the layout follows "目录布局与来源" in deploy/openwrt/README.md, the package carries
+# Assembles the OpenWrt package: the layout follows "安装包" in deploy/openwrt/DEVELOPMENT.md, the package carries
 # the bundled kernel's identity (bundle/), and all three programs must be statically linked programs of this
 # architecture. Writes <output>/kixdns-panel-openwrt-<arch>/ and a .tar.gz of the same name. CI and local runs share
 # this script, so a package assembled locally can go straight onto a device or a VM.
@@ -77,7 +77,7 @@ main() {
   cp -- "${kernel}/kixdns" "${package}/bin/kixdns"
   cp -- "${programs}/kixdns-panel-server" "${package}/bin/kixdns-panel-server"
   cp -- "${programs}/kixdns-panel-helper" "${package}/libexec/kixdns-panel-helper"
-  cp -- "${root}/deploy/openwrt/panel-update.sh" "${package}/libexec/kixdns-panel-update"
+  cp -- "${root}/deploy/openwrt/one-click-install.sh" "${package}/libexec/kixdns-panel-update"
   cp -- "${root}/deploy/openwrt/uninstall.sh" "${package}/libexec/kixdns-panel-uninstall"
   cp -R -- "${web}/." "${package}/web/"
   for file in geosite.dat geosite.json geoip.dat LICENSE; do

@@ -27,7 +27,11 @@
 
 需要带 systemd 的 Linux x86_64/ARM64，GLIBC 2.35 及以上（Ubuntu 22.04、Debian 12 或更新）。一键安装另需 `curl`、`jq`、`unzip`。
 
-OpenWrt 这类用 procd、没有 systemd 的系统不在这条一键安装里：Release 里有单独的 OpenWrt 安装包 `kixdns-panel-openwrt-<架构>.tar.gz`，装好后面板和内核都能在系统页在线更新，步骤见[部署指南的 OpenWrt 一节](docs/deployment.md#openwrt--procd没有-systemd)和 [`deploy/openwrt/`](deploy/openwrt/README.md)。
+OpenWrt（24.10、25.12，x86_64、arm64）用自己的一条命令，在路由器上执行；装好后面板和内核都在系统页在线更新，见 [`deploy/openwrt/`](deploy/openwrt/README.md)：
+
+```sh
+uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/openwrt/one-click-install.sh | sh
+```
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh | sudo bash

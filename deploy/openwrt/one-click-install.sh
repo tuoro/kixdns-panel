@@ -1,22 +1,35 @@
 #!/bin/sh
 # shellcheck shell=sh
-# KixDNS 面板 —— OpenWrt 上的面板在线更新器（装到 /usr/libexec/kixdns-panel-update）。
-# 面板点「在线更新」后，服务助手让 procd 起 /etc/init.d/kixdns-panel-update 这个一次性服务来跑它：它在自己的 procd 实例里，
-# 安装器停掉面板和服务助手时它不会跟着被停。它读 tuoro/kixdns-panel 的最新正式 Release，下载本架构的 OpenWrt 安装包，
-# 按 GitHub 公布的 SHA-256 和包里的 SHA256SUMS 校验，再用 install.sh --panel-only-update 只更新面板（内核不动）。
-# 进度和结果写进状态文件，系统页据此显示；完整输出在 logread -e kixdns-panel-update。
+# KixDNS 面板 —— OpenWrt 的一键安装和面板在线更新（同一个脚本，install.sh 把它装到 /usr/libexec/kixdns-panel-update）。
 #
-# KixDNS panel: the online updater on OpenWrt (installed as /usr/libexec/kixdns-panel-update). When the panel's online
-# update is pressed, the service helper has procd start the one-shot service /etc/init.d/kixdns-panel-update, which runs
-# this: it lives in its own procd instance, so the installer stopping the panel and the helper does not stop it. It reads
-# the newest stable release of tuoro/kixdns-panel, downloads this architecture's OpenWrt package, checks it against the
-# SHA-256 GitHub publishes and the package's SHA256SUMS, then updates only the panel (not the kernel) with
-# install.sh --panel-only-update. Progress and the outcome go into the status file the system page shows; the full output
-# is in logread -e kixdns-panel-update.
+# 一键安装：读 tuoro/kixdns-panel 的最新正式 Release，取本架构的 OpenWrt 安装包，按 GitHub 公布的 SHA-256 和包里的
+# SHA256SUMS 校验，再运行包里的 install.sh：
+#   uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/openwrt/one-click-install.sh | sh
+#   ... | sh -s -- --start-dns         # 装完连内核一起启动（它接管 53 端口，dnsmasq 的 DNS 挪到 5353，DHCP 照常）
+#   ... | sh -s -- --version v4.3.7    # 装指定的正式版
+#   ... | sh -s -- --reinstall         # 已经是这个版本也重装一遍
+#
+# 面板在线更新（--panel-update）：面板点「在线更新」后，服务助手让 procd 起 /etc/init.d/kixdns-panel-update 这个一次性
+# 服务带着它运行：它在自己的 procd 实例里，安装器停掉面板和服务助手时它不会跟着被停。不降级，用 install.sh
+# --panel-only-update 只更新面板（内核不动）；进度和结果写进面板读的状态文件，完整输出在 logread -e kixdns-panel-update。
+#
+# 安装包从 GitHub API 的资产地址下载（跳转到 release-assets.githubusercontent.com），不走 github.com；连不上会再试。
+#
+# KixDNS panel: OpenWrt's one-command install and the panel's online update (one script, installed by install.sh as
+# /usr/libexec/kixdns-panel-update). One-command install reads the newest stable release of tuoro/kixdns-panel, takes this
+# architecture's OpenWrt package, checks it against the SHA-256 GitHub publishes and the package's SHA256SUMS, then runs
+# the package's install.sh (see the commands above). The online update (--panel-update) is run by the one-shot procd
+# service /etc/init.d/kixdns-panel-update, which the service helper starts when the panel's online update is pressed: it
+# lives in its own procd instance, so the installer stopping the panel and the helper does not stop it. It never
+# downgrades and updates only the panel (not the kernel) with install.sh --panel-only-update; progress and the outcome go
+# into the status file the panel reads, and the full output is in logread -e kixdns-panel-update. The package is
+# downloaded from the GitHub API's asset address (redirecting to release-assets.githubusercontent.com), not github.com,
+# and tried again when it fails.
 set -u
 
 REPOSITORY="tuoro/kixdns-panel"
 RELEASE_API="https://api.github.com/repos/${REPOSITORY}/releases/latest"
+TAG_API="https://api.github.com/repos/${REPOSITORY}/releases/tags"
 DOWNLOAD_PREFIX="https://github.com/${REPOSITORY}/releases/download"
 # 安装包从 GitHub API 的资产地址下载（跳转到 release-assets.githubusercontent.com），不走 github.com：有的网络里 github.com
 # 解析出来的地址时通时不通，uclient-fetch 又只试第一个地址，而 api.github.com 和 githubusercontent 通常是通的
@@ -43,6 +56,12 @@ MAX_REASON_BYTES=240
 
 TARGET_VERSION=""
 WORK=""
+# install（一键安装，默认）或 update（--panel-update，面板的在线更新） / install (one-command install, the default) or
+# update (--panel-update, the panel's online update)
+MODE=install
+VERSION=""
+START_DNS_AFTER=0
+REINSTALL=0
 
 cleanup() {
 	case ${WORK} in
@@ -81,9 +100,23 @@ write_status() {
 # 记下失败并退出；原因同时进 logd / Record the failure and exit; the reason also goes to logd
 fail() {
 	trap - INT TERM HUP
-	printf '%s\n' "$1" >&2
-	write_status failed "在线更新失败：$1" || true
+	if [ "${MODE}" = update ]; then
+		printf '%s\n' "$1" >&2
+		write_status failed "在线更新失败：$1" || true
+	else
+		printf '错误：%s\n' "$1" >&2
+	fi
 	exit 1
+}
+
+# 进度：在线更新时写进状态文件给面板看，一键安装时打在屏幕上 / Progress: into the status file for the panel during an online
+# update, on screen during a one-command install
+report() {
+	if [ "${MODE}" = update ]; then
+		write_status "$1" "$2"
+	else
+		printf '==> %s\n' "$2"
+	fi
 }
 
 # 从安装器的 stderr 里挑原因：带「错误：」或「失败」的最后一行，没有就用最后一个非空行；去掉控制字符和「错误：」前缀，
@@ -191,41 +224,62 @@ validate_archive() {
 	awk '{ kind = substr($1, 1, 1); if (kind != "-" && kind != "d") exit 1 }' "${WORK}/listing"
 }
 
-main() {
-	[ "$(id -u)" = 0 ] || {
-		printf '%s\n' '面板在线更新要以 root 运行' >&2
-		exit 1
-	}
-	for command_name in uclient-fetch jsonfilter sha256sum tar flock; do
-		command -v "${command_name}" >/dev/null 2>&1 || fail "缺少 ${command_name}"
+# 经管道运行时读不到脚本自己，用法写在这里 / Run through a pipe the script cannot read itself, so the usage lives here
+usage() {
+	cat <<'USAGE'
+用法：
+  uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/openwrt/one-click-install.sh | sh
+  ... | sh -s -- --start-dns         装完连内核一起启动（它接管 53 端口，dnsmasq 的 DNS 挪到 5353，DHCP 照常）
+  ... | sh -s -- --version v4.3.7    装指定的正式版
+  ... | sh -s -- --reinstall         已经是这个版本也重装一遍
+USAGE
+}
+
+parse_arguments() {
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--panel-update) MODE=update ;;
+		--start-dns) START_DNS_AFTER=1 ;;
+		--reinstall) REINSTALL=1 ;;
+		--version)
+			[ $# -ge 2 ] || fail "--version 后面要写版本，比如 v4.3.7"
+			VERSION=$2
+			shift
+			;;
+		--version=*) VERSION=${1#--version=} ;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*) fail "不认识的参数：$1（--help 看用法）" ;;
+		esac
+		shift
 	done
-	mkdir -p "${LOCK_FILE%/*}"
-	exec 9>>"${LOCK_FILE}"
-	if ! flock -n 9; then
-		# 另一个更新正在写状态文件；这里再写一份失败会盖掉它的进度
-		# Another update owns the status file; writing a failure here would overwrite its progress
-		printf '%s\n' '已有面板在线更新任务正在执行' >&2
-		exit 1
+	if [ -n "${VERSION}" ]; then
+		valid_release "${VERSION}" || fail "版本要写成 vX.Y.Z，比如 v4.3.7"
+		[ "${MODE}" = install ] || fail "--version 只用于一键安装"
 	fi
-	trap cleanup EXIT
-	trap 'fail "在线更新被中断"' INT TERM HUP
-	write_status checking "正在检查最新正式版" || {
-		printf '%s\n' "写不了状态文件 ${STATUS_FILE}" >&2
-		exit 1
-	}
+}
 
-	architecture=$(detect_architecture) || fail "不支持这台设备的架构 $(uname -m)"
-	asset="kixdns-panel-openwrt-${architecture}.tar.gz"
-	WORK=$(mktemp -d "${WORK_PARENT}/kixdns-panel-update.XXXXXX") || fail "无法在 ${WORK_PARENT} 建临时目录"
-	chmod 0700 "${WORK}"
-
-	fetch "${RELEASE_API}" "${WORK}/release.json" ||
-		fail "读取最新正式版失败：路由器连不上 GitHub，或者 GitHub 暂时限制了匿名访问；稍后再试"
+# 读 Release 信息：最新正式版，或者 --version 指定的那个 / Read the release: the newest stable one, or the one --version names
+read_release() {
+	if [ -n "${VERSION}" ]; then
+		fetch "${TAG_API}/${VERSION}" "${WORK}/release.json" ||
+			fail "读取 ${VERSION} 失败：没有这个版本，或者路由器连不上 GitHub、GitHub 暂时限制了匿名访问"
+	else
+		fetch "${RELEASE_API}" "${WORK}/release.json" ||
+			fail "读取最新正式版失败：路由器连不上 GitHub，或者 GitHub 暂时限制了匿名访问；稍后再试"
+	fi
 	tag=$(jsonfilter -i "${WORK}/release.json" -e '@.tag_name') ||
-		fail "GitHub 返回的最新正式版信息无法解析"
-	valid_release "${tag}" || fail "最新正式版标签 ${tag} 不是 vX.Y.Z 格式"
+		fail "GitHub 返回的正式版信息无法解析"
+	valid_release "${tag}" || fail "正式版标签 ${tag} 不是 vX.Y.Z 格式"
+	[ -z "${VERSION}" ] || [ "${tag}" = "${VERSION}" ] || fail "GitHub 返回的版本 ${tag} 不是要的 ${VERSION}"
 	TARGET_VERSION=${tag}
+}
 
+# 在线更新只往前走：比当前面板旧的不装，已经是这一版就说一声结束 / The online update only moves forward: nothing older than the
+# current panel, and the same version ends with a word
+check_update_wanted() {
 	current_release=$(environment_value KIXDNS_PANEL_INSTALLED_RELEASE)
 	binary_release="v$("${PANEL_SERVER}" --version 2>/dev/null | awk 'NF >= 2 { print $NF; exit }')"
 	valid_release "${binary_release}" || fail "无法读取当前面板程序的版本"
@@ -235,13 +289,21 @@ main() {
 		! release_gt "${current_release}" "${floor}" || floor=${current_release}
 	fi
 	! release_gt "${floor}" "${tag}" || fail "最新正式版 ${tag} 低于当前面板 ${floor}，不会降级"
-	if [ "${current_release}" = "${tag}" ]; then
-		write_status complete "当前面板已经是最新正式版"
-		return 0
-	fi
+	[ "${current_release}" != "${tag}" ]
+}
 
-	# 只认 Release 里刚好一个、已上传完的本架构安装包，地址必须是这个仓库这个标签下的
-	# Exactly one uploaded package for this architecture in the release, at this repository's address for this tag
+# 一键安装：已经装着这一版就不重装（--reinstall 除外） / One-command install: the same version already installed is not
+# installed again (unless --reinstall)
+check_install_wanted() {
+	[ "${REINSTALL}" = 0 ] || return 0
+	[ -x "${PANEL_SERVER}" ] || return 0
+	[ "$(environment_value KIXDNS_PANEL_INSTALLED_RELEASE)" != "${tag}" ]
+}
+
+# 只认 Release 里刚好一个、已上传完的本架构安装包，地址必须是这个仓库这个标签下的；下载、校验、解开，留下 $package
+# Exactly one uploaded package for this architecture in the release, at this repository's address for this tag; download,
+# check and unpack it, leaving $package
+fetch_package() {
 	filter="@.assets[@.name='${asset}' && @.state='uploaded']"
 	count=$(jsonfilter -i "${WORK}/release.json" -e "${filter}.name" | wc -l)
 	[ "${count}" -eq 1 ] || fail "Release ${tag} 里没有本架构（${architecture}）的 OpenWrt 安装包"
@@ -272,7 +334,7 @@ main() {
 	[ "${have_kib}" -ge "${need_kib}" ] ||
 		fail "${WORK_PARENT} 剩余 $((have_kib / 1024)) MiB，下载和解包要 $((need_kib / 1024)) MiB；先腾出内存再试"
 
-	write_status downloading "正在下载并校验 ${tag}"
+	report downloading "正在下载并校验 ${tag}（${architecture}，$((size / 1048576)) MB）"
 	archive="${WORK}/${asset}"
 	fetch "${ASSET_API}/${asset_id}" "${archive}" application/octet-stream ||
 		fail "下载安装包失败（试了 3 次）：路由器连不上 api.github.com 或 release-assets.githubusercontent.com；检查网络后再试"
@@ -289,15 +351,75 @@ main() {
 	fi
 	(cd "${package}" && sha256sum -c -s SHA256SUMS) || fail "安装包里的文件与 SHA256SUMS 不符"
 	[ "$(cat "${package}/PANEL_RELEASE" 2>/dev/null)" = "${tag}" ] || fail "安装包记录的版本与 Release ${tag} 不一致"
+}
 
-	write_status downloading "正在安装 ${tag}，面板会重启一下"
-	errors="${WORK}/errors"
-	if ! sh "${package}/install.sh" --panel-only-update 2>"${errors}"; then
-		cat -- "${errors}" >&2
-		fail "$(failure_reason "${errors}")"
+main() {
+	parse_arguments "$@"
+	[ "$(id -u)" = 0 ] || fail "要以 root 运行"
+	for command_name in uclient-fetch jsonfilter sha256sum tar; do
+		command -v "${command_name}" >/dev/null 2>&1 || fail "缺少 ${command_name}"
+	done
+	if [ "${MODE}" = update ]; then
+		command -v flock >/dev/null 2>&1 || fail "缺少 flock"
+		mkdir -p "${LOCK_FILE%/*}"
+		exec 9>>"${LOCK_FILE}"
+		if ! flock -n 9; then
+			# 另一个更新正在写状态文件；这里再写一份失败会盖掉它的进度
+			# Another update owns the status file; writing a failure here would overwrite its progress
+			printf '%s\n' '已有面板在线更新任务正在执行' >&2
+			exit 1
+		fi
 	fi
-	cat -- "${errors}" >&2
-	write_status complete "面板已更新到 ${tag}"
+	trap cleanup EXIT
+	trap 'fail "被中断"' INT TERM HUP
+	if [ "${MODE}" = update ]; then
+		write_status checking "正在检查最新正式版" || {
+			printf '%s\n' "写不了状态文件 ${STATUS_FILE}" >&2
+			exit 1
+		}
+	else
+		if [ -n "${VERSION}" ]; then
+			report checking "正在读取 ${VERSION} 的信息"
+		else
+			report checking "正在读取最新正式版的信息"
+		fi
+	fi
+
+	architecture=$(detect_architecture) || fail "不支持这台设备的架构 $(uname -m)"
+	asset="kixdns-panel-openwrt-${architecture}.tar.gz"
+	WORK=$(mktemp -d "${WORK_PARENT}/kixdns-panel-update.XXXXXX") || fail "无法在 ${WORK_PARENT} 建临时目录"
+	chmod 0700 "${WORK}"
+
+	read_release
+	if [ "${MODE}" = update ]; then
+		if ! check_update_wanted; then
+			write_status complete "当前面板已经是最新正式版"
+			return 0
+		fi
+	elif ! check_install_wanted; then
+		report complete "已经装着 KixDNS 面板 ${tag}；要重装加 --reinstall"
+		return 0
+	fi
+
+	fetch_package
+
+	if [ "${MODE}" = update ]; then
+		write_status downloading "正在安装 ${tag}，面板会重启一下"
+		errors="${WORK}/errors"
+		if ! sh "${package}/install.sh" --panel-only-update 2>"${errors}"; then
+			cat -- "${errors}" >&2
+			fail "$(failure_reason "${errors}")"
+		fi
+		cat -- "${errors}" >&2
+		write_status complete "面板已更新到 ${tag}"
+	else
+		report installing "正在安装 KixDNS 面板 ${tag}"
+		if [ "${START_DNS_AFTER}" = 1 ]; then
+			START_DNS=1 sh "${package}/install.sh" || fail "安装没有完成，原来的文件已经放回（见上面的输出）"
+		else
+			sh "${package}/install.sh" || fail "安装没有完成，原来的文件已经放回（见上面的输出）"
+		fi
+	fi
 }
 
 main "$@"

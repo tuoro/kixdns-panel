@@ -233,6 +233,21 @@ JSON
   owrt '! ls -d /etc/kixdns-panel /etc/kixdns /etc/config/kixdns-panel 2>/dev/null' || fail "--purge 没有删干净"
   dnsmasq_on 53 || fail "--purge 以后 dnsmasq 不在 53 上"
 
+  log "一键安装：经管道运行，从上面那个假的 Release 装，顺手启动内核"
+  # 包里带的就是同一个脚本（装到 /usr/libexec/kixdns-panel-update）；只把它要连的地址指到这里
+  # The package carries the same script (installed as /usr/libexec/kixdns-panel-update); only its addresses point here
+  owrt "sed -e 's|^RELEASE_API=.*|RELEASE_API=\"http://${gateway}:8765/release.json\"|' \
+    -e 's|^DOWNLOAD_PREFIX=.*|DOWNLOAD_PREFIX=\"http://${gateway}:8765/download\"|' \
+    -e 's|^ASSET_API=.*|ASSET_API=\"http://${gateway}:8765/assets\"|' \
+    /root/package/${package_name}/libexec/kixdns-panel-update > /root/one-click.sh"
+  owrt "touch /etc/config/kixdns-panel; uci set kixdns-panel.main=panel; uci set kixdns-panel.main.bind='0.0.0.0:${PORT}'; uci commit kixdns-panel"
+  owrt 'cat /root/one-click.sh | sh -s -- --start-dns'
+  [[ $(curl -sS "http://${PANEL}/api/v1/health") == *"\"version\":\"${version}\""* ]] || fail "一键安装以后面板没有答出 ${version}"
+  owrt "grep -q '^KIXDNS_PANEL_INSTALLED_RELEASE=v${version}$' /etc/kixdns-panel/panel.env" || fail "一键安装没有记下 v${version}"
+  wait_until 20 "一键安装以后内核在 53 上" kernel_on_53
+  dnsmasq_on 5353 || fail "一键安装 --start-dns 以后 dnsmasq 没有挪到 5353"
+  owrt 'cat /root/one-click.sh | sh' | grep -q '已经装着' || fail "同一版本再运行一键安装，应该说已经装着、不再重装"
+
   log "通过"
 }
 

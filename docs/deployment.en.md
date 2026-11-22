@@ -137,59 +137,15 @@ KixDNS listens on `0.0.0.0:53` by default. Before changing the host, the install
 
 ### OpenWrt / procd (no systemd)
 
-OpenWrt runs services under procd: there is no `systemctl` and no `journalctl`, and the distribution is musl rather than GLIBC, so it has packages of its own: `kixdns-panel-openwrt-x86_64.tar.gz` and `kixdns-panel-openwrt-arm64.tar.gz` in the official releases, with the panel, the service helper and the kernel all statically linked against musl. Their contents come from `deploy/openwrt/` in this repository: four init scripts, the panel's start-up settings, a sample `pipeline.json`, an install script and the online updater.
+OpenWrt has packages of its own, with the panel, the service helper and the kernel all statically linked against musl, for OpenWrt 24.10 and 25.12 on x86_64 and arm64. On the router run:
 
-The panel gained a replaceable service backend for this. The status and log switches are opt-in; the init-script switch has a default path `/etc/init.d/kixdns` and is used only when there is no `systemctl`. Without these parameters the behaviour is the unchanged systemd one:
-
-| With systemd | On OpenWrt | Switch |
-| --- | --- | --- |
-| `systemctl show --property=ActiveState,SubState,MainPID` for status | `ubus call service list` (tells "the user stopped it" from "it crashed and was not brought back"); only when ubus is unusable does it fall back to the pid file + `/proc/<pid>` | `--service-pidfile` / `KIXDNS_SERVICE_PIDFILE` |
-| `journalctl -u kixdns -o json` for logs | read the log file directly (last 8 MiB only), paging by absolute byte offset in the file | `--service-log` / `KIXDNS_SERVICE_LOG` |
-| helper calls `systemctl start|stop|restart` | when there is no `systemctl`, run `enable start` / `stop disable` / `restart` through the init script | `--init-script` (default `/etc/init.d/kixdns`) |
-
-The helper looks for `systemctl` first and uses it when found; only when it is missing does it fall back to the init script, and it errors only when it has neither. One binary therefore serves both Debian/Ubuntu and OpenWrt.
-
-Download and unpack it on the router and run `sh install.sh` (`START_DNS=1` also starts the kernel); the commands are in
-"安装" (installation) in `deploy/openwrt/README.md`. Enabling the kernel hands it port 53: the DNS of OpenWrt's own
-dnsmasq moves to 5353, DHCP carries on, and the kernel passes `.lan` host names to it; disabling the kernel gives it all
-back, see "53 端口和 dnsmasq" (port 53 and dnsmasq) in `deploy/openwrt/README.md`. From then on both the panel and the
-kernel update online from the System page. Running a
-newer `install.sh` upgrades too: an upgrade is all or nothing and puts everything back when it fails, and a kernel the
-panel installed online stays as long as it is not older than the bundled one, so it is never downgraded.
-
-To build it yourself (aarch64 router shown; swap the target for x86_64): On musl the panel and helper link
-C code (bundled SQLite, zstd, ring), so besides `rustup target add` you need a musl C cross toolchain;
-the simplest is cargo-zigbuild:
-
-```bash
-rustup target add aarch64-unknown-linux-musl
-pip install ziglang cargo-zigbuild
-cargo zigbuild --release --locked --target aarch64-unknown-linux-musl \
-  -p kixdns-panel-server -p kixdns-panel-helper
-cd web && npm ci && npm run build
+```sh
+uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/openwrt/one-click-install.sh | sh
 ```
 
-You can also use a native musl/gcc toolchain (`apt install musl-tools` on x86_64; for aarch64 the matching
-musl cross compiler with `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER` and `CC_aarch64_unknown_linux_musl` set).
+Then open `http://<router LAN address>:5738`. Pressing 启动 (start) on the 系统 (System) page has the kernel take over port 53: dnsmasq's DNS moves to 5353, DHCP carries on, and `.lan` host names go to dnsmasq; 停止 (stop) gives it all back. Both the panel and the kernel update online from the System page.
 
-`bin/kixdns` is the kernel, the musl build from the fork [tuoro/kixdns](https://github.com/tuoro/kixdns)'s Releases
-(published from `2026.11.22.2`).
-
-The package is put together by `scripts/package-openwrt.sh` (CI builds one every run, downloadable from the Actions run
-page); see "打包" (packaging) in `deploy/openwrt/README.md`.
-
-Differences from the systemd version:
-
-- processes run as root with no `ProtectSystem` and no separate accounts, so the helper's `--allowed-uid` is 0, and it only runs an init script owned by root that neither group nor others can write
-- the panel listens only on the LAN interface's current IPv4 address by default, not `0.0.0.0`; change it with the UCI option `kixdns-panel.main.bind`, see "面板的监听地址" (panel listen address) in `deploy/openwrt/README.md`
-- `/var` is a tmpfs on OpenWrt, so the database lives on the overlay (`/etc/kixdns-panel/`)
-- uninstall with `sh /usr/libexec/kixdns-panel-uninstall` (`--purge` removes the config and data too, `--keep-kernel` removes only the panel); see "卸载" (uninstall) in `deploy/openwrt/README.md`
-- the query log sits in memory by default (`/tmp/kixdns-panel/querylog`, cleared at a reboot), kept for a day and capped at 16 MB by default; the largest cap allowed follows the device's free space, and the UCI option can move it to a USB drive to keep it; see "查询日志" (query log) in `deploy/openwrt/README.md`
-- service status asks procd through `ubus call service list` first: instances present but not running read as failed (triggering "did not come up" rollback), only a service absent from the list reads as inactive; ubus unusable falls back to the pid file + `/proc/<pid>`
-- the logs page takes the level from the first word after each line's timestamp (INFO/WARN/ERROR) instead of scanning the whole line, so `terror.example.com` and `no error` are not misread
-- the start/stop buttons drive the init script's `enable start` / `stop disable`, matching systemd's persistence
-- kernel online updates take the `-musl` kernel package and check the room on the flash before storing it: with room the previous kernel is kept as usual, with room for the new one only no previous kernel is kept (the System page says so), and with no room there is no update. A new kernel that does not start is still switched back automatically; see `deploy/openwrt/README.md`
-- the panel's online update takes this architecture's OpenWrt package from the release: the helper starts the one-shot procd service `kixdns-panel-update` to run the updater, which checks the package against the SHA-256 GitHub publishes and the package's `SHA256SUMS`, then replaces only the panel with `install.sh --panel-only-update`: the kernel keeps running, DNS stays up, and a failed install is put back whole. Downloads and unpacking happen in `/tmp` (memory); read the log with `logread -e kixdns-panel-update`; see "面板在线更新" (panel online update) in `deploy/openwrt/README.md`
+Differences from the systemd version: the panel listens only on the LAN interface's address by default, the query log sits in memory by default, and processes run as root. Enabling DNS, updates, uninstalling and common settings are in [`deploy/openwrt/README.md`](../deploy/openwrt/README.md); the implementation, building and packaging are in [`deploy/openwrt/DEVELOPMENT.md`](../deploy/openwrt/DEVELOPMENT.md).
 
 ## First access
 
