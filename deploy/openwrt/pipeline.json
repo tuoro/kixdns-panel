@@ -8,7 +8,8 @@
     "upstream_timeout_ms": 2000,
     "cache_background_refresh": true,
     "cache_refresh_threshold_percent": 15,
-    "cache_refresh_min_ttl": 6
+    "cache_refresh_min_ttl": 6,
+    "flow_control_enabled": true
   },
   "pipelines": [
     {

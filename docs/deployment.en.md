@@ -145,7 +145,7 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 Then open `http://<router LAN address>:5738`. Pressing 启动 (start) on the 系统 (System) page has the kernel take over port 53: dnsmasq's DNS moves to 5353, DHCP carries on, and `.lan` host names go to dnsmasq; 停止 (stop) gives it all back. Both the panel and the kernel update online from the System page.
 
-**Turn on flow control on a router** (配置 → 基础设置 → 智能流控, Config → Basic settings → Flow control; save and restart KixDNS once): it is off by default, and without it, when a device floods queries while the upstream answers slowly, the system may kill the kernel for running out of memory.
+**On a router, keep flow control on.** Packages newer than v4.3.7 install with it on. An install made with v4.3.7 or earlier has it off, and upgrading leaves that as it is: turn it on at 配置 → 基础设置 → 智能流控 (Config → Basic settings → Flow control), then save and restart KixDNS once. Without it, when a device floods queries while the upstream answers slowly, the system may kill the kernel for running out of memory.
 
 Differences from the systemd version: the panel listens only on the LAN interface's address by default, the query log sits in memory by default, and processes run as root. Enabling DNS, updates, uninstalling and common settings are in [`deploy/openwrt/README.md`](../deploy/openwrt/README.md); the implementation, building and packaging are in [`deploy/openwrt/DEVELOPMENT.md`](../deploy/openwrt/DEVELOPMENT.md).
 

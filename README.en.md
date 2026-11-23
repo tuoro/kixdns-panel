@@ -53,7 +53,7 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 Then open `http://<router LAN address>:5738`. Starting KixDNS from the 系统 (System) page has it take over port 53: dnsmasq's DNS moves to 5353 and DHCP carries on; stopping it gives everything back. Updates, uninstalling and common settings are in [`deploy/openwrt/`](deploy/openwrt/README.md) (Chinese).
 
 > [!IMPORTANT]
-> **Turn on flow control on a router**: 配置 → 基础设置 → 智能流控 (Config → Basic settings → Flow control), save, and restart KixDNS when the panel asks. It is off by default. A router has little memory: without it, when a device floods queries while the upstream answers slowly, the system may kill the kernel for running out of memory and DNS goes down. With it on, the device sending too much gets SERVFAIL and the other devices resolve as usual. [Details (Chinese)](deploy/openwrt/README.md#启用-dns)
+> **On a router, keep flow control on.** Packages newer than v4.3.7 install with it on. An install made with v4.3.7 or earlier has it off, and upgrading leaves that as it is: turn it on at 配置 → 基础设置 → 智能流控 (Config → Basic settings → Flow control), save, and restart KixDNS when the panel asks. A router has little memory: without it, when a device floods queries while the upstream answers slowly, the system may kill the kernel for running out of memory and DNS goes down. With it on, the device sending too much gets SERVFAIL and the other devices resolve as usual. [Details (Chinese)](deploy/openwrt/README.md#启用-dns)
 
 What changed in each version is in [Releases](https://github.com/tuoro/kixdns-panel/releases).
 
