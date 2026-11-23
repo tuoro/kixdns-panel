@@ -44,7 +44,7 @@ libexec/kixdns-panel-uninstall     deploy/openwrt/uninstall.sh
 web/                               web/ 执行 npm run build 的产物
 geo/                               内置 GeoSite（scripts/fetch-builtin-geosite.sh）
 init/*.init                        deploy/openwrt/init/ 的四个 procd init 脚本
-etc/pipeline.json                  deploy/openwrt/pipeline.json：[::]:53，.lan 转给 127.0.0.1:5353 的 dnsmasq
+etc/pipeline.json                  deploy/openwrt/pipeline.json：[::]:53，.lan 转给 127.0.0.1:5353 的 dnsmasq，智能流控开着
 bundle/KIXDNS_*                    自带内核的身份（scripts/fetch-kixdns-release.sh … musl 写出的七个文件）
 PANEL_BUILD_COMMIT PANEL_RELEASE   面板的构建提交、正式版标签（正式版的包才有 PANEL_RELEASE）
 SHA256SUMS                         上面每个文件的 SHA-256
