@@ -39,7 +39,12 @@ start_service() {
 	procd_set_param env RUST_LOG="${RUST_LOG:-info,kixdns::engine::phases=warn}"
 	procd_set_param pidfile "$PIDFILE"
 	procd_set_param respawn 3600 5 5
-	procd_set_param limits nofile="65536"
+	# procd 照「软上限 硬上限」读：只写一个数时只设软上限，硬上限还是默认的 4096，软的超过硬的，setrlimit 失败、不报错，
+	# 内核就只有 1024 个描述符。和 systemd 版的 LimitNOFILE=65536 一样，两个都写
+	# procd reads "soft hard": with one number only the soft limit is set, the hard one stays at the default 4096, the soft
+	# exceeding the hard makes setrlimit fail without a word, and the kernel is left with 1024 descriptors. As in the
+	# systemd unit's LimitNOFILE=65536, both are written
+	procd_set_param limits nofile="65536 65536"
 	procd_close_instance
 }
 

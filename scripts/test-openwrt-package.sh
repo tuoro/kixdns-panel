@@ -164,6 +164,7 @@ UCI
   answer="$(api POST /service/start)"
   [[ $(status_of "${answer}") == 200 ]] || fail "面板启动内核失败：${answer}"
   wait_until 20 "内核在 53 上" kernel_on_53
+  owrt 'grep -q "^Max open files *65536 *65536 " "/proc/$(pidof kixdns)/limits"' || fail "内核的描述符上限没有设成 65536"
   dnsmasq_on 5353 || fail "dnsmasq 没有挪到 5353"
   owrt '[ "$(uci -q get kixdns-panel.handover)" = dnsmasq ] && uci -q get dhcp.lan.dhcp_option | grep -q "6,0.0.0.0"' ||
     fail "接管记录或 DHCP 的 DNS 选项不对"
