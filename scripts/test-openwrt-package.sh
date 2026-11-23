@@ -170,6 +170,7 @@ UCI
   wait_until 20 "经内核解析 probehost.lan（.lan 交给 dnsmasq）" resolves probehost.lan 10.9.9.9
   wait_until 20 "经内核解析 example.com" resolves example.com
   owrt 'nslookup example.com ::1 2>/dev/null | grep -q "^Address: "' || fail "内核没有在 IPv6 上答"
+  [[ $(api GET /overview) == *'"flow":{"enabled":true'* ]] || fail "新装的内核没有开着智能流控"
 
   log "在面板里停止内核：53 还给 dnsmasq"
   answer="$(api POST /service/stop)"
