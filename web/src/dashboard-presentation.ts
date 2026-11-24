@@ -112,23 +112,31 @@ export interface ShareRow {
   share: number
 }
 
-const RCODE_LABELS: Record<string, string> = { NoError: 'NOERROR', NXDomain: 'NXDOMAIN', ServFail: 'SERVFAIL', Refused: 'REFUSED' }
-const RCODE_ORDER = ['NoError', 'NXDomain', 'ServFail', 'Refused']
+/**
+ * 单列的四个常见响应码，按内核和配置的写法（RFC 的助记名）。较早的内核写成 hickory 的 NoError、NXDomain 等，转成大写
+ * 就是同一个名字，所以两种都认。
+ *
+ * The four common response codes listed on their own, spelt as the kernel and the configuration
+ * spell them (the RFC mnemonics). Older kernels wrote hickory's NoError, NXDomain and so on, which
+ * upper-cased are the same names, so both are read.
+ */
+const COMMON_RCODES = ['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED']
 
 /** 全部上游的响应码分布；四个常见响应码单列，其余合并为"其他"。 */
 export function rcodeDistribution(upstreams: readonly UpstreamCount[]): ShareRow[] {
   const totals = new Map<string, number>()
   for (const upstream of upstreams) {
     for (const rcode of upstream.rcodes) {
-      const key = RCODE_ORDER.includes(rcode.name) ? rcode.name : 'other'
+      const name = rcode.name.toUpperCase()
+      const key = COMMON_RCODES.includes(name) ? name : 'other'
       totals.set(key, (totals.get(key) ?? 0) + rcode.count)
     }
   }
   const total = [...totals.values()].reduce((sum, value) => sum + value, 0)
   if (total === 0) return []
-  return [...RCODE_ORDER, 'other']
+  return [...COMMON_RCODES, 'other']
     .filter((key) => (totals.get(key) ?? 0) > 0)
-    .map((key) => ({ key, label: RCODE_LABELS[key] ?? '其他', count: totals.get(key) ?? 0, share: (totals.get(key) ?? 0) / total }))
+    .map((key) => ({ key, label: key === 'other' ? '其他' : key, count: totals.get(key) ?? 0, share: (totals.get(key) ?? 0) / total }))
 }
 
 /**

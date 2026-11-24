@@ -391,10 +391,14 @@ fn rcode_name(code: u16) -> Cow<'static, str> {
         "NOERROR", "FORMERR", "SERVFAIL", "NXDOMAIN", "NOTIMP", "REFUSED", "YXDOMAIN", "YXRRSET",
         "NXRRSET", "NOTAUTH", "NOTZONE",
     ];
-    NAMES.get(usize::from(code)).map_or_else(
-        || Cow::Owned(format!("RCODE{code}")),
-        |name| Cow::Borrowed(*name),
-    )
+    match code {
+        // 扩展 RCODE 16，和内核的写法一致 / Extended RCODE 16, spelt as the kernel spells it
+        16 => Cow::Borrowed("BADVERS"),
+        _ => NAMES.get(usize::from(code)).map_or_else(
+            || Cow::Owned(format!("RCODE{code}")),
+            |name| Cow::Borrowed(*name),
+        ),
+    }
 }
 
 /// 读编好的记录：数字是变长整数（每个字节七位，高位说后面还有），文字是长度加原文；可有可无的项，文字和枚举前面
@@ -562,6 +566,17 @@ impl Json<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 响应码按配置和内核的写法起名：0–10 是 RFC 的助记名，扩展 RCODE 16 是 BADVERS，其余写成 RCODE 加数字
+    /// Response codes are named as the configuration and the kernel name them: the RFC mnemonics
+    /// for 0–10, BADVERS for extended RCODE 16, RCODE and the number for the rest
+    #[test]
+    fn rcodes_are_named_as_the_kernel_names_them() {
+        assert_eq!(rcode_name(0), "NOERROR");
+        assert_eq!(rcode_name(5), "REFUSED");
+        assert_eq!(rcode_name(16), "BADVERS");
+        assert_eq!(rcode_name(23), "RCODE23");
+    }
 
     /// 内核生成的样本：一页 150 条随机的记录（每种步骤、要转义的文字、截断的报错、IPv6 客户端、各种应答），二进制
     /// 和 JSON 各一份。内核那边的格式一改，样本就要重新生成，这里也跟着红
