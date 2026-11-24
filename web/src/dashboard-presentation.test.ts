@@ -97,12 +97,19 @@ describe('上游健康与分布', () => {
 
   it('响应码分布合并所有上游并把少见响应码归为其他', () => {
     const rows = rcodeDistribution([
-      { ...base, attempts: 10, success: 10, aborted: 0, avg_latency_ms: 1, rcodes: [{ name: 'NoError', count: 60 }, { name: 'NXDomain', count: 30 }, { name: 'NotImp', count: 5 }] },
-      { ...base, upstream: '8.8.8.8:53', attempts: 10, success: 10, aborted: 0, avg_latency_ms: 1, rcodes: [{ name: 'NoError', count: 5 }] },
+      { ...base, attempts: 10, success: 10, aborted: 0, avg_latency_ms: 1, rcodes: [{ name: 'NOERROR', count: 60 }, { name: 'NXDOMAIN', count: 30 }, { name: 'NOTIMP', count: 5 }] },
+      { ...base, upstream: '8.8.8.8:53', attempts: 10, success: 10, aborted: 0, avg_latency_ms: 1, rcodes: [{ name: 'NOERROR', count: 5 }] },
     ])
     expect(rows.map((row) => [row.label, row.count])).toEqual([['NOERROR', 65], ['NXDOMAIN', 30], ['其他', 5]])
     expect(rows[0].share).toBeCloseTo(0.65)
     expect(rcodeDistribution([])).toEqual([])
+  })
+
+  it('响应码分布也认较早内核的 hickory 写法', () => {
+    const rows = rcodeDistribution([
+      { ...base, attempts: 10, success: 10, aborted: 0, avg_latency_ms: 1, rcodes: [{ name: 'NoError', count: 6 }, { name: 'ServFail', count: 3 }, { name: 'NotImp', count: 1 }] },
+    ])
+    expect(rows.map((row) => [row.label, row.count])).toEqual([['NOERROR', 6], ['SERVFAIL', 3], ['其他', 1]])
   })
 
   it('缓存构成按来源拆分，无命中时为空', () => {
