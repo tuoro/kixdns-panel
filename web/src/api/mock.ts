@@ -1014,8 +1014,11 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     // 起不来的 KixDNS 只剩上次读到的快照，服务正在重试；出路在服务状态里 / A KixDNS that does not come up leaves only the last
     // snapshot, with the service retrying; the way out is in the service state
     if (restartNoAnswer) return { ...overview, live: false, service_active: false } as T
+    // 没有要叠上去的状态时交回同一个对象：演示和测试改它（停掉、改成快照）以后，下一次读照样读到 / With nothing to lay over it the same object
+    // goes back: once the demo or a test changes it (stopped, turned into a snapshot), the next read still sees that
     const restartPending = restartPendingNow()
-    return { ...overview, active_config: { ...overview.active_config, ...(restartPending.length ? { restart_pending: restartPending } : {}), ...(demoOldKernel() ? { problems: [PANEL_BLOCK_REFUSAL] } : {}) } } as T
+    const laid = { ...(restartPending.length ? { restart_pending: restartPending } : {}), ...(demoOldKernel() ? { problems: [PANEL_BLOCK_REFUSAL] } : {}) }
+    return (Object.keys(laid).length ? { ...overview, active_config: { ...overview.active_config, ...laid } } : overview) as T
   }
   // 查询日志：按当前演示配置生成（kixdns:demo-querylog-unsupported 演示内核太旧） / The query log, generated from the current demo config (kixdns:demo-querylog-unsupported plays a kernel too old)
   if (pathname === '/api/v1/querylog' && method === 'GET') return demoQueryLogPage(config.content as Record<string, unknown>, Date.now(), url.searchParams) as T
