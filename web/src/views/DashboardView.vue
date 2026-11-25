@@ -19,7 +19,9 @@ import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
 import { backUnconfirmed, downShownHere, noteRead, readBeforeTelling, useServiceStart } from '../composables/useServiceStart'
 import { serviceLabel as labelOfService, serviceTone as toneOfService, type ServiceTone } from '../service-state'
-import { settingNames } from '../config-editor/schema'
+import { settingName, settingNames } from '../config-editor/schema'
+import KernelNotes from '../components/KernelNotes.vue'
+import { dataNote, problemsNote, type KernelNote } from '../kernel-problems'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, flowView, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
@@ -30,6 +32,15 @@ import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, u
 import GlueText from '../config-v2/GlueText.vue'
 
 const overview = ref<Overview | null>(null)
+// 概览是登录后先看到的一页：KixDNS 眼下的 Geo 数据问题，和内核不认面板配置块（那样什么都存不上）先在这里说；只认活着的 KixDNS 报的
+// The overview is the first page after signing in: what KixDNS finds wrong with the Geo data right now, and a kernel not taking the panel's
+// block (nothing can be saved then), are said here first; only a live KixDNS's report counts
+const kernelNotes = computed(() => {
+  const active = overview.value?.live ? overview.value.active_config : null
+  if (!active) return []
+  const problems = problemsNote(active.problems ?? [], null, settingName)
+  return [problems?.update ? problems : null, dataNote(active.data_warnings)].filter((note): note is KernelNote => note !== null)
+})
 const service = ref<ServiceStatus | null>(null)
 const stats = ref<QueryStatsSnapshot | null>(null)
 const loading = ref(true)
@@ -836,6 +847,8 @@ onBeforeUnmount(() => {
       <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs?view=runtime">查看日志</RouterLink>
       <button v-else-if="notice.action === 'start'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startService"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button>
     </div>
+
+    <KernelNotes v-for="note in kernelNotes" :key="note.title" :note="note" />
 
     <!-- 读取失败又没有任何数据时不出页签：下面没有可切换的东西 / No tabs when reading failed with no data at all: there is nothing to switch between -->
     <UiTabs v-if="loading || displayOverview" v-model="activeView" class="overview-tabs" :items="views" label="概览视图" id-prefix="overview" />

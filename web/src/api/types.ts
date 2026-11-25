@@ -34,9 +34,29 @@ export interface ActiveConfig {
   last_reload: {
     success: boolean
     error: string | null
+    /** 重载拒掉配置的原因，逐条（error 是它们连成的一句）；内核 2026.11.24.17 起报告 / The reasons the reload refused the config for, one by one (error is them joined); reported from kernel 2026.11.24.17 */
+    problems?: string[]
   }
   /** 配置里改过、要重启 KixDNS 才生效的设置（内核的设置名）；旧内核不报告 */
   restart_pending?: string[]
+  /**
+   * 启动时读的配置里、重载和保存会拒绝的写法：照样在用，下次保存前要改掉；重载成功就清空。内核 2026.11.23.39 起报告
+   * What the config read at startup writes that a reload or a save refuses: in use all the same, to be fixed before the next save;
+   * cleared by a successful reload. Reported from kernel 2026.11.23.39
+   */
+  problems?: string[]
+  /** 在用的配置照样生效、却值得知道的写法；内核 2026.11.23.49 起报告 / What the config in use writes that takes effect all the same yet is worth knowing; reported from kernel 2026.11.23.49 */
+  warnings?: string[]
+  /**
+   * 配置文件为什么监视不了，监视着时没有：有位置监视不上时改在那里的 10 秒以内才重载，监视线程起不来时保存的配置不生效。内核 2026.11.23.49 起报告
+   * Why the config file cannot be watched, absent while it is: with places that cannot be watched a change there reloads within 10 s, and
+   * without the watch thread a save does not take. Reported from kernel 2026.11.23.49
+   */
+  watch_error?: string | null
+  /** 配了的入站 DoH 为什么没起来，只在启动时变；内核 2026.11.24.14 起报告 / Why the inbound DoH configured did not start, changing only at startup; reported from kernel 2026.11.24.14 */
+  doh_error?: string | null
+  /** Geo 数据眼下的问题，随文件实时更新；内核 2026.11.24.15 起报告 / What is wrong with the Geo data right now, kept current with the files; reported from kernel 2026.11.24.15 */
+  data_warnings?: string[]
 }
 
 export interface NamedCount {
@@ -300,6 +320,8 @@ export interface ValidationResult {
   valid: boolean
   pipeline_count: number
   rule_count: number
+  /** 这份配置照样能用、却值得知道的写法；内核 2026.11.23.49 起报告 / What this config writes that works all the same yet is worth knowing; reported from kernel 2026.11.23.49 */
+  warnings?: string[]
 }
 
 export interface ConfigApplyResult {

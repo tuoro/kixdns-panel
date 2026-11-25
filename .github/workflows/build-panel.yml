@@ -249,16 +249,21 @@ jobs:
           npm run build
 
       # 示例配置、每一种条件和结果、每一种上游写法、高级规则编辑器的每一种类型，再加按种子生成的一批（kernel-fixtures.test.ts），
-      # 拿最新的内核（main）的 config::validate 逐份校验，有一份不收就失败
+      # 拿最新的内核（main）的 config::validate 逐份校验，有一份不收就失败。基础设置页的检查（settings-kernel-fixtures.test.ts）也交给它：
+      # 页面说不收的设置要正好是内核拒的原因里说到的那几项，页面不说的内核要收
       # The samples, every condition and outcome kind, every way of writing an upstream, every type of the advanced rule editor and a
-      # seeded batch (kernel-fixtures.test.ts), each validated by the latest kernel's (main) config::validate; any refusal fails the job
+      # seeded batch (kernel-fixtures.test.ts), each validated by the latest kernel's (main) config::validate; any refusal fails the job.
+      # The settings page's checks (settings-kernel-fixtures.test.ts) go to it too: the settings the page refuses must be exactly those
+      # the kernel's reasons speak of, and what the page lets through the kernel must accept
       - name: Check compiled configs with the latest kernel (main)
         shell: bash
         env:
           KERNEL_FIXTURES: ${{ runner.temp }}/kernel-fixtures.json
+          KERNEL_SETTINGS_FIXTURES: ${{ runner.temp }}/kernel-settings-fixtures.json
         run: |
-          (cd web && npx vitest run src/config-model/kernel-fixtures.test.ts)
+          (cd web && npx vitest run src/config-model/kernel-fixtures.test.ts src/config-editor/settings-kernel-fixtures.test.ts)
           tools/kernel-config-check/target/debug/kernel-config-check < "$KERNEL_FIXTURES"
+          tools/kernel-config-check/target/debug/kernel-config-check < "$KERNEL_SETTINGS_FIXTURES"
 
       - name: Lint deployment scripts
         shell: bash

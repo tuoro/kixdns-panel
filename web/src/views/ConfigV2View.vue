@@ -21,12 +21,14 @@ import MappingTab from '../config-v2/MappingTab.vue'
 import RuleEditor, { type EditorResume } from '../config-v2/RuleEditor.vue'
 import RulesTab from '../config-v2/RulesTab.vue'
 import RuleText from '../config-v2/RuleText.vue'
+import KernelNotes from '../components/KernelNotes.vue'
+import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, saysPanelBlock } from '../kernel-problems'
 import SaveBar from '../config-v2/SaveBar.vue'
 import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, leaveMark, saveBarShown, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, leaveMark, saveBarShown, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse, runningWarningsNote, startupNote } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -238,10 +240,13 @@ const notice = computed<Notice | null>(() => {
     // 起不来时重试不了（应用要 KixDNS 在），出路是看日志 / Not coming up there is nothing to retry (applying needs KixDNS), and the
     // way out is the logs
     if (downNow) return { tone: 'err', text: `${which}没有生效。`, detail: `${why}；KixDNS 启动后会用之前那份配置`, action: '查看日志', run: openLogs, down: true, failure: true }
-    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS\u00a0已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${why}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : undefined, failure: true }
+    // 内核不认面板的配置块：重试只会再被拒一次，出路是更新内核 / The kernel does not take the panel's block: a retry would only be refused
+    // again, and the way out is updating the kernel
+    const update = saysPanelBlock(cause) && !reread
+    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS\u00a0已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${why}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : cause, action: reread ? '重新读取' : update ? KERNEL_UPDATE_LABEL : retry ? '重试应用' : undefined, run: reread ? () => reload() : update ? openUpdate : retry ? () => save('apply') : undefined, failure: true }
   }
   // 连不上面板时由顶上的横幅说；连上以后核对的结果再说应用了没有 / While the panel is unreachable the banner speaks; once back, the check says whether it applied
-  if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
+  if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n'), ...(saysPanelBlock(applyError.value) ? { action: KERNEL_UPDATE_LABEL, run: openUpdate } : {}) } }
   // 起不来、又没有可以退回的设置：状态由页头说（「启动失败」）。存了还没写进配置文件的待应用版本时给出路——KixDNS 启动时读的
   // 是配置文件，起不来就轮不到待应用的版本，直接写进去再重启（KixDNS 不在，没法先校验，确认框照实说）；草稿有修改时先保存或
   // 放弃，写完整份重读。没有、或者已经写进去了（退回、写进去以后还是起不来）时指到日志
@@ -808,6 +813,7 @@ onBeforeUnmount(() => { downShownHere.value = false })
 // 函数声明：提示条在声明之前就可能读到它（回到配置页时已经读好） / A declaration: the notice may read it before this line (on return,
 // with the page already read)
 function openLogs(): void { void router.push('/logs?view=runtime') }
+function openUpdate(): void { void router.push(KERNEL_UPDATE) }
 // 照系统页的「重启」先确认再重启，确认框写全要重启的设置（提示条只写前三项），待应用版本那句也照系统页说；等 KixDNS 回来、整份读完
 // 才说已重启，提示条随之消失
 // Confirmed first as on the system page, with every setting waiting for the restart in the dialog (the notice names only three) and the
@@ -942,6 +948,15 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" breaks @rule="openRule($event, null)" @group="openGroup($event)" /></small>
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="noticeHeld" :aria-busy="noticeRestarting || undefined" @click="runNotice"><span v-if="noticeRestarting" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>
     </div>
+    <!-- 在用的配置里下次保存前要改掉的写法：常驻，改好并生效了 KixDNS 才清掉；规则名能点 / What the config in use writes that must change before
+         the next save: it stays until a fix takes effect and KixDNS clears it; rule names are links -->
+    <KernelNotes v-if="startupNote && ready" class="cfg__kernel" :note="startupNote">
+      <template #item="{ text }"><RuleText :text="text" breaks @rule="openRule($event, null)" @group="openGroup($event)" /></template>
+    </KernelNotes>
+    <!-- 在用的配置照样生效、却值得知道的写法：灰色，不催着改 / What the config in use writes that takes effect all the same yet is worth knowing: grey, no hurry -->
+    <KernelNotes v-if="runningWarningsNote && ready" class="cfg__kernel" :note="runningWarningsNote">
+      <template #item="{ text }"><RuleText :text="text" breaks @rule="openRule($event, null)" @group="openGroup($event)" /></template>
+    </KernelNotes>
 
     <!-- 只由菜单里的「导入 JSON」打开：不进 Tab 顺序，读屏也不念一个没名字的「选择文件」 / Opened only by 导入 JSON in the menu: out of the Tab order, and screen readers do not announce a nameless "choose file" -->
     <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" tabindex="-1" aria-hidden="true" @change="importFile">

@@ -368,6 +368,80 @@ describe('内核给的英文原因', () => {
     expect(kernelWords(raw.replace('`domain_exact`', '`request_domain_exact`'))).toContain('还不认识「就是」')
     expect(kernelWords(raw.replace('`domain_exact`', '`domain_exacts`'))).toContain('KixDNS\u00a0的原话')
   })
+
+  // 2026.11.23.11 到 2026.11.25.27 的内核不认面板的配置块：不管服务端在前面加了什么、原因里还有什么，都说成同一句（提示、保存条、提示条
+  // 都经过这里），不说英文原话 / Kernels 2026.11.23.11 to 2026.11.25.27 do not take the panel's block: whatever the server put before it and
+  // whatever else the reasons say, it reads as one sentence (toasts, the save bar and the notice all pass through here), never the English words
+  it('不认面板配置块的内核：说成更新内核的那一句', async () => {
+    const { kernelWords } = await import('./useConfigDocument')
+    const { PANEL_BLOCK_HINT } = await import('../kernel-problems')
+    const raw = 'panel: the kernel does not read this key, so what it says has no effect; check its spelling and where it is written'
+    expect(kernelWords(raw)).toBe(PANEL_BLOCK_HINT)
+    expect(kernelWords(`KixDNS 没有接受这份配置：pipelines[0].rules[0].matcher: the kernel does not read this key; ${raw}`)).toBe(PANEL_BLOCK_HINT)
+  })
+})
+
+// 没等到重载时内核说监视不了配置文件，原话里的错误号（os error 28 这样）不能读成 KixDNS 停了；控制接口的套接字真不在时照旧说停了
+// When no reload came the kernel says it cannot watch the file, and an error number in its words (os error 28 and the like) must not read as
+// KixDNS having stopped; a control socket really gone still says it stopped
+describe('哪些原因说的是 KixDNS 停了', () => {
+  it('只认开头的套接字不在，错误号正好是 2', async () => {
+    const { failureCause } = await import('./useConfigDocument')
+    for (const reason of ['No such file or directory (os error 2)', '连不上 KixDNS：No such file or directory (os error 2)', '系统找不到指定的文件。 (os error 2)', 'KixDNS 已停止，仍在用之前的配置']) {
+      expect(failureCause(reason)).toBe('KixDNS 在确认新配置前停了')
+    }
+    for (const reason of ['KixDNS 没有重载新配置：它监视不了配置文件（No space left on device (os error 28)），仍在用之前的配置', '连不上 KixDNS：Too many open files (os error 24)', 'KixDNS 没有重载新配置：它监视不了配置文件（No such file or directory (os error 2)）']) {
+      expect(failureCause(reason)).not.toBe('KixDNS 在确认新配置前停了')
+    }
+  })
+})
+
+// 校验通过、内核有提醒：保存条列出来，路径换成这份草稿里的叫法 / Validation passed with warnings from the kernel: the save bar lists them, paths
+// in this draft's names
+describe('校验的提醒', () => {
+  beforeEach(() => resetTo(demoModel()))
+
+  it('换成页面上的叫法；没有提醒的校验不列', async () => {
+    const { validation, validationWarnings } = await import('./useConfigDocument')
+    validation.value = { protocol_version: 1, valid: true, pipeline_count: 1, rule_count: 1 }
+    expect(validationWarnings.value).toEqual([])
+    validation.value = { ...validation.value, warnings: ['settings.cache_capacity: 2000000 entries may take much memory'] }
+    expect(validationWarnings.value).toEqual([expect.stringMatching(/^设置\u00a0缓存容量：2000000 entries/)])
+    validation.value = null
+  })
+})
+
+// KixDNS 逐条列出了原因：保存条一条条列出来，路径换成这份草稿里的叫法；一条时就说那一条
+// KixDNS listed its reasons one by one: the save bar lists them, paths in this draft's names; a single one is said as it is
+describe('被拒的原因逐条列出', () => {
+  beforeEach(() => resetTo(demoModel()))
+
+  it('几条时结论下面一条条列，规则的路径换成规则名', async () => {
+    const { refusalLines } = await import('./useConfigDocument')
+    const { ApiError } = await import('../api/client')
+    const draft = demoModel()
+    const at = compile(draft).pipelines.findIndex((p) => p.rules.some((r) => r.name === '公司内网'))
+    const j = compile(draft).pipelines[at]!.rules.findIndex((r) => r.name === '公司内网')
+    const details = [`pipelines[${at}].rules[${j}].matchers[0]: domain_suffix "." matches every name`, 'settings.cache_capacity: must be at least 1']
+    const lines = refusalLines(new ApiError(details.join('; '), 422, 'kixdns_rejected', details), draft)!
+    expect(lines.note).toBe('KixDNS\u00a0列出了\u00a02\u00a0处要改：')
+    expect(lines.list[0]).toBe('规则「公司内网」（matchers[0]）：domain_suffix "." matches every name')
+    expect(lines.list[1]).toMatch(/^设置\u00a0缓存容量：/)
+    expect(refusalLines(new ApiError(details[1]!, 422, 'kixdns_rejected', [details[1]!]), draft)).toEqual({ note: lines.list[1], list: [] })
+    // 没有逐条的原因（更早的内核）时照原话说 / Without listed reasons (an earlier kernel) the words are said as they came
+    expect(refusalLines(new ApiError('bad', 422, 'kixdns_rejected'), draft)).toBeNull()
+  })
+
+  it('不认面板配置块时先说更新内核，其余的跟在后面', async () => {
+    const { refusalLines } = await import('./useConfigDocument')
+    const { ApiError } = await import('../api/client')
+    const { PANEL_BLOCK_HINT } = await import('../kernel-problems')
+    const panel = 'panel: the kernel does not read this key, so what it says has no effect; check its spelling and where it is written'
+    expect(refusalLines(new ApiError(panel, 422, 'kixdns_rejected', [panel]), demoModel())).toEqual({ note: PANEL_BLOCK_HINT, list: [] })
+    const both = refusalLines(new ApiError('', 422, 'kixdns_rejected', [panel, 'settings.cache_capacity: must be at least 1']), demoModel())!
+    expect(both.note).toBe(`${PANEL_BLOCK_HINT}。另外还有\u00a01\u00a0处要改：`)
+    expect(both.list).toHaveLength(1)
+  })
 })
 
 // 旧版面板编辑被两处共用的组时复制出「原名-copy」，只改了其余请求；回答后检查还指着原来的组

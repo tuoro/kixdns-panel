@@ -14,17 +14,21 @@ import {
   Square,
   Trash2,
 } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { apiRequest, jsonBody } from '../api/client'
 import type {
+  ActiveConfig,
   ConfigDocument,
   GithubTokenStatus,
   KixdnsKernel,
+  Overview,
   PanelUpdateStartResponse,
   PanelUpdateStatus,
   ServiceAction,
   ServiceStatus,
 } from '../api/types'
+import KernelNotes from '../components/KernelNotes.vue'
 import StatusBanner from '../components/StatusBanner.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiDotText from '../components/ui/UiDotText.vue'
@@ -36,7 +40,8 @@ import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
 import { switchConfirmBody, switchedMessage } from '../version-switch'
-import { settingNames } from '../config-editor/schema'
+import { settingName, settingNames } from '../config-editor/schema'
+import { KERNEL_UPDATE, dohNote, problemsNote, watchNote } from '../kernel-problems'
 import { serviceLabel as labelOfService, serviceTone as toneOfService } from '../service-state'
 
 type KernelAction = 'update' | 'rollback'
@@ -511,9 +516,45 @@ function loadKernel(silent = false): Promise<void> {
   })
 }
 
-async function refreshAll(): Promise<void> {
-  await Promise.all([loadService(true), loadKernel(true)])
+// KixDNS 报来的在用配置的状态（下次保存前要改掉的写法、监视不了配置文件、入站 DoH 没起来）：只认活着的 KixDNS 报的，停着、连不上时概览
+// 给的快照不算；读不到就不说，别的卡片照常 / The state KixDNS reports of the config in use (what must change before the next save, the
+// config file not watched, inbound DoH not started): only a live KixDNS's report counts, never the overview's snapshot while stopped or
+// unreachable; when it cannot be read nothing is said and the other cards go on
+const active = ref<ActiveConfig | null>(null)
+async function loadActive(): Promise<void> {
+  const overview = await apiRequest<Overview>('/api/v1/overview').catch(() => null)
+  if (alive) active.value = overview?.live ? overview.active_config : null
 }
+// 这一页没有配置页的规则名，路径照原样；不认面板配置块的那条先说更新内核，按钮跳到下面「可用更新」里内核那一行
+// This page has none of the config page's rule names, so paths stay as they are; the one about the panel's block says to update the kernel
+// first, its button going to the kernel's row under 可用更新 below
+const problems = computed(() => problemsNote(active.value?.problems ?? [], null, settingName))
+// 监视不了配置文件、入站 DoH 没起来：都要到系统这一层处理（重启 KixDNS、看系统的监视上限），常驻在这里，好了才收起
+// The config file not watched and inbound DoH not started: both are dealt with at the system level (a restart of KixDNS, the system's
+// watch limits), so they stay here until fixed
+const watching = computed(() => watchNote(active.value?.watch_error))
+const doh = computed(() => dohNote(active.value?.doh_error))
+
+async function refreshAll(): Promise<void> {
+  await Promise.all([loadService(true), loadKernel(true), loadActive()])
+}
+
+// 从「去更新内核」来（别的页面，或者这一页的提示）：内核那一行滚到眼前，它的按钮（更新、填写 Token）拿到焦点；检查更新、读内核（按钮
+// 读完才能按）还没回来时等它们。做完把地址里的记号去掉，之后再刷新不再跳过来 / Arriving from 去更新内核 (another page, or this page's
+// notice): the kernel's row scrolls into view and its button (更新, 填写 Token) takes the focus, waiting for the update check and the
+// kernel read (the button takes presses once that is in) if they are not back yet. Once done the mark leaves the address, so later
+// refreshes do not jump there again
+const route = useRoute()
+const router = useRouter()
+watch([() => route.hash, () => Boolean(updateStatus.value) && !loadingKernel.value], ([hash, ready]) => {
+  if (hash !== KERNEL_UPDATE.hash || !ready) return
+  void nextTick(() => {
+    const row = document.getElementById('kernel-update')
+    row?.scrollIntoView({ block: 'center' })
+    row?.querySelector<HTMLElement>('.ui-btn:not(:disabled)')?.focus({ preventScroll: true })
+    void router.replace({ hash: '' })
+  })
+}, { immediate: true })
 
 async function control(action: ServiceAction): Promise<void> {
   const names: Record<ServiceAction, string> = { start: '启动', stop: '停止', restart: '重启' }
@@ -715,6 +756,11 @@ onBeforeUnmount(() => {
     <div v-if="downNotice" class="ui-notice ui-notice--err" role="status"><CircleX :size="16" aria-hidden="true" /><span>KixDNS 启动失败</span><small>{{ downNotice.rollback ? '可能是改过的设置让 KixDNS\u00a0起不来，可以退回。' : downNotice.writable ? `版本\u00a0#${downNotice.writable}\u00a0还没写进配置文件，可以到配置页写进去。` : '起不来的原因在运行日志里。' }}</small><RouterLink class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" :to="downNotice.rollback || downNotice.writable ? '/config?section=settings' : '/logs?view=runtime'">{{ downNotice.rollback || downNotice.writable ? '去配置页' : '查看日志' }}</RouterLink></div>
     <p v-if="waitingForPanel" class="ui-notice ui-notice--off system-wait" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <template v-else>
+    <!-- 在用的配置里下次保存前要改掉的写法，和配置页同一块；不认面板配置块时它就挨着下面的内核更新 / What the config in use writes that must
+         change before the next save, the config page's block; when the panel's block is not taken it sits right by the kernel update below -->
+    <KernelNotes v-if="problems && !panelDown" :note="problems" />
+    <KernelNotes v-if="watching && !panelDown" :note="watching" />
+    <KernelNotes v-if="doh && !panelDown" :note="doh" />
     <!-- 卡片都是概览那套：小标签一行，右端一个标签或按钮；内容是细线隔开的行 / Every card follows the overview: a small label line with a tag or button at its end; rows between hairlines -->
     <section class="ui-card system-card update-panel" aria-labelledby="system-updates-label">
       <div class="system-card__head">
@@ -723,7 +769,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="checkingUpdates && !updateStatus" class="system-skeleton-rows" role="status" aria-label="正在检查更新"><i v-for="n in 2" :key="n" class="sk"></i></div>
       <div v-else-if="updateStatus" class="system-tasks" :class="{ 'is-refreshing': checkingUpdates }">
-        <UiTask class="update-row" :state="kernelTaskState" title="KixDNS 内核" :started-at="kernelUpdateStartedAt" indeterminate>
+        <UiTask id="kernel-update" class="update-row" :state="kernelTaskState" title="KixDNS 内核" :started-at="kernelUpdateStartedAt" indeterminate>
           <template #icon><Cpu :size="16" /></template>
           <template v-if="kixdnsNotice?.available" #title><span class="ui-tag ui-tag--strong">有新版本</span></template>
           <template #meta>

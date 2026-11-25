@@ -5,6 +5,7 @@ import { useToast } from '../composables/useToast'
 import { vLineDots } from '../line-dots'
 import NameText from '../config-v2/NameText.vue'
 import { toastRuns } from '../utils'
+import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, saysPanelBlock } from '../kernel-problems'
 
 const toast = useToast()
 // 提示末尾的排查命令（查看原因：journalctl …）用等宽字，按词放在一起，只在空格处换行：以前会在连字符处断开（kixdns-panel- / update.service）
@@ -80,7 +81,10 @@ watch([topModal, () => toast.messages.value.length], remeasure)
       <!-- 可撤销的那条右侧是撤销而不是叉：真正的撤销窗口就是它显示的这段时间，
            摆一个叉等于把唯一有用的动作藏起来。 -->
       <button v-if="item.undo" class="toast-undo" type="button" @click="toast.runUndo(item.id)">撤销</button>
-      <button v-else class="icon-button icon-button--small toast-close" type="button" title="关闭" aria-label="关闭提示" @click="toast.dismiss(item.id)">
+      <!-- 说内核不认面板配置块的那条（保存、恢复版本、系统写入都会这样说）：右侧直接去更新内核，叉照旧在 / The one saying the kernel does not
+           take the panel's block (a save, a restore and the system's writes all say it): a way to update the kernel sits on its right, the cross stays -->
+      <RouterLink v-if="saysPanelBlock(item.message)" class="toast-undo" :to="KERNEL_UPDATE" @click="toast.dismiss(item.id)">{{ KERNEL_UPDATE_LABEL }}</RouterLink>
+      <button v-if="!item.undo" class="icon-button icon-button--small toast-close" type="button" title="关闭" aria-label="关闭提示" @click="toast.dismiss(item.id)">
         <X :size="16" />
       </button>
     </div>

@@ -1418,11 +1418,7 @@ async fn apply_system_config(
         .await?;
     if let Err(error) = state
         .control
-        .wait_for_config(
-            &result.sha256,
-            before_reload.reload_sequence,
-            std::time::Duration::from_secs(5),
-        )
+        .wait_for_config(&result.sha256, before_reload.reload_sequence)
         .await
     {
         rollback_config(state, previous.content, &result.sha256, "system").await?;
@@ -1430,7 +1426,7 @@ async fn apply_system_config(
             "KixDNS 没有接受{}，仍在用之前的配置：{}",
             write.subject,
             match &error {
-                ControlError::Rejected(reason) => reason.clone(),
+                ControlError::Rejected(refusal) => refusal.to_string(),
                 other => reload_failure(other),
             }
         );
@@ -1461,11 +1457,7 @@ async fn rollback_config(
         .map_err(map_config_error)?;
     state
         .control
-        .wait_for_config(
-            &rollback.sha256,
-            current_sequence,
-            std::time::Duration::from_secs(5),
-        )
+        .wait_for_config(&rollback.sha256, current_sequence)
         .await
         .map_err(|error| {
             AppError::Internal(anyhow::anyhow!("自动回滚后 KixDNS 未恢复：{error}"))
@@ -1606,11 +1598,7 @@ async fn activate_candidate(
         } else {
             state
                 .control
-                .wait_for_config(
-                    &result.sha256,
-                    before_reload.reload_sequence,
-                    std::time::Duration::from_secs(5),
-                )
+                .wait_for_config(&result.sha256, before_reload.reload_sequence)
                 .await
         };
     let active_config = match active_config {
@@ -1623,7 +1611,11 @@ async fn activate_candidate(
                 .map_err(map_config_error)?;
             let message = format!("{}，仍在用之前的配置", reload_failure(&error));
             mark_candidate_failed(state, result.version_id, message.clone()).await?;
-            return Err(AppError::Unprocessable("reload_failed", message));
+            let reasons = match error {
+                ControlError::Rejected(refusal) => refusal.problems,
+                _ => Vec::new(),
+            };
+            return Err(AppError::Refused("reload_failed", message, reasons));
         }
     };
     state
@@ -2106,7 +2098,9 @@ fn map_config_error(error: ConfigError) -> AppError {
 
 fn map_control_error(error: ControlError) -> AppError {
     match error {
-        ControlError::Rejected(message) => AppError::Unprocessable("kixdns_rejected", message),
+        ControlError::Rejected(refusal) => {
+            AppError::Refused("kixdns_rejected", refusal.message, refusal.problems)
+        }
         ControlError::Unavailable(message) => AppError::ServiceUnavailable(
             "kixdns_unavailable",
             normalize_control_unavailable_message(&message),
@@ -2116,6 +2110,9 @@ fn map_control_error(error: ControlError) -> AppError {
         }
         ControlError::Unsupported(message) => {
             AppError::NotFound("kixdns_capability_unsupported", message)
+        }
+        ControlError::NotReloaded(message) => {
+            AppError::ServiceUnavailable("kixdns_not_reloaded", message)
         }
     }
 }
@@ -2131,12 +2128,12 @@ fn reload_failure(error: &ControlError) -> String {
     }
 }
 
-// 控制接口的套接字不在就是 KixDNS 停了；已经以 KixDNS 开头的句子照原样；其余说连不上。
-// A missing control socket means KixDNS has stopped; sentences already naming KixDNS stay as
-// they are; anything else says it could not be reached.
+// 控制接口的套接字不在就是 KixDNS 停了（错误号正好是 2，不是 24、28 这样开头是 2 的）；已经以 KixDNS 开头的句子照原样；其余说连不上。
+// A missing control socket means KixDNS has stopped (error number exactly 2, not 24, 28 or another starting with 2);
+// sentences already naming KixDNS stay as they are; anything else says it could not be reached.
 fn normalize_control_unavailable_message(message: &str) -> String {
     if message.contains("No such file")
-        || message.contains("os error 2")
+        || message.contains("(os error 2)")
         || message.contains("找不到指定的文件")
     {
         "KixDNS 已停止".to_owned()

@@ -49,6 +49,11 @@ const warningFor = (field: SettingField): string | undefined => (problemFor(fiel
 const warningId = (field: SettingField) => `settings-warning-${field.key}`
 const describedBy = (field: SettingField): string | undefined => (problemFor(field) ? problemId(field) : warningFor(field) ? warningId(field) : undefined)
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
+// 列出来、能改：开关打开了的，或者写错了的——开关关着的设置写错了内核照样不收，藏起来就看不到哪里要改；正在改的那一格改对了也等离开再收起
+// Listed and editable: one whose switch is on, or one written wrong — the kernel refuses a wrong setting even with its switch off, and
+// hidden it would show nowhere what to fix; the box being edited waits until it is left before going, even once put right
+const editing = reactive(new Set<string>())
+const listed = (field: SettingField) => settingVisible(field, settings.value) || Boolean(props.problems?.[field.key]) || editing.has(field.key)
 const search = ref('')
 const searchInput = ref<HTMLInputElement>()
 // 左边一列分组、右边一组设置，和解析编排的「左列表、右检查器」同一种版式；手机上先看分组列表，点进去看一组。
@@ -73,7 +78,7 @@ const visibleSections = computed(() => sections.value.map((section) => {
   const relatedKeys = new Set(matches.flatMap((field) => [field.key, ...dependencyKeys(field)]))
   const fields = query.value
     ? available.filter((field) => relatedKeys.has(field.key))
-    : available.filter((field) => settingVisible(field, settings.value))
+    : available.filter(listed)
   return { ...section, fields, matchCount: matches.length }
 }).filter((section) => section.fields.length > 0))
 
@@ -133,7 +138,7 @@ const versionMatches = computed(() => !query.value || '格式版本 version 配�
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
 const navSections = computed(() => sections.value.map((section) => ({
   ...section,
-  fields: section.fields.filter((field) => shown(field) && settingVisible(field, settings.value)),
+  fields: section.fields.filter((field) => shown(field) && listed(field)),
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
@@ -163,7 +168,7 @@ function booleanState(field: SettingField): string {
 }
 
 function disabled(field: SettingField): boolean {
-  return !settingVisible(field, settings.value)
+  return !listed(field)
 }
 
 function dependencyHint(field: SettingField): string {
@@ -222,14 +227,25 @@ function saveKey(field: SettingField, event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') commitText(field, event)
 }
 
+// 数字框里的字读不成数（打到一半的「-」「1e」）时浏览器给的值是空的：不当成清空，配置不动；离开这一格时还读不成，框里换回配置里的值，
+// 看到的就是存下的
+// A number box whose text reads as no number (a half-typed 「-」 or 「1e」) gives an empty value: not taken as cleared, the config is left
+// alone; still unreadable when the box is left, it goes back to the config's value, so what shows is what is kept
 function setNumber(field: SettingField, event: Event): void {
-  const raw = (event.currentTarget as HTMLInputElement).value
+  const input = event.currentTarget as HTMLInputElement
+  if (input.validity.badInput) return
+  const raw = input.value
   if (raw === '') {
     if (field.nullable) setValue(field.key, null)
     else unset(field.key)
     return
   }
   setValue(field.key, Number(raw))
+}
+
+function settleNumber(field: SettingField, event: Event): void {
+  const input = event.currentTarget as HTMLInputElement
+  if (input.validity.badInput) input.value = String(scalarValue(field))
 }
 
 function setBoolean(field: SettingField, event: Event): void {
@@ -280,6 +296,9 @@ function removeListItem(field: SettingField, index: number): void {
         <!-- 搜索结果里每组的标题也是区块标题，和平时一组的标题一样：和下面的设置名差了字号，不只差字重（规范 1.7，审计 T10）
              Each group heading in search results is a section title, as for a single group: it differs from the setting names in size, not only weight (spec 1.7, audit T10) -->
         <header class="settings-group__head settings-group__head--lead"><h2 tabindex="-1" data-focus-landing>{{ section.title }}</h2><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
+        <!-- 这一组设置眼下的运行情况（入站 DoH 没起来这类），由用它的页面给 / How this group's settings are faring right now (inbound DoH not
+             started and the like), given by the page using it -->
+        <slot name="note" :section="section.id" />
         <div class="settings-rows">
           <!-- 一个设置一行：左边名字和一句说明，右边控件。数字的单位写在输入框里，占位写默认值。
                One setting per row: name and a one-line note on the left, the control on the right; a number's unit sits in the input and the placeholder states the default. -->
@@ -300,8 +319,8 @@ function removeListItem(field: SettingField, index: number): void {
               <!-- 框和出错的说法在同一格里：说法紧跟在框下面，不被左边几行说明顶下去 / The box and its error share one cell, so the error follows the box
                    directly instead of being pushed down by a several-line note on the left -->
               <span class="ui-setrow__control settings-control"><span class="ui-input">
-                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setText(field, $event)" @change="commitText(field, $event)" @blur="typing.delete(field.key)" @keydown="saveKey(field, $event)">
-                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setNumber(field, $event)">
+                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setText(field, $event)" @change="commitText(field, $event)" @focus="editing.add(field.key)" @blur="typing.delete(field.key); editing.delete(field.key)" @keydown="saveKey(field, $event)">
+                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setNumber(field, $event)" @focus="editing.add(field.key)" @blur="settleNumber(field, $event); editing.delete(field.key)">
                 <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setCsv(field, $event)">
                 <em v-if="field.unit" class="ui-setrow__unit">{{ field.unit }}</em>
               </span><span v-if="problemFor(field)" :id="problemId(field)" class="ui-field-error">{{ problemFor(field) }}</span><span v-else-if="warningFor(field)" :id="warningId(field)" class="ui-field-warn">{{ warningFor(field) }}</span></span>

@@ -3,13 +3,19 @@ import { importKernel, type ImportNote } from './importer'
 import { sameKernel, type KConfigLike } from './kernel'
 import { blocklistKey, compile, emptyBlocklists, nextId, ruleGroupPipelineId, settingsFromKernel, withoutWildcard, type Model, type RawEntry, type Rule, type RuleGroup } from './model'
 
-// 配置文件里存的样子：内核配置 + 顶层 panel 键。内核和面板服务都不认 panel 这个键，也不会拒绝它（内核的 PipelineConfig 没开
-// deny_unknown_fields，面板服务只按内核能力校验）。panel 里放整份模型和一个指向内核部分的散列：打开时散列对得上就直接用模型，
+// 配置文件里存的样子：内核配置 + 顶层 panel 键。内核怎么对待 panel 看版本：2026.11.23.11 以前的内核不读它，也不拒绝（不认的键一概不管）；
+// 2026.11.23.11 到 2026.11.25.27 的内核把它当作不读的键，启动时记成一条问题，校验和重载都拒绝，面板按这条拒绝的原因认出来，提示把内核
+// 更新到最新版（见 kernel-problems.ts 的 PANEL_BLOCK_HINT）；之后的内核接受它，声明能力 config_panel_block_v1。面板服务原样转发、原样落盘，
+// 不剥掉它：剥掉就丢了面板的模型。panel 里放整份模型和一个指向内核部分的散列：打开时散列对得上就直接用模型，
 // 对不上时：只有 settings 不一样（面板服务端的系统写入只改 settings、不更新散列）就留着模型只换 settings；别处也改过（有人手改过 JSON）
 // 就按内核部分重新导入，再从上一份模型接回编号、备注、停用的规则，编出来和内核里一样的东西留上一份的写法。
-// What the config file holds: the kernel config plus a top-level panel key. Neither the kernel nor the panel server knows the key, and
-// neither rejects it (the kernel's PipelineConfig has no deny_unknown_fields; the panel server checks capabilities only). panel carries the
-// whole model and a hash of the kernel part: when the hash matches the model is used as is. When it does not: with only settings
+// What the config file holds: the kernel config plus a top-level panel key. How the kernel treats panel depends on its version: kernels
+// before 2026.11.23.11 neither read nor refuse it (they pay no heed to keys they do not know); kernels 2026.11.23.11 to 2026.11.25.27 take
+// it for a key they do not read, logging it as a problem at startup and refusing it on validation and reload, and the panel recognises
+// that refusal by its reason and asks for the kernel to be updated to the latest (see PANEL_BLOCK_HINT in kernel-problems.ts); later
+// kernels take it and declare the capability config_panel_block_v1. The panel server passes it on and stores it as it is, never
+// stripping it: that would lose the panel's model. panel carries the whole model and a hash of the kernel part: when the hash matches
+// the model is used as is. When it does not: with only settings
 // differing (the panel server's system writes change settings and leave the hash) the model stays and takes the new settings; with
 // other parts changed too (the JSON was edited by hand) the kernel part is re-imported, ids, notes and disabled rules come over from the
 // previous model, and whatever compiles to what the kernel holds keeps the previous model's form.

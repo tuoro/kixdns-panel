@@ -98,6 +98,22 @@ let config: ConfigDocument = {
   },
 }
 
+// 不认面板配置块的内核说的那一条（kixdns:demo-old-kernel），和内核 config::problems 一字不差 / What a kernel not taking the panel's block says
+// (kixdns:demo-old-kernel), word for word as the kernel's config::problems
+const PANEL_BLOCK_REFUSAL = 'panel: the kernel does not read this key, so what it says has no effect; check its spelling and where it is written'
+const demoOldKernel = () => typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-old-kernel') === 'true'
+// kixdns:demo-kernel-notes：内核报来的提醒、监视不了配置文件、入站 DoH 没起来、Geo 数据的问题都有，和真内核的原话一样
+// kixdns:demo-kernel-notes: the kernel reports warnings, a config file it cannot watch, inbound DoH not started and Geo data problems, in a real
+// kernel's words
+const demoKernelNotes = () => typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-kernel-notes') === 'true'
+const DEMO_WARNINGS = ['pipelines[0].rules[0]: jumping to "domestic" comes back round to "default", so a query that keeps going round is answered SERVFAIL once it has made every jump it may', 'settings.request_timeout_ms: 3000 is shorter than 2.5 times upstream_timeout_ms (9000), which leaves no time to ask again or fall back to TCP']
+const DEMO_STATUS = {
+  warnings: DEMO_WARNINGS,
+  watch_error: 'OS file watch limit reached. about ["/etc/kixdns/pipeline.json"]',
+  doh_error: 'settings.doh_tls_cert: cannot read /etc/kixdns/cert.pem: No such file or directory (os error 2)',
+  data_warnings: ['GeoSite data file /var/lib/kixdns-panel/geo/geosite.dat does not exist', 'GeoSite tags rules use that no data provides: netflix'],
+}
+
 const activeConfig: ActiveConfig = {
   protocol_version: 1,
   generation: 18,
@@ -1009,8 +1025,11 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     // 起不来的 KixDNS 只剩上次读到的快照，服务正在重试；出路在服务状态里 / A KixDNS that does not come up leaves only the last
     // snapshot, with the service retrying; the way out is in the service state
     if (restartNoAnswer) return { ...overview, live: false, service_active: false } as T
+    // 没有要叠上去的状态时交回同一个对象：演示和测试改它（停掉、改成快照）以后，下一次读照样读到 / With nothing to lay over it the same object
+    // goes back: once the demo or a test changes it (stopped, turned into a snapshot), the next read still sees that
     const restartPending = restartPendingNow()
-    return (restartPending.length ? { ...overview, active_config: { ...overview.active_config, restart_pending: restartPending } } : overview) as T
+    const laid = { ...(restartPending.length ? { restart_pending: restartPending } : {}), ...(demoOldKernel() ? { problems: [PANEL_BLOCK_REFUSAL] } : {}), ...(demoKernelNotes() ? DEMO_STATUS : {}) }
+    return (Object.keys(laid).length ? { ...overview, active_config: { ...overview.active_config, ...laid } } : overview) as T
   }
   // 查询日志：按当前演示配置生成（kixdns:demo-querylog-unsupported 演示内核太旧） / The query log, generated from the current demo config (kixdns:demo-querylog-unsupported plays a kernel too old)
   if (pathname === '/api/v1/querylog' && method === 'GET') return demoQueryLogPage(config.content as Record<string, unknown>, Date.now(), url.searchParams) as T
@@ -1270,6 +1289,16 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       localStorage.removeItem('kixdns:demo-validate-stopped')
       throw new ApiError('KixDNS 已停止', 503, 'kixdns_unavailable')
     }
+    // kixdns:demo-old-kernel：演一个不认面板配置块的内核（2026.11.23.11 到 2026.11.25.27），校验次次被拒
+    // kixdns:demo-old-kernel: plays a kernel that does not take the panel's block (2026.11.23.11 to 2026.11.25.27), refusing every validation
+    if (demoOldKernel()) throw new ApiError(PANEL_BLOCK_REFUSAL, 422, 'kixdns_rejected', [PANEL_BLOCK_REFUSAL])
+    // kixdns:demo-validate-reject-list：下一次校验被拒，内核逐条列出了原因（2026.11.24.17 起的内核这样回）
+    // kixdns:demo-validate-reject-list: the next validation is refused with the kernel's reasons listed one by one (as kernels from 2026.11.24.17 answer)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-reject-list') === 'true') {
+      localStorage.removeItem('kixdns:demo-validate-reject-list')
+      const reasons = ['pipelines[0].rules[0].matchers[0]: domain_suffix "." matches every name', 'pipelines[0].rules[1]: jumping to "domestic" comes back round to "default"', 'settings.cache_capacity: must be at least 1']
+      throw new ApiError(reasons.join('; '), 422, 'kixdns_rejected', reasons)
+    }
     // kixdns:demo-validate-reject：下一次校验被内核拒绝（真内核对它不接受的配置回 422 kixdns_rejected）
     // kixdns:demo-validate-reject: the next validation is rejected by the kernel (a real kernel answers 422 kixdns_rejected for a config it refuses)
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-reject') === 'true') {
@@ -1278,7 +1307,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     }
     const content = JSON.parse(String(init?.body)) as Record<string, unknown>
     const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
-    return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1 } as T
+    return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1, ...(demoKernelNotes() ? { warnings: DEMO_WARNINGS } : {}) } as T
   }
   // 退回重启前改过的设置：和真服务端一样只改那几项、存成待应用版本写进文件，再重启；回来的 KixDNS 用的是它，等页面「现在应用」
   // （或后台那一遍）记成已生效。演示里没有单独的正式文件，待应用版本里的修改照样留在这一份里

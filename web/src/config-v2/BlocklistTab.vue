@@ -22,6 +22,7 @@ import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule, s
 import { carryUpdate, noteLanded, unsavedLanding } from './updateCarry'
 import { hasApplyFailure, hasPending } from './useConfigDocument'
 import { fmtCount } from './view'
+import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, panelBlockWords, saysPanelBlock } from '../kernel-problems'
 
 // 拦截列表：订阅的列表一行一个，像域名映射那样一张卡片；下面是自己写的规则和两项设置。订阅和自己写的规则都在草稿里，
 // 保存以后生效；列表下载、合并由面板服务端做，自动更新也在服务端。订阅一变，useBlocklists 就请服务端重新合成。
@@ -473,7 +474,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
           <span>自动更新</span>
           <small v-if="scheduleParts.length"><UiDotText :parts="scheduleParts" /></small>
           <small v-else-if="scheduleHint">{{ scheduleHint }}</small>
-          <small v-if="schedule?.last_error" class="bl__warn">上次自动更新：{{ schedule.last_error }}</small>
+          <small v-if="schedule?.last_error" class="bl__warn">上次自动更新：{{ panelBlockWords(schedule.last_error) }}<template v-if="saysPanelBlock(panelBlockWords(schedule.last_error))"><RouterLink class="ui-link kernel-update-link" :to="KERNEL_UPDATE">{{ KERNEL_UPDATE_LABEL }}</RouterLink></template></small>
         </span>
         <span class="ui-setrow__control bl__schedule"><UiSelect :model-value="scheduleValue" :options="scheduleOptions" label="自动更新" :disabled="!schedule || scheduleSaving" @update:model-value="setSchedule" /></span>
       </div>

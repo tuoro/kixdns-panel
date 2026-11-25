@@ -72,6 +72,18 @@ describe('API 客户端', () => {
     expect(expired).toHaveBeenCalledOnce()
   })
 
+  // KixDNS 不接受配置时服务端把它逐条列的原因放在 details 里：页面要一条条列出来；没有时是空的
+  // When KixDNS refuses a config the server puts the reasons it listed in details: the page lists them one by one; empty without any
+  it('留下错误里逐条的细节', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '{"error":{"code":"kixdns_rejected","message":"a; b","details":["a","b"]}}',
+      { status: 422, headers: { 'content-type': 'application/json' } },
+    )))
+    await expect(apiRequest('/api/v1/config/validate', { method: 'POST' })).rejects.toMatchObject({ code: 'kixdns_rejected', message: 'a; b', details: ['a', 'b'] })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":{"code":"kixdns_rejected","message":"a"}}', { status: 422 })))
+    await expect(apiRequest('/api/v1/config/validate', { method: 'POST' })).rejects.toMatchObject({ details: [] })
+  })
+
   it('登录凭据错误只保留错误提示，不广播会话失效', async () => {
     const eventTarget = new EventTarget()
     const expired = vi.fn()

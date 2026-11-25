@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CONFIG_BOOTSTRAP_V1, CONFIG_SERVE_STALE_TTL_RESET_V2, SETTING_SECTIONS, geoSummary, settingName, settingNames, settingSections, settingValues } from './schema'
+import { CONFIG_BOOTSTRAP_V1, CONFIG_SERVE_STALE_TTL_RESET_V2, RETIRED_SETTINGS, SETTING_SECTIONS, geoSummary, retiredIn, settingName, settingNames, settingSections, settingValues } from './schema'
 
 // 查询排行一直开着、客户端地址照原样记：基础设置里没有这两个开关
 // Rankings are always on with whole client addresses: the settings carry neither switch
@@ -127,5 +127,21 @@ describe('设置照内核的能力读', () => {
     const plain = (capabilities: string[]) => settingSections(capabilities, {}).flatMap((section) => section.fields).filter((item) => !['bootstrap', 'serve_stale_ttl_reset'].includes(item.key))
     expect(plain([])).toEqual(plain([CONFIG_BOOTSTRAP_V1, CONFIG_SERVE_STALE_TTL_RESET_V2]))
     expect(plain([])).toEqual(SETTING_SECTIONS.flatMap((section) => section.fields).filter((item) => !['bootstrap', 'serve_stale_ttl_reset'].includes(item.key)))
+  })
+})
+
+// 内核不再读的旧设置（和内核对得上见 settings-kernel-fixtures.test.ts）：表单里没有，说起来有名字，按写的顺序认出来
+// Settings the kernel no longer reads (matched with the kernel in settings-kernel-fixtures.test.ts): not in the form, named when spoken of,
+// found in the order written
+describe('退役的旧设置', () => {
+  it('表单里一项也没有，每项都有面板的名字（智能流控那几个数字除外）', () => {
+    const keys = SETTING_SECTIONS.flatMap((section) => section.fields.map((field) => field.key))
+    expect(RETIRED_SETTINGS.filter((key) => keys.includes(key))).toEqual([])
+    expect(RETIRED_SETTINGS.filter((key) => !key.startsWith('flow_control_')).map(settingName))
+      .toEqual(['预取', 'TCP 错误阈值', '查询统计', '客户端地址脱敏', 'GeoIP 自动转换', 'GeoIP 国家过滤'])
+  })
+  it('按写的顺序认出来，别的设置不算', () => {
+    expect(retiredIn({ cache_capacity: 1, statistics_enabled: true, flow_control_enabled: true, flow_control_max_permits: 512 })).toEqual(['statistics_enabled', 'flow_control_max_permits'])
+    expect(retiredIn({})).toEqual([])
   })
 })

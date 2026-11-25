@@ -2,12 +2,14 @@ import { computed, ref, watch } from 'vue'
 import { ApiError, CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import { useConfirm } from '../composables/useConfirm'
 import { registerHeldDraft } from '../composables/useLeaveGuard'
-import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
+import type { ActiveConfig, ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { normalUrl } from '../config-model/blocklist'
-import { exportConfig, readConfig } from '../config-model/document'
+import { exportConfig, kernelPart, readConfig } from '../config-model/document'
 import { setKernelCapabilities } from '../config-model/grammar'
-import { blocklistKey, compileNamed, draftPipelineClashes, mappingPipelineId, type Model, type Rule } from '../config-model/model'
-import { traceNames } from '../config-model/trace-names'
+import { blocklistKey, compile, compileNamed, draftPipelineClashes, mappingPipelineId, type Model, type Rule } from '../config-model/model'
+import { placeNames, traceNames } from '../config-model/trace-names'
+import { settingName } from '../config-editor/schema'
+import { PANEL_BLOCK_HINT, dataNote, describeProblem, describeProblems, dohNote, problemsNote, refusesPanelBlock, warningsNote } from '../kernel-problems'
 import { useConnection } from '../composables/useConnection'
 import { ROLLBACK_LABELS, configPageOpen, nameWith, noteRead, restartingKixdns, startingKixdns, versionName, type RollbackOrigin } from '../composables/useServiceStart'
 import { dashboardRuntimeState } from '../dashboard-state'
@@ -87,6 +89,21 @@ function effectToast(text: string, withTail = Boolean(restartTail())): number {
 export const runtimeCapabilities = ref<string[]>([])
 // 编辑器照运行中内核的能力读记录类型（grammar.ts） / The editor reads record types by the running kernel's capabilities (grammar.ts)
 watch(runtimeCapabilities, setKernelCapabilities)
+// KixDNS 报来的在用配置的状态（下次保存时会拒收的写法、提醒、监视不了文件、DoH 没起来、Geo 数据的问题）：只认活着的 KixDNS 报的，停着、
+// 连不上时快照里那份不算 / The state KixDNS reports of the config in use (what the next save will refuse, warnings, a file it cannot watch,
+// DoH not started, Geo data problems): only a live KixDNS's report counts, never the snapshot's while it is stopped or unreachable
+const runtimeActive = ref<ActiveConfig | null>(null)
+// 页面上的叫法照在用的那份认：面板上这份文件就是 KixDNS 在用的时候，路径换成规则名；不是（有待应用、文件不一样）时照原样
+// Names follow the config in use: while the file on the panel is the one KixDNS runs, paths become rule names; otherwise (pending, a different
+// file) they stay as they are
+const runningNames = computed(() => {
+  const running = doc.value && doc.value.runtime.active_sha256 === doc.value.sha256 ? doc.value : null
+  return running ? placeNames(appliedModel.value, kernelPart(running.content)) : null
+})
+export const startupNote = computed(() => problemsNote(runtimeActive.value?.problems ?? [], runningNames.value, settingName))
+export const runningWarningsNote = computed(() => warningsNote(runtimeActive.value?.warnings ?? [], runningNames.value, settingName))
+export const runtimeDohNote = computed(() => dohNote(runtimeActive.value?.doh_error))
+export const runtimeDataNote = computed(() => dataNote(runtimeActive.value?.data_warnings))
 // 从页头「现在应用」「校验并应用」发起、又没走到服务端记录失败的那一步时的原因 / The reason when an apply from the header failed before the server could record it
 export const applyError = ref('')
 // 「KixDNS 已停止」那条提示在它又跑起来以后就过时了 / The 「KixDNS 已停止」 notice is stale once it runs again
@@ -95,6 +112,15 @@ watch(runtimeStopped, (now, was) => { if (was && !now && applyError.value.starts
 // The pending version took effect later (the background pass, another page), or another writer's version replaced it: the 「版本 #N …没有应用」 notice is stale
 watch(() => doc.value?.pending?.version_id ?? null, (now, was) => { if (was !== null && now !== was && !hasApplyFailure.value) { applyError.value = ''; applyFailedDown = false } })
 export const validation = ref<ValidationResult | null>(null)
+// 刚校验过的这份草稿照样能用、却值得知道的写法，换成页面上的说法；保存条在「校验通过」下面列出来（草稿一改，校验的结论连同它们一起清掉）
+// What the draft just checked writes that works all the same yet is worth knowing, in the page's words; the save bar lists them under 校验通过
+// (an edit clears the verdict, and these with it)
+export const validationWarnings = computed(() => {
+  const warnings = validation.value?.warnings ?? []
+  if (!warnings.length) return []
+  const names = placeNames(model, compile(model))
+  return warnings.map((warning) => describeProblem(warning, names, settingName))
+})
 export const canCname = computed(() => runtimeCapabilities.value.includes('config_static_cname_response_v1'))
 
 const runtimeApplyState = computed<ConfigRuntimeApplyState | undefined>(() => doc.value?.runtime.apply_state)
@@ -200,6 +226,10 @@ export const stage = ref<SaveStage>('idle')
 // 这一次是保存草稿（保存栏报进度）还是应用已保存的版本（页头报进度） / Whether this run saves the draft (the save bar reports) or applies a saved version (the header reports)
 export const origin = ref<'draft' | 'apply'>('draft')
 export const note = ref('')
+// 失败时 KixDNS 逐条列出的原因，换成了页面上的说法（见 refusalLines）；保存条在那句结论下面一条条列出来，再改、再存就收起
+// The reasons KixDNS listed for a failure, in the page's words (see refusalLines); the save bar lists them under its verdict, and they go with
+// the next edit or save
+export const reasons = ref<string[]>([])
 export const verdict = ref('')
 // 冲突时记下服务端现在的版本，保存栏给「重新读取」 / On a conflict the save bar offers 重新读取
 export const conflict = ref(false)
@@ -229,10 +259,11 @@ function startStage(next: SaveStage): void {
   clearInterval(clockTimer)
   clockTimer = setInterval(() => { clock.value = Date.now() }, 100)
 }
-export function finishStage(next: 'done' | 'failed' | 'idle', text = ''): void {
+export function finishStage(next: 'done' | 'failed' | 'idle', text = '', listed: string[] = []): void {
   clearInterval(clockTimer)
   stage.value = next
   note.value = text
+  reasons.value = listed
   // 「已生效」停三秒再回到平常；失败一直留着，直到再改或再存 / "Applied" stays three seconds; a failure stays until the next edit or save
   if (next === 'done') settleTimer = setTimeout(() => { if (stage.value === 'done') stage.value = 'idle' }, 3000)
 }
@@ -337,7 +368,12 @@ export const deferNote = computed(() => {
 // ---------- 错误的说法 / wording of errors ----------
 // 控制接口的套接字不在：KixDNS 停了（面板还没发现）。只认这几种说法；连接超时、没及时确认新配置这类不算停了
 // The control socket is gone: KixDNS has stopped (before the panel noticed). Only these wordings count; a timeout or a late confirmation is not a stop
-const STOPPED = /No such file|os error 2|找不到指定的文件|^KixDNS 已停止/
+// 套接字不在的那几种原话只认在开头（前面可以是「连不上 KixDNS：」）：句子里面带着的别的原因（没重载新配置时内核说的监视不了文件，就可能是
+// No such file…、…(os error 28)）不算；错误号正好是 2，不是 24、28 这样开头是 2 的
+// The missing-socket wordings count only at the start (after 「连不上 KixDNS：」 at most): another reason carried inside a sentence (the kernel's
+// words on why it cannot watch the file, when a config was not reloaded, may read No such file… or …(os error 28)) does not; the error
+// number is exactly 2, not 24, 28 or another starting with 2
+const STOPPED = /^(?:连不上\s*KixDNS[：:]\s*)?(?:No such file|找不到指定的文件|[^（(]*\(os error 2\))|^KixDNS 已停止/
 const stoppedError = (error: unknown) => STOPPED.test(errorMessage(error))
 // 保存或校验时才发现停了：标题说停了，不说「没有通过校验」；草稿不动，读一次运行状态，保存键换成「保存为待应用」
 // Found stopped while saving or validating: the title says so rather than 没有通过校验; the draft stays, the runtime is re-read and the button becomes 保存为待应用
@@ -355,6 +391,9 @@ export function friendlyRuntimeMessage(message: string): string {
 // do, not just the raw words
 const OLD_KERNEL_EXACT = /unknown variant `(?:request_)?domain_exact`/
 export function kernelWords(message: string): string {
+  // 不认面板的配置块：原因里不管还有什么，先得更新内核（见 PANEL_BLOCK_HINT） / The panel's block not taken: whatever else the reasons say,
+  // the kernel has to be updated first (see PANEL_BLOCK_HINT)
+  if (refusesPanelBlock(message)) return PANEL_BLOCK_HINT
   if (OLD_KERNEL_EXACT.test(message)) return '这个版本的 KixDNS 内核还不认识「就是」：到系统页更新内核，或者把「就是」改回「属于」'
   if (/[\u4e00-\u9fff]/.test(message) || !/[A-Za-z]{3,}/.test(message)) return message
   const names = traceNames(model)
@@ -382,6 +421,20 @@ function storedCause(error: ApiError): string | null {
   if (error.code === 'kixdns_protocol_error') return `读不懂 KixDNS 的回应：${error.message}`
   return null
 }
+/**
+ * KixDNS 逐条列出了原因（内核 2026.11.24.17 起）时，保存条怎么说：一条就说那一条；几条时结论下面一条条列出来，那句连成一串的原话不再
+ * 重复。路径换成 draft（它校验的那份草稿）里的规则名、列表名、设置名。不认面板配置块的那条先说怎么办，其余的跟在后面。没有逐条的原因时为
+ * null，照原话说
+ * How the save bar puts it when KixDNS listed its reasons one by one (kernels from 2026.11.24.17): one is said as it is; several are listed
+ * under the verdict, without repeating the sentence joining them. Paths become the names of rules, lists and settings in draft (the draft it
+ * checked). The one about the panel's block says first what to do, the rest following. Null without such reasons, the words then said as they came
+ */
+export function refusalLines(error: unknown, draft: Model): { note: string; list: string[] } | null {
+  if (!(error instanceof ApiError) || !error.details.length) return null
+  const { blocked, items } = describeProblems(error.details, placeNames(draft, compile(draft)), settingName)
+  if (blocked) return { note: items.length ? `${PANEL_BLOCK_HINT}。另外还有\u00a0${items.length}\u00a0处要改：` : PANEL_BLOCK_HINT, list: items }
+  return items.length === 1 ? { note: items[0]!, list: [] } : { note: `KixDNS\u00a0列出了\u00a0${items.length}\u00a0处要改：`, list: items }
+}
 const shouldRefreshAfterSaveError = (error: unknown) => error instanceof ApiError && ['unsupported_config_fields', 'config_validation_failed', 'reload_failed', 'kixdns_rejected'].includes(error.code)
 const isConflict = (error: unknown) => error instanceof ApiError && error.code === 'config_conflict'
 
@@ -396,6 +449,7 @@ function applyStats(overview: Overview | null, service: ServiceStatus | null): v
 function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, service: ServiceStatus | null): void {
   const declared = nextDoc.runtime.declared_capabilities ?? []
   runtimeService.value = service
+  runtimeActive.value = overview?.live ? overview.active_config : null
   if (overview) {
     const unit = service?.active_state
     runtimeStopped.value = !overview.live && (unit ? !['active', 'activating', 'reloading'].includes(unit) : overview.service_active === false)
@@ -639,7 +693,8 @@ async function runCheck(): Promise<ValidationResult | null> {
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
     verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : '没有通过校验'
-    finishStage('failed', stopped ? STOPPED_NOTE : down ? '草稿还在，连上后再校验' : friendlyRuntimeError(error))
+    const lines = stopped || down ? null : refusalLines(error, model)
+    finishStage('failed', stopped ? STOPPED_NOTE : down ? '草稿还在，连上后再校验' : lines?.note ?? friendlyRuntimeError(error), lines?.list)
     if (stopped) await refreshRuntime().catch(() => undefined)
     return null
   }
@@ -1088,7 +1143,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       sayAway(checkBuildProblem ? buildAwayText(checkBuildProblem, kept)
         : verdict.value === 'KixDNS 已停止' ? `配置没有保存：KixDNS\u00a0已停止。${kept}，可以先存成待应用版本`
           : verdict.value === '连不上面板' ? `配置没有保存：连不上面板。${kept}，连上后再保存`
-            : `配置没有保存：没有通过校验。${kept}。${note.value}`)
+            : `配置没有保存：没有通过校验。${kept}。${note.value.replace(/：$/, '')}`)
     }
     if (stage.value === 'failed' || abandoned || busy.value || !doc.value) { inFlight = null; abandoned = false; return }
   }
@@ -1187,7 +1242,10 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // With changed settings still waiting for a restart it says 已应用, not 已生效, followed by 待重启: on a phone the notice is often
     // off screen and this is the one line in view; the notice says which
     const applied = restartPending.value.length ? `已应用 · 版本 #${result.version_id} · 待重启` : `已生效 · 版本 #${result.version_id}`
-    finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : applied}${later}`)
+    // KixDNS 对这份配置有提醒：生效了，提醒列在页面上方（在用的配置那一块） / KixDNS has warnings for this config: it took effect, and
+    // they are listed at the top of the page (the block for the config in use)
+    const warned = result.validation?.warnings?.length ? ` · ${result.validation.warnings.length}\u00a0条提醒见上方` : ''
+    finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `${applied}${warned}`}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
     // 每次写入都存成新版本：「现在应用」按的是 #18，生效的是 #19，用恢复版本的说法交代一句 / Every write is stored as a new version: 现在应用 was pressed on #18 and #19 took effect, said in the restore wording
     // 原地生效时服务端先存着没动（KixDNS 连不上或停了）：没有应用，照实说，不说「已存成」（它本来就是待应用的）
@@ -1269,7 +1327,10 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     if (inPlace && writtenNotApplied && doc.value?.pending?.version_id === failedBefore && cause !== null) {
       doc.value = { ...doc.value, pending: { ...doc.value.pending, error: cause }, runtime: { ...doc.value.runtime, status: 'failed', apply_state: 'failed', pending_error: cause } }
     }
-    finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : stopped ? STOPPED_NOTE : down ? (step === 'applying' ? '不知道存上没有，连上后会自己核对' : '草稿还在，连上后再保存') : writtenNotApplied ? failureCause(cause ?? reason) : reason)
+    // 写进去了却没生效的，原因已经存进那个版本，由提示条说；没写进去的照 KixDNS 列的原因一条条说 / Written but not taken: the cause is
+    // stored with that version and the notice says it; not written: said reason by reason as KixDNS listed them
+    const lines = conflict.value || stopped || down || writtenNotApplied ? null : refusalLines(error, draft)
+    finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : stopped ? STOPPED_NOTE : down ? (step === 'applying' ? '不知道存上没有，连上后会自己核对' : '草稿还在，连上后再保存') : writtenNotApplied ? failureCause(cause ?? reason) : lines?.note ?? reason, lines?.list)
     // 回应丢了：页面锁住、保存条收起，「不知道」由提示条说；核对说完再由保存条说结果 / The answer was lost: the page is locked and the save
     // bar folds away, the notice says 「不知道」; once checked the bar tells the result
     if (!conflict.value && !stopped && down && step === 'applying' && unanswered?.from === 'draft') finishStage('idle')

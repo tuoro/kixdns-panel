@@ -3,6 +3,7 @@ interface ErrorEnvelope {
   error?: {
     code?: string
     message?: string
+    details?: string[]
   }
 }
 
@@ -11,6 +12,8 @@ export class ApiError extends Error {
     message: string,
     public readonly status: number,
     public readonly code: string,
+    /** 逐条的细节：KixDNS 不接受一份配置时它列出的各条原因（内核 2026.11.24.17 起），没有时为空 / The details one by one: the reasons KixDNS lists when it does not accept a config (kernels from 2026.11.24.17), empty without any */
+    public readonly details: readonly string[] = [],
   ) {
     super(message)
   }
@@ -104,6 +107,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
       body.error?.message ?? fallback,
       response.status,
       body.error?.code ?? (proxyAnswered ? 'panel_unavailable' : 'request_failed'),
+      body.error?.details ?? [],
     )
   }
   return response.json() as Promise<T>

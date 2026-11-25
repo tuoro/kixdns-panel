@@ -26,6 +26,9 @@ import type {
 } from '../../api/types'
 import type { GlobalSettings } from '../../config-editor/types'
 import { errorMessage, formatAgo, formatVersionTime } from '../../utils'
+import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, panelBlockWords, saysPanelBlock } from '../../kernel-problems'
+import KernelNotes from '../KernelNotes.vue'
+import { runtimeDataNote } from '../../config-v2/useConfigDocument'
 
 type GeoMode = 'remote' | 'local'
 
@@ -337,6 +340,9 @@ onBeforeUnmount(clearSyncNotice)
        The link list is refilled from the server when loading finishes, so add and remove stay disabled
        during loading like the inputs, lest a row just added be overwritten. -->
   <div class="geo">
+    <!-- KixDNS 眼下读到的 Geo 数据有问题（文件不在、标签没有数据、监视不了）：放在最上面，改链接、改路径前先看到 / What KixDNS finds wrong
+         with the Geo data right now (a file missing, tags without data, a watch failing): at the top, seen before links or paths change -->
+    <KernelNotes v-if="runtimeDataNote" class="geo-kernel" :note="runtimeDataNote" />
     <div class="ui-setrow">
       <span class="ui-setrow__label"><span>数据来源</span><small>{{ mode === 'remote' ? '面板按链接下载文件' : '直接写面板所在机器上已有文件的位置' }}</small></span>
       <span class="ui-setrow__control"><UiTabs :model-value="mode" :items="modeItems" label="Geo 数据来源" variant="segment" @update:model-value="mode = $event as GeoMode" /></span>
@@ -393,7 +399,9 @@ onBeforeUnmount(clearSyncNotice)
         <span class="ui-setrow__label"><span>自动更新</span><small v-if="schedule.next_run_at || schedule.last_success_at"><UiDotText :parts="[schedule.next_run_at ? `下次 ${formatVersionTime(schedule.next_run_at)}` : '', schedule.last_success_at ? `上次成功 ${formatVersionTime(schedule.last_success_at)}` : ''].filter(Boolean)" /></small><small v-else>定时按上面的链接重新下载</small></span>
         <span class="ui-setrow__control geo-schedule"><UiSelect :model-value="String(schedule.interval_hours ?? '')" :options="scheduleOptions" label="自动更新" :disabled="loading || scheduleSaving || syncing" @update:model-value="saveSchedule" /></span>
       </div>
-      <p v-if="schedule.last_error" class="geo-note geo-note--err"><TriangleAlert :size="14" aria-hidden="true" />上次自动更新失败：{{ schedule.last_error }}</p>
+      <!-- 内核不认面板的配置块时自动更新次次都会被拒：照实说，给去更新内核的链接 / With the kernel not taking the panel's block every automatic update is
+           refused: say so, with a link to update the kernel -->
+      <p v-if="schedule.last_error" class="geo-note geo-note--err"><TriangleAlert :size="14" aria-hidden="true" /><span>上次自动更新失败：{{ panelBlockWords(schedule.last_error) }}<template v-if="saysPanelBlock(panelBlockWords(schedule.last_error))"><RouterLink class="ui-link kernel-update-link" :to="KERNEL_UPDATE">{{ KERNEL_UPDATE_LABEL }}</RouterLink></template></span></p>
       <p v-if="syncNotice" class="geo-note geo-note--ok ui-rise" role="status" aria-live="polite"><CircleCheck :size="14" aria-hidden="true" />{{ syncNotice }}</p>
       <p v-if="statusError" :key="statusError" class="geo-note geo-note--err ui-shake" role="alert"><TriangleAlert :size="14" aria-hidden="true" />{{ statusError }}</p>
     </template>
@@ -451,6 +459,7 @@ onBeforeUnmount(clearSyncNotice)
 .geo-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
 .geo-actions__main { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
 .geo-schedule { max-width: 11rem; }
+.geo-kernel { margin-bottom: var(--s-3); }
 .geo-note { display: flex; align-items: center; gap: var(--s-1); margin: var(--s-1) 0; font-size: var(--t-2); overflow-wrap: anywhere; }
 .geo-note > svg { flex-shrink: 0; }
 .geo-note--err { color: var(--err-l); }
