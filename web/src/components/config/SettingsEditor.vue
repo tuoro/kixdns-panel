@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { SETTING_SECTIONS, geoSummary, settingSections, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
@@ -44,12 +44,7 @@ const problemId = (field: SettingField) => `settings-problem-${field.key}`
 // The box being typed in says no mistake (half-typed text is always wrong, even 「8」 would be called one): it says so once the box is left,
 // on Enter, or on Ctrl+S inside it, as conditions do. A value not typed here (read in, edited in the JSON) is told at once as usual
 const typing = reactive(new Set<string>())
-// 数字框里的字读不成数（「1e」「-」）时浏览器给的值是空的：不当成清空，配置不动，框下说一句；这一项在别处改了（撤销、JSON）就收起
-// A number box whose text reads as no number (「1e」「-」) gives an empty value: not taken as cleared, the config is left alone and a
-// sentence goes under the box, withdrawn once the setting changes elsewhere (an undo, the JSON)
-const unreadable = reactive(new Set<string>())
-watch(settings, (now, was) => { for (const key of unreadable) if (now[key] !== was[key]) unreadable.delete(key) })
-const problemFor = (field: SettingField): string | undefined => (unreadable.has(field.key) ? '填一个整数' : typing.has(field.key) ? undefined : props.problems?.[field.key])
+const problemFor = (field: SettingField): string | undefined => (typing.has(field.key) ? undefined : props.problems?.[field.key])
 const warningFor = (field: SettingField): string | undefined => (problemFor(field) ? undefined : props.warnings?.[field.key])
 const warningId = (field: SettingField) => `settings-warning-${field.key}`
 const describedBy = (field: SettingField): string | undefined => (problemFor(field) ? problemId(field) : warningFor(field) ? warningId(field) : undefined)
@@ -227,13 +222,13 @@ function saveKey(field: SettingField, event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') commitText(field, event)
 }
 
+// 数字框里的字读不成数（打到一半的「-」「1e」）时浏览器给的值是空的：不当成清空，配置不动；离开这一格时还读不成，框里换回配置里的值，
+// 看到的就是存下的
+// A number box whose text reads as no number (a half-typed 「-」 or 「1e」) gives an empty value: not taken as cleared, the config is left
+// alone; still unreadable when the box is left, it goes back to the config's value, so what shows is what is kept
 function setNumber(field: SettingField, event: Event): void {
   const input = event.currentTarget as HTMLInputElement
-  if (input.validity.badInput) {
-    unreadable.add(field.key)
-    return
-  }
-  unreadable.delete(field.key)
+  if (input.validity.badInput) return
   const raw = input.value
   if (raw === '') {
     if (field.nullable) setValue(field.key, null)
@@ -241,6 +236,11 @@ function setNumber(field: SettingField, event: Event): void {
     return
   }
   setValue(field.key, Number(raw))
+}
+
+function settleNumber(field: SettingField, event: Event): void {
+  const input = event.currentTarget as HTMLInputElement
+  if (input.validity.badInput) input.value = String(scalarValue(field))
 }
 
 function setBoolean(field: SettingField, event: Event): void {
@@ -312,7 +312,7 @@ function removeListItem(field: SettingField, index: number): void {
                    directly instead of being pushed down by a several-line note on the left -->
               <span class="ui-setrow__control settings-control"><span class="ui-input">
                 <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setText(field, $event)" @change="commitText(field, $event)" @blur="typing.delete(field.key)" @keydown="saveKey(field, $event)">
-                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setNumber(field, $event)">
+                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setNumber(field, $event)" @blur="settleNumber(field, $event)">
                 <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setCsv(field, $event)">
                 <em v-if="field.unit" class="ui-setrow__unit">{{ field.unit }}</em>
               </span><span v-if="problemFor(field)" :id="problemId(field)" class="ui-field-error">{{ problemFor(field) }}</span><span v-else-if="warningFor(field)" :id="warningId(field)" class="ui-field-warn">{{ warningFor(field) }}</span></span>

@@ -16,7 +16,7 @@ const setting = (page: Page, key: string) => page.evaluate(async (key) => {
   return store.model.settings[key] as unknown
 }, key)
 
-test('跳转次数上限：最多 64，0 也行；读不成数的不当成清空', async ({ page }) => {
+test('跳转次数上限：最多 64，0 也行；打到一半读不成数的不当成清空', async ({ page }) => {
   await openNetwork(page)
   const jumps = page.getByLabel('跳转次数上限', { exact: true })
   await expect(page.locator('.ui-setrow', { hasText: '跳转次数上限' })).toContainText('回答后检查从第一次跳转起另算这么多次')
@@ -29,12 +29,12 @@ test('跳转次数上限：最多 64，0 也行；读不成数的不当成清空
   await jumps.fill('7')
   await jumps.press('End')
   await jumps.pressSequentially('e')
-  const unreadable = page.locator('.ui-field-error', { hasText: '填一个整数' })
-  await expect(unreadable).toBeVisible()
-  // 配置里还是上一次读得成的数，不是清空 / The config keeps the last number that could be read instead of clearing it
+  // 打到一半读不成数：配置里还是上一次读得成的数，不是清空；离开这一格时框里换回它 / Half-typed and unreadable: the config keeps the last
+  // number that could be read instead of clearing it, and leaving the box puts it back there
   expect(await setting(page, 'response_jump_limit')).toBe(7)
+  await jumps.blur()
+  await expect(jumps).toHaveValue('7')
   await jumps.fill('12')
-  await expect(unreadable).toHaveCount(0)
   await expect.poll(() => setting(page, 'response_jump_limit')).toBe(12)
 })
 
