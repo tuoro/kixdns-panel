@@ -1,4 +1,4 @@
-import { byteLength, isIp, isNet, isQclass, isQtype, isRcode, isTtl, kernelRegexCause, QCLASSES, QTYPES, RCODES, regexCauseText, TTL_PROBLEM, TXT_SEGMENT_BYTES } from '../config-model/grammar'
+import { byteLength, isIp, isNet, isQclass, isQtype, isRcode, isTtl, kernelRegexCause, QCLASSES, qtypeRule, RCODES, regexCauseText, TTL_PROBLEM, TXT_SEGMENT_BYTES } from '../config-model/grammar'
 import { kernelRegexChecking, type RegexKind } from '../config-model/regex-check'
 import { upstreamProblem } from '../config-model/model'
 import { matcherHint } from './matcher-hints'
@@ -66,7 +66,7 @@ export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope):
   if (!errors.value && value.trim()) {
     const regex = regexKindOf(matcher)
     const cause = regex ? kernelRegexCause(regex, value) : null
-    if (['qtype', 'response_type'].includes(matcher.type) && !isQtype(value)) errors.value = `KixDNS 只认 ${QTYPES.join('、')}`
+    if (['qtype', 'response_type'].includes(matcher.type) && !isQtype(value)) errors.value = `KixDNS 只认 ${qtypeRule()}`
     else if (['qclass', 'response_qclass'].includes(matcher.type) && !isQclass(value)) errors.value = `KixDNS 只认 ${QCLASSES.join('、')}`
     else if (matcher.type === 'response_rcode' && !isRcode(value)) errors.value = `KixDNS 只认 ${RCODES.join('、')}，其余的响应码写 OTHER`
     // 说的是内核不收的那个原因：写法、编译后太大、TXT 太长各说各的 / The reason given is the kernel's own: the syntax, too big once compiled,
