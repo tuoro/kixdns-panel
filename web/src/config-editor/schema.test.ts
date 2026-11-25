@@ -111,6 +111,11 @@ describe('设置照内核的能力读', () => {
     expect([old?.label, old?.default]).toEqual(['每用一次旧结果就重新计时', true])
     expect(old).not.toHaveProperty('capability')
   })
+  // 别的文字框清空就是没写、内核用默认值；默认上游清空了要人填一个，不悄悄换成 1.1.1.1:53 / Any other text box cleared is unset with the
+  // kernel's default; a cleared 默认上游 wants an address, not a quiet 1.1.1.1:53
+  it('只有默认上游清空时照写成空的', () => {
+    expect(SETTING_SECTIONS.flatMap((section) => section.fields).filter((item) => item.keepsEmpty).map((item) => item.key)).toEqual(['default_upstream'])
+  })
   it('监听地址不写默认端口，占位写「内核默认」', () => {
     for (const key of ['bind_udp', 'bind_tcp']) {
       const bind = field([], key)

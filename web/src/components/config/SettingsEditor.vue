@@ -191,12 +191,13 @@ function listValue(field: SettingField): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
-// 清空的文字框就是没写：内核用默认值（地址、路径写成空的，内核都不收） / A cleared text box means unset: the kernel takes its default
-// (an address or path written empty is refused by the kernel)
+// 清空的文字框就是没写：内核用默认值（地址、路径写成空的，内核都不收）；keepsEmpty 的照写成空的，由使用方说出要填什么
+// A cleared text box means unset: the kernel takes its default (an address or path written empty is refused by the kernel); a keepsEmpty
+// one stays written as empty, the caller saying what to fill in
 function setText(field: SettingField, event: Event): void {
   typing.add(field.key)
   const value = (event.currentTarget as HTMLInputElement).value
-  if (value === '') unset(field.key)
+  if (value === '' && !field.keepsEmpty) unset(field.key)
   else setValue(field.key, value)
 }
 

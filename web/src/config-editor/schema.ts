@@ -19,6 +19,11 @@ export interface SettingField {
   min?: number
   max?: number
   nullable?: boolean
+  // 清空时照写成空的，不退回内核的默认值（别的文字框清空就是没写）：默认上游清空了要人填一个，框下说「至少填一个地址」，不悄悄换成
+  // 1.1.1.1:53
+  // A cleared box stays written as empty instead of falling back to the kernel's default (any other text box cleared is unset): a
+  // cleared 默认上游 wants an address filled in, the box saying 「至少填一个地址」, rather than quietly becoming 1.1.1.1:53
+  keepsEmpty?: boolean
   wide?: boolean
   visibleWhen?: string
   visibleWhenAny?: string[]
@@ -77,7 +82,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'doh_tls_cert', label: 'DoH TLS 证书', type: 'text', example: '/path/to/cert.pem', wide: true },
       { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', example: '/path/to/key.pem', wide: true },
       // 只有带高级规则时才显示（其余时候由「其余请求」决定）：说清它管的是哪些请求 / Shown only with advanced rules (otherwise 其余请求 decides it): say which requests it serves
-      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true, title: '高级规则里「交给默认上游」和没写地址的转发用这里的地址，多个用逗号隔开' },
+      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', keepsEmpty: true, wide: true, title: '高级规则里「交给默认上游」和没写地址的转发用这里的地址，多个用逗号隔开' },
       { key: 'bootstrap', label: '引导 DNS', type: 'text', example: '223.5.5.5:53, 119.29.29.29:53', wide: true, requiresCapability: CONFIG_BOOTSTRAP_V1, title: BOOTSTRAP_NOTE },
       { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', default: 0 },
       { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
