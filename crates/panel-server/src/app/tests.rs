@@ -1664,11 +1664,22 @@ async fn a_refused_system_change_leaves_the_waiting_version_as_it_was() {
     assert_eq!(state.config.desired().await.unwrap().content, draft);
 }
 
+/// 假的 `KixDNS` 不接受 UDP 监听地址时带着代号说的那一条，原话是 `text` / What a fake `KixDNS` refusing the UDP listen
+/// address says with its code, the words being `text`
+fn refused_bind(text: &str) -> Value {
+    serde_json::json!({
+        "place": "settings.bind_udp", "code": "listen_address_invalid",
+        "args": { "value": "0.0.0.0:53", "error": "address in use" }, "text": text,
+    })
+}
+
 /// 假的 `KixDNS`：像真的一样盯着配置文件，文件换了（新的 inode）就重载一次；内容里有 `marker` 的不接受（原因也逐条写在
-/// `last_reload.problems` 里），接着用原来那份。`running` 是它开始时在用的那份的散列，不给就是磁盘上那份
+/// `last_reload.problems` 里，带着代号的写在 `last_reload.coded_problems` 里），接着用原来那份。`running` 是它开始时在用的那份的
+/// 散列，不给就是磁盘上那份
 /// A fake `KixDNS` that, like the real one, watches the config file and reloads once whenever the file is replaced (a
-/// new inode); content holding `marker` is refused (the reason listed in `last_reload.problems` as well) and it goes on
-/// with what it had. `running` is the hash of the config it starts with, the one on disk when not given
+/// new inode); content holding `marker` is refused (the reason listed in `last_reload.problems` as well, and coded in
+/// `last_reload.coded_problems`) and it goes on with what it had. `running` is the hash of the config it starts with, the
+/// one on disk when not given
 fn start_fake_kixdns_refusing(
     directory: &std::path::Path,
     marker: &'static str,
@@ -1704,7 +1715,10 @@ fn start_fake_kixdns_refusing(
         serde_json::json!({
             "protocol_version": 1, "generation": watched.1, "sha256": watched.2, "loaded_at_unix": 0,
             "reload_sequence": watched.1,
-            "last_reload": { "success": watched.3.is_none(), "error": watched.3, "problems": watched.3.iter().collect::<Vec<_>>() },
+            "last_reload": {
+                "success": watched.3.is_none(), "error": watched.3, "problems": watched.3.iter().collect::<Vec<_>>(),
+                "coded_problems": watched.3.iter().map(|text| refused_bind(text)).collect::<Vec<_>>(),
+            },
         })
     };
     let router = Router::new()
@@ -2082,6 +2096,7 @@ fn rejected_validation_cannot_reach_config_write() {
         pipeline_count: 0,
         rule_count: 0,
         warnings: None,
+        coded_warnings: None,
     };
     assert!(ensure_validation_accepted(&validation).is_err());
 }
@@ -3003,7 +3018,7 @@ fn reload_failures_read_as_one_plain_phrase() {
     assert_eq!(
         super::reload_failure(&ControlError::Rejected(Refusal {
             message: "没有给出原因".to_owned(),
-            problems: Vec::new(),
+            ..Refusal::default()
         })),
         "KixDNS 没有接受这份配置：没有给出原因"
     );
@@ -3070,23 +3085,42 @@ fn start_fake_kixdns_refusing_validation(
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
 }
 
-/// 内核不接受一份配置：页面拿到它的原话，还有逐条列出的原因（内核 2026.11.24.17 起有），好一条条列出来；更早的内核只给原话，
-/// 也就没有细节
-/// The kernel refuses a configuration: the page gets its words and the reasons listed one by one (kernels from
-/// 2026.11.24.17 give them), to list them item by item; an earlier kernel gives only its words, and so no details
+/// 内核不接受一份配置：页面拿到它的原话，还有逐条列出的原因（内核 2026.11.24.17 起有）和带着代号的同样几条（声明
+/// `message_codes_v1` 的内核起有），好一条条按代号说成中文列出来；更早的内核只给原话和逐条的原因，再早的只给原话，也就没有细节
+/// The kernel refuses a configuration: the page gets its words, the reasons listed one by one (kernels from 2026.11.24.17
+/// give them) and the same ones coded (from kernels declaring `message_codes_v1`), to list them item by item in Chinese by
+/// their codes; an earlier kernel gives its words and the reasons alone, and one earlier still only its words, and so no
+/// details
 #[tokio::test]
 async fn a_refused_validation_reaches_the_page_reason_by_reason() {
     let problems = [
         "pipelines[0].rules[1].matchers[0]: domain_suffix \".\" matches every name",
         "panel: the kernel does not read this key, so what it says has no effect; check its spelling and where it is written",
     ];
-    for (kernel, details) in [
+    let coded = serde_json::json!([
+        {
+            "place": "pipelines[0].rules[1].matchers[0]", "code": "matches_every_name",
+            "args": { "matcher": "domain_suffix", "value": "." }, "text": problems[0],
+        },
+        { "place": "panel", "code": "key_not_read", "args": {}, "text": problems[1] },
+    ]);
+    for (kernel, details, coded_details) in [
+        (
+            serde_json::json!({
+                "code": "config_invalid", "message": problems.join("; "), "problems": problems,
+                "coded_problems": coded,
+            }),
+            serde_json::json!(problems),
+            coded.clone(),
+        ),
         (
             serde_json::json!({ "code": "config_invalid", "message": problems.join("; "), "problems": problems }),
             serde_json::json!(problems),
+            Value::Null,
         ),
         (
             serde_json::json!({ "code": "config_invalid", "message": problems.join("; ") }),
+            Value::Null,
             Value::Null,
         ),
     ] {
@@ -3104,6 +3138,10 @@ async fn a_refused_validation_reaches_the_page_reason_by_reason() {
         assert_eq!(payload["error"]["code"], "kixdns_rejected");
         assert_eq!(payload["error"]["message"], problems.join("; "));
         assert_eq!(payload["error"]["details"], details, "{payload}");
+        assert_eq!(
+            payload["error"]["coded_details"], coded_details,
+            "{payload}"
+        );
     }
 }
 
@@ -3142,6 +3180,10 @@ async fn a_refused_reload_reaches_the_page_reason_by_reason() {
     assert_eq!(
         payload["error"]["details"],
         serde_json::json!(["监听地址被占用"])
+    );
+    assert_eq!(
+        payload["error"]["coded_details"],
+        serde_json::json!([refused_bind("监听地址被占用")])
     );
 }
 

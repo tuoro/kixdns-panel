@@ -40,8 +40,8 @@ import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
 import { switchConfirmBody, switchedMessage } from '../version-switch'
-import { settingName, settingNames } from '../config-editor/schema'
-import { KERNEL_UPDATE, dohNote, problemsNote, watchNote } from '../kernel-problems'
+import { settingNames } from '../config-editor/schema'
+import { KERNEL_UPDATE, dohNote, noticesOf, problemsNote, watchNote } from '../kernel-problems'
 import { serviceLabel as labelOfService, serviceTone as toneOfService } from '../service-state'
 
 type KernelAction = 'update' | 'rollback'
@@ -528,7 +528,7 @@ async function loadActive(): Promise<void> {
 // 这一页没有配置页的规则名，路径照原样；不认面板配置块的那条先说更新内核，按钮跳到下面「可用更新」里内核那一行
 // This page has none of the config page's rule names, so paths stay as they are; the one about the panel's block says to update the kernel
 // first, its button going to the kernel's row under 可用更新 below
-const problems = computed(() => problemsNote(active.value?.problems ?? [], null, settingName))
+const problems = computed(() => problemsNote(noticesOf(active.value?.problems, active.value?.coded_problems), null))
 // 监视不了配置文件、入站 DoH 没起来：都要到系统这一层处理（重启 KixDNS、看系统的监视上限），常驻在这里，好了才收起
 // The config file not watched and inbound DoH not started: both are dealt with at the system level (a restart of KixDNS, the system's
 // watch limits), so they stay here until fixed

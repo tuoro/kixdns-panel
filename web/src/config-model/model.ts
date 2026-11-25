@@ -407,20 +407,31 @@ export function ecsProblem(ecs: Ecs | 'inherit'): string | null {
   }
   return isPrefix(ecs.v4, 32) && isPrefix(ecs.v6, 128) ? null : '子网前缀：IPv4 填 0 到 32，IPv6 填 0 到 128'
 }
-// 上游地址哪里不对，接在「第 N 个地址」后面说 / What is wrong with an upstream address, said after 「第 N 个地址」
-const ADDRESS_FAULT: Record<UpstreamFault, (protocol: string) => string> = {
-  prefix: () => '的前缀认不出：DoH 写 https://，DoT 写 tls://，DoQ 写 quic://，TCP 写 tcp://',
-  'ip-port': (p) => `：${p} 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ`,
-  port: () => '的端口要在 1 到 65535 之间',
-  'host-port': () => '：TCP 写成 主机:端口，比如 dns.example:53',
-  host: () => '：主机名只能有字母、数字、点和横线',
+/** 每种传输写什么前缀 / The prefix each transport is written with */
+export const UPSTREAM_PREFIXES = 'DoH 写 https://，DoT 写 tls://，DoQ 写 quic://，TCP 写 tcp://'
+/**
+ * 上游地址哪里不对，一句话，p 是它的传输（DoH、DoT 这样）。内核报的同一件事也这样说（kernel-sayings.ts）；接在地址后面说时前面加上
+ * ADDRESS_LEAD 里的那个字
+ * What is wrong with an upstream address, in a phrase, p being its transport (DoH, DoT and the like). The kernel's report of the same
+ * reads so too (kernel-sayings.ts); said after the address, it takes the word in ADDRESS_LEAD first
+ */
+export const ADDRESS_FAULT: Record<UpstreamFault, (p: string) => string> = {
+  prefix: () => `前缀认不出：${UPSTREAM_PREFIXES}`,
+  'ip-port': (p) => `${p} 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ`,
+  port: () => '端口要在 1 到 65535 之间',
+  'host-port': () => 'TCP 写成 主机:端口，比如 dns.example:53',
+  host: () => '主机名只能有字母、数字、点和横线',
   url: (p) => `不是 KixDNS 读得懂的 ${p} 地址`,
-  path: (p) => `：${p} 的地址不能带路径`,
-  'second-prefix': (p) => `：前缀后面又写了一个前缀，只留一个${p === 'DoH' ? '（DoH 一律走 https）' : ''}`,
-  param: (p) => (p === 'DoQ' ? '：DoQ 只认 sni、servername、0rtt、enable_0rtt 这几个参数' : `：${p} 只认 sni、servername 这两个参数`),
-  '0rtt': () => '：0rtt 只能写 true、false、1、0、yes、no、on 或 off',
-  'server-name': () => '的服务器名写得不对',
-  sni: () => '：DoQ 用 IP 时要写 ?sni=服务器名，比如 quic://223.5.5.5?sni=dns.alidns.com',
+  path: (p) => `${p} 的地址不能带路径`,
+  'second-prefix': (p) => `前缀后面又写了一个前缀，只留一个${p === 'DoH' ? '（DoH 一律走 https）' : ''}`,
+  param: (p) => (p === 'DoQ' ? 'DoQ 只认 sni、servername、0rtt、enable_0rtt 这几个参数' : `${p} 只认 sni、servername 这两个参数`),
+  '0rtt': () => '0rtt 只能写 true、false、1、0、yes、no、on 或 off',
+  'server-name': () => '服务器名写得不对',
+  sni: () => 'DoQ 用 IP 时要写 ?sni=服务器名，比如 quic://223.5.5.5?sni=dns.alidns.com',
+}
+// 接在「第 N 个地址」「上游 x」后面说时，地址和那句话之间的字 / What comes between the address and the phrase, said after 「第 N 个地址」 or 「上游 x」
+const ADDRESS_LEAD: Record<UpstreamFault, string> = {
+  prefix: '的', 'ip-port': '：', port: '的', 'host-port': '：', host: '：', url: '', path: '：', 'second-prefix': '：', param: '：', '0rtt': '：', 'server-name': '的', sni: '：',
 }
 /** 一个上游（写进内核的样子）内核用不用得了，用得了为 null；说法接在地址后面（「第 2 个地址的端口要在…」「上游 x：UDP 只能…」）。
  * transport 是没写前缀时的传输（高级规则里转发动作的 transport） / Whether the kernel can use one upstream as written to the kernel, null when it
@@ -429,7 +440,7 @@ const ADDRESS_FAULT: Record<UpstreamFault, (protocol: string) => string> = {
 export function upstreamProblem(upstream: string, transport = 'udp'): string | null {
   const fault = upstreamFault(upstream, transport)
   const kind = upstreamTransport(upstream, transport)
-  return fault ? ADDRESS_FAULT[fault](PROTOCOL_LABEL[kind as Protocol] ?? kind) : null
+  return fault ? `${ADDRESS_LEAD[fault]}${ADDRESS_FAULT[fault](PROTOCOL_LABEL[kind as Protocol] ?? kind)}` : null
 }
 /** 上游组里一个地址内核用不用得了：查的就是写进内核的那样（kernelUpstream） / Whether the kernel can use one address of a group: what is checked is what is written to the kernel (kernelUpstream) */
 export const addressProblem = (item: UpstreamAddress): string | null => upstreamProblem(kernelUpstream(item))

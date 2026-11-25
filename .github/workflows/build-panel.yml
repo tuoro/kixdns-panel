@@ -265,6 +265,19 @@ jobs:
           tools/kernel-config-check/target/debug/kernel-config-check < "$KERNEL_FIXTURES"
           tools/kernel-config-check/target/debug/kernel-config-check < "$KERNEL_SETTINGS_FIXTURES"
 
+      # 内核报的配置问题和提醒带着代号，面板按代号说中文（web/src/kernel-sayings.ts）。最新的内核（main）的代号和参数名
+      # （kixdns::notice::CODES）由检查工具写出来，面板的中文表要正好覆盖它们，参数名对得上，多了少了都失败
+      # The kernel's configuration problems and warnings carry codes, which the panel says in Chinese (web/src/kernel-sayings.ts). The
+      # check tool writes out the codes and argument names of the latest kernel (main) (kixdns::notice::CODES), and the panel's Chinese
+      # table has to cover them exactly with matching argument names, failing on any more or fewer
+      - name: Check the panel's words for every message code of the latest kernel (main)
+        shell: bash
+        env:
+          KERNEL_MESSAGE_CODES: ${{ runner.temp }}/kernel-message-codes.json
+        run: |
+          tools/kernel-config-check/target/debug/kernel-config-check --message-codes > "$KERNEL_MESSAGE_CODES"
+          (cd web && npx vitest run src/kernel-sayings.test.ts)
+
       - name: Lint deployment scripts
         shell: bash
         run: shellcheck scripts/*.sh deploy/openwrt/*.sh deploy/openwrt/init/*.init

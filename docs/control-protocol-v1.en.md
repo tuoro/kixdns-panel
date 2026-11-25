@@ -26,6 +26,7 @@ Returns the process status, the upstream commit, the release version (`release_v
 - `querylog_stored_v1`: since fork kernel 2026.11.02.11, a query log fetch may carry `stored`. The kernel deletes only what the panel says is stored. Several waiting requests are each woken (see below)
 - `querylog_until_v1`: since fork kernel 2026.11.02.12, a query log fetch may carry `until`, which hands over records only up to this sequence number (see below)
 - `querylog_records_v1`: since fork kernel 2026.11.03.4, a query log fetch may carry `format=records1`, which hands over the encoded records as they are (see below)
+- `message_codes_v1`: every configuration problem, warning, refusal reason and Geo data problem has a coded copy with its arguments beside it (see "Coded notices" below)
 
 Runtime capabilities handle the config gate for the current process. A target version that has not started yet is preflighted with the SHA-256-validated `KIXDNS_CAPABILITIES.json` in the kernel package. For the full rules, see the [config capability contract](config-capabilities.en.md).
 
@@ -55,6 +56,14 @@ Returns the config currently in effect, not the state of the file on disk:
   "warnings": [
     "pipelines[1].rules[0]: jumping to \"a\" comes back round to \"b\", …"
   ],
+  "coded_warnings": [
+    {
+      "place": "pipelines[1].rules[0]",
+      "code": "jump_cycle",
+      "args": { "target": "a", "back_to": "b" },
+      "text": "pipelines[1].rules[0]: jumping to \"a\" comes back round to \"b\", …"
+    }
+  ],
   "data_warnings": []
 }
 ~~~
@@ -73,6 +82,7 @@ The fields after `generation` came later, and earlier kernels do not send them, 
 | `watch_error` | 2026.11.23.49 | Why the config file cannot be watched, `null` while it is. Without the watch thread a change to the file is not reloaded and a save does not take; with places that cannot be watched, a change made through the places watched is still reloaded at once, while one made where the watch cannot see is noticed by the check every 10 seconds and reloaded after 0.3 seconds of quiet. With this field set, a client waiting for a reload must allow for that |
 | `doh_error` | 2026.11.24.14 | Why the inbound DoH configured did not start, `null` when it started or none is configured. The DoH settings are read at startup alone, and validation and reloads read no certificate, so this changes at the next start only |
 | `data_warnings` | 2026.11.24.15 | What is wrong with the Geo data right now, a sentence each: configured files that are missing or cannot be read, files that read yet have none of the tags rules use any more, watch threads that cannot start, files with places that cannot be watched, and tags rules use that no data provides. Kept current as the watched files change |
+| `coded_problems`, `coded_warnings`, `last_reload.coded_problems`, `coded_data_warnings` | kernels declaring `message_codes_v1` | The coded copies of `problems`, `warnings`, `last_reload.problems` and `data_warnings`; see "Coded notices" below |
 
 Each of `problems`, `warnings` and `last_reload.problems` opens with the path of the place it speaks of (`pipelines[0].rules[2].matchers[1]: …`, `settings.bind_udp: …`, `pipeline_select[0]: …`), by position, because rule names may repeat. A key the kernel does not read is told the same way, the top-level `panel` reading `panel: the kernel does not read this key, …`: kernels 2026.11.23.11 to 2026.11.25.27 refuse the panel's block as a key they do not read, and later kernels take it and declare `config_panel_block_v1`. Each is cut at 2048 characters.
 
@@ -147,6 +157,41 @@ A config that cannot be used gets `422`:
 ~~~
 
 `message` is the error with its cause chain, cut at 2048 characters. `problems` (since kernel 2026.11.24.17) lists the reasons it was refused for one by one (config problems, the listener addresses and DoH prerequisites, settings that make no sense, matchers that do not compile), each cut to the same length, none left out; it is empty for other errors, such as a config that cannot be read. Earlier kernels give only `message`, the reasons joined by `; `.
+
+Kernels declaring `message_codes_v1` also give the coded copies: `coded_warnings` beside `warnings` on success, and `error.coded_problems` beside `error.problems` with a `422`; see "Coded notices" below.
+
+### Coded notices
+
+From kernels declaring `message_codes_v1`, every list of strings has a coded copy with arguments beside it, one for one and in the same order; the original fields stay word for word:
+
+| List of strings | Its coded copy |
+| --- | --- |
+| `problems` in `/v1/config/active` | `coded_problems` |
+| `warnings` in `/v1/config/active` | `coded_warnings` |
+| `last_reload.problems` in `/v1/config/active` | `last_reload.coded_problems` |
+| `data_warnings` in `/v1/config/active` | `coded_data_warnings` |
+| `warnings` of a successful `/v1/config/validate` | `coded_warnings` |
+| `error.problems` of a `422` from `/v1/config/validate` | `error.coded_problems` |
+
+Each item is:
+
+~~~json
+{
+  "place": "pipelines[0].rules[2].matchers[1]",
+  "code": "matches_every_name",
+  "args": { "matcher": "domain_suffix", "value": "." },
+  "text": "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name"
+}
+~~~
+
+- `place`: the path opening the words; a notice on the Geo data has no place and gives `null`.
+- `code`: a fixed code, always present. A newer kernel may add codes, and a client shows the `text` of one it does not know.
+- `args`: the arguments, never cut. A value is text, a number, a list of text, or a reason held within as `{code, args, text}` (only in the `reason` of `upstream_unusable` and `bootstrap_server_unusable` and the `problem` of `default_upstream_over`). Error text given by libraries and the system has no code and comes as it is in the text argument `error`.
+- `text`: the matching item of the list of strings, word for word: `place`, a colon, a space and the English with a place, the English alone without; cut at 2048 characters like the strings (`data_warnings` are not cut).
+
+Every code, its arguments and when it appears are listed in the kernel repository's [configuration problem and warning codes](https://github.com/tuoro/kixdns/blob/main/docs/message-codes.en.md) ([简体中文](https://github.com/tuoro/kixdns/blob/main/docs/message-codes.md)).
+
+The panel server passes them on to the page as they are: the active config the page gets (`/api/v1/overview` and the like) carries the fields above, and when KixDNS does not accept a config, a 422's `error.details` holds the reasons one by one and `error.coded_details` their coded copy. The page says them in Chinese by the code, in the panel's own names (`web/src/kernel-sayings.ts`), and shows the words, marked as KixDNS's own, for a code it does not know or from an old kernel without codes. The panel's check tool (`tools/kernel-config-check --message-codes`) writes out the code list of the latest kernel, and CI checks that the page's Chinese table covers every code exactly with matching argument names.
 
 ### `POST /v1/cache/flush`
 

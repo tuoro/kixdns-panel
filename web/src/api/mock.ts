@@ -27,6 +27,7 @@ import type {
   LogsResponse,
   Overview,
   InstalledKixdnsVersion,
+  KernelNotice,
   KixdnsKernel,
   RemoteKixdnsVersion,
   RequestTrend,
@@ -102,17 +103,37 @@ let config: ConfigDocument = {
 // (kixdns:demo-old-kernel), word for word as the kernel's config::problems
 const PANEL_BLOCK_REFUSAL = 'panel: the kernel does not read this key, so what it says has no effect; check its spelling and where it is written'
 const demoOldKernel = () => typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-old-kernel') === 'true'
-// kixdns:demo-kernel-notes：内核报来的提醒、监视不了配置文件、入站 DoH 没起来、Geo 数据的问题都有，和真内核的原话一样
-// kixdns:demo-kernel-notes: the kernel reports warnings, a config file it cannot watch, inbound DoH not started and Geo data problems, in a real
-// kernel's words
+// kixdns:demo-kernel-notes：内核报来的提醒、监视不了配置文件、入站 DoH 没起来、Geo 数据的问题都有，和真内核（声明 message_codes_v1）一样
+// 每条带着代号和参数，原话一字不差
+// kixdns:demo-kernel-notes: the kernel reports warnings, a config file it cannot watch, inbound DoH not started and Geo data problems, as a
+// real kernel (declaring message_codes_v1) does: each with its code and arguments, in its very words
 const demoKernelNotes = () => typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-kernel-notes') === 'true'
-const DEMO_WARNINGS = ['pipelines[0].rules[0]: jumping to "domestic" comes back round to "default", so a query that keeps going round is answered SERVFAIL once it has made every jump it may', 'settings.request_timeout_ms: 3000 is shorter than 2.5 times upstream_timeout_ms (9000), which leaves no time to ask again or fall back to TCP']
+// 内核报的一条：原话是位置、冒号和英文，没有位置时只有英文 / One notice of the kernel's: the words are the place, a colon and the English, or the
+// English alone without a place
+const notice = (place: string | null, code: string, args: KernelNotice['args'], english: string): KernelNotice => ({ place, code, args, text: place === null ? english : `${place}: ${english}` })
+const coded = (notices: readonly KernelNotice[]) => ({ texts: notices.map((item) => item.text), coded: [...notices] })
+const DEMO_WARNINGS = coded([
+  notice('pipelines[0].rules[0]', 'jump_cycle', { target: 'domestic', back_to: 'default' }, 'jumping to "domestic" comes back round to "default", so a query that keeps going round is answered SERVFAIL once it has made every jump it may (response_jump_limit in the request phase, and as many again from an answer action\'s first jump on), and in the answer phase asks an upstream again on every jump'),
+  notice('settings.request_timeout_ms', 'request_timeout_short', { value: 3000, upstream: 9000 }, '3000 is under 2.5 times upstream_timeout_ms (9000), which may cut the resend and the TCP fallback short'),
+])
+const DEMO_DATA_WARNINGS = coded([
+  notice(null, 'data_file_missing', { file: 'geosite', path: '/var/lib/kixdns-panel/geo/geosite.dat' }, 'GeoSite data file /var/lib/kixdns-panel/geo/geosite.dat does not exist'),
+  notice(null, 'geosite_tags_unprovided', { tags: ['netflix'] }, 'GeoSite tags netflix are in no data file: geo_site never matches them and geo_site_not always does'),
+])
 const DEMO_STATUS = {
-  warnings: DEMO_WARNINGS,
+  warnings: DEMO_WARNINGS.texts,
+  coded_warnings: DEMO_WARNINGS.coded,
   watch_error: 'OS file watch limit reached. about ["/etc/kixdns/pipeline.json"]',
   doh_error: 'settings.doh_tls_cert: cannot read /etc/kixdns/cert.pem: No such file or directory (os error 2)',
-  data_warnings: ['GeoSite data file /var/lib/kixdns-panel/geo/geosite.dat does not exist', 'GeoSite tags rules use that no data provides: netflix'],
+  data_warnings: DEMO_DATA_WARNINGS.texts,
+  coded_data_warnings: DEMO_DATA_WARNINGS.coded,
 }
+// kixdns:demo-validate-reject-list 时内核逐条列出的原因 / The reasons the kernel lists one by one under kixdns:demo-validate-reject-list
+const DEMO_REFUSAL = coded([
+  notice('pipelines[0].rules[0].matchers[0]', 'matches_every_name', { matcher: 'domain_suffix', value: '.' }, 'domain_suffix "." matches every name'),
+  notice('pipelines[0].rules[1]', 'jump_target_missing', { pipeline: 'gone' }, 'jump to pipeline "gone", which does not exist'),
+  notice('settings.cache_capacity', 'cache_capacity_zero', {}, '0 leaves the cache no room for any answer; it must be greater than 0'),
+])
 
 const activeConfig: ActiveConfig = {
   protocol_version: 1,
@@ -235,7 +256,7 @@ const overview: Overview = {
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,
-    capabilities: ['stats_top_v1', ...demoConfigCapabilities, 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1', ...(demoQueryLogSupported() ? ['querylog_v1'] : [])],
+    capabilities: ['stats_top_v1', ...demoConfigCapabilities, 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1', 'message_codes_v1', ...(demoQueryLogSupported() ? ['querylog_v1'] : [])],
   },
   active_config: activeConfig,
   metrics: {
@@ -1292,12 +1313,12 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     // kixdns:demo-old-kernel：演一个不认面板配置块的内核（2026.11.23.11 到 2026.11.25.27），校验次次被拒
     // kixdns:demo-old-kernel: plays a kernel that does not take the panel's block (2026.11.23.11 to 2026.11.25.27), refusing every validation
     if (demoOldKernel()) throw new ApiError(PANEL_BLOCK_REFUSAL, 422, 'kixdns_rejected', [PANEL_BLOCK_REFUSAL])
-    // kixdns:demo-validate-reject-list：下一次校验被拒，内核逐条列出了原因（2026.11.24.17 起的内核这样回）
-    // kixdns:demo-validate-reject-list: the next validation is refused with the kernel's reasons listed one by one (as kernels from 2026.11.24.17 answer)
+    // kixdns:demo-validate-reject-list：下一次校验被拒，内核逐条列出了原因，各带着代号（声明 message_codes_v1 的内核这样回）
+    // kixdns:demo-validate-reject-list: the next validation is refused with the kernel's reasons listed one by one, each coded (as kernels
+    // declaring message_codes_v1 answer)
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-reject-list') === 'true') {
       localStorage.removeItem('kixdns:demo-validate-reject-list')
-      const reasons = ['pipelines[0].rules[0].matchers[0]: domain_suffix "." matches every name', 'pipelines[0].rules[1]: jumping to "domestic" comes back round to "default"', 'settings.cache_capacity: must be at least 1']
-      throw new ApiError(reasons.join('; '), 422, 'kixdns_rejected', reasons)
+      throw new ApiError(DEMO_REFUSAL.texts.join('; '), 422, 'kixdns_rejected', DEMO_REFUSAL.texts, DEMO_REFUSAL.coded)
     }
     // kixdns:demo-validate-reject：下一次校验被内核拒绝（真内核对它不接受的配置回 422 kixdns_rejected）
     // kixdns:demo-validate-reject: the next validation is rejected by the kernel (a real kernel answers 422 kixdns_rejected for a config it refuses)
@@ -1307,7 +1328,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     }
     const content = JSON.parse(String(init?.body)) as Record<string, unknown>
     const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
-    return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1, ...(demoKernelNotes() ? { warnings: DEMO_WARNINGS } : {}) } as T
+    return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1, ...(demoKernelNotes() ? { warnings: DEMO_WARNINGS.texts, coded_warnings: DEMO_WARNINGS.coded } : {}) } as T
   }
   // 退回重启前改过的设置：和真服务端一样只改那几项、存成待应用版本写进文件，再重启；回来的 KixDNS 用的是它，等页面「现在应用」
   // （或后台那一遍）记成已生效。演示里没有单独的正式文件，待应用版本里的修改照样留在这一份里

@@ -8,8 +8,8 @@ import { exportConfig, kernelPart, readConfig } from '../config-model/document'
 import { setKernelCapabilities } from '../config-model/grammar'
 import { blocklistKey, compile, compileNamed, draftPipelineClashes, mappingPipelineId, type Model, type Rule } from '../config-model/model'
 import { placeNames, traceNames } from '../config-model/trace-names'
-import { settingName } from '../config-editor/schema'
-import { PANEL_BLOCK_HINT, dataNote, describeProblem, describeProblems, dohNote, problemsNote, refusesPanelBlock, saysPanelBlock, warningsNote } from '../kernel-problems'
+import { PANEL_BLOCK_HINT, dataNote, describeProblem, describeProblems, dohNote, noticesOf, problemsNote, refusesPanelBlock, saysPanelBlock, warningsNote } from '../kernel-problems'
+import { kernelSaid } from '../kernel-sayings'
 import { useConnection } from '../composables/useConnection'
 import { ROLLBACK_LABELS, configPageOpen, nameWith, noteRead, restartingKixdns, startingKixdns, versionName, type RollbackOrigin } from '../composables/useServiceStart'
 import { dashboardRuntimeState } from '../dashboard-state'
@@ -100,10 +100,10 @@ const runningNames = computed(() => {
   const running = doc.value && doc.value.runtime.active_sha256 === doc.value.sha256 ? doc.value : null
   return running ? placeNames(appliedModel.value, kernelPart(running.content)) : null
 })
-export const startupNote = computed(() => problemsNote(runtimeActive.value?.problems ?? [], runningNames.value, settingName))
-export const runningWarningsNote = computed(() => warningsNote(runtimeActive.value?.warnings ?? [], runningNames.value, settingName))
+export const startupNote = computed(() => problemsNote(noticesOf(runtimeActive.value?.problems, runtimeActive.value?.coded_problems), runningNames.value))
+export const runningWarningsNote = computed(() => warningsNote(noticesOf(runtimeActive.value?.warnings, runtimeActive.value?.coded_warnings), runningNames.value))
 export const runtimeDohNote = computed(() => dohNote(runtimeActive.value?.doh_error))
-export const runtimeDataNote = computed(() => dataNote(runtimeActive.value?.data_warnings))
+export const runtimeDataNote = computed(() => dataNote(noticesOf(runtimeActive.value?.data_warnings, runtimeActive.value?.coded_data_warnings)))
 // 从页头「现在应用」「校验并应用」发起、又没走到服务端记录失败的那一步时的原因 / The reason when an apply from the header failed before the server could record it
 export const applyError = ref('')
 // 「KixDNS 已停止」那条提示在它又跑起来以后就过时了 / The 「KixDNS 已停止」 notice is stale once it runs again
@@ -116,10 +116,10 @@ export const validation = ref<ValidationResult | null>(null)
 // What the draft just checked writes that works all the same yet is worth knowing, in the page's words; the save bar lists them under 校验通过
 // (an edit clears the verdict, and these with it)
 export const validationWarnings = computed(() => {
-  const warnings = validation.value?.warnings ?? []
+  const warnings = noticesOf(validation.value?.warnings, validation.value?.coded_warnings)
   if (!warnings.length) return []
   const names = placeNames(model, compile(model))
-  return warnings.map((warning) => describeProblem(warning, names, settingName))
+  return warnings.map((warning) => describeProblem(warning, names))
 })
 export const canCname = computed(() => runtimeCapabilities.value.includes('config_static_cname_response_v1'))
 
@@ -396,8 +396,7 @@ export function kernelWords(message: string): string {
   if (refusesPanelBlock(message)) return PANEL_BLOCK_HINT
   if (OLD_KERNEL_EXACT.test(message)) return '这个版本的 KixDNS 内核还不认识「就是」：到系统页更新内核，或者把「就是」改回「属于」'
   if (/[\u4e00-\u9fff]/.test(message) || !/[A-Za-z]{3,}/.test(message)) return message
-  const names = traceNames(model)
-  return `KixDNS\u00a0的原话：${message.replace(/"([\w.-]+)"/g, (whole, id: string) => { const name = names.pipeline(id); return name ? `${whole}（${name}）` : whole })}`
+  return kernelSaid(message, traceNames(model).pipeline)
 }
 const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMessage(error))
 /** 没生效的原因本身：去掉句尾「仍在用之前的配置」，给已经说了这件事的提示条用 / Just why it did not take, without the trailing 仍在用之前的配置, for a notice that already says so */
@@ -423,15 +422,17 @@ function storedCause(error: ApiError): string | null {
 }
 /**
  * KixDNS 逐条列出了原因（内核 2026.11.24.17 起）时，保存条怎么说：一条就说那一条；几条时结论下面一条条列出来，那句连成一串的原话不再
- * 重复。路径换成 draft（它校验的那份草稿）里的规则名、列表名、设置名。不认面板配置块的那条先说怎么办，其余的跟在后面。没有逐条的原因时为
- * null，照原话说
+ * 重复。带着代号的（声明 message_codes_v1 的内核起）按代号说成中文，没有代号的照原话、标明是原话（见 describeProblem）；路径换成 draft
+ * （它校验的那份草稿）里的规则名、列表名、设置名。不认面板配置块的那条先说怎么办，其余的跟在后面。没有逐条的原因时为 null，照原话说
  * How the save bar puts it when KixDNS listed its reasons one by one (kernels from 2026.11.24.17): one is said as it is; several are listed
- * under the verdict, without repeating the sentence joining them. Paths become the names of rules, lists and settings in draft (the draft it
- * checked). The one about the panel's block says first what to do, the rest following. Null without such reasons, the words then said as they came
+ * under the verdict, without repeating the sentence joining them. Coded ones (from kernels declaring message_codes_v1) are said in Chinese by
+ * their codes, others in the kernel's words, marked as such (see describeProblem); paths become the names of rules, lists and settings in
+ * draft (the draft it checked). The one about the panel's block says first what to do, the rest following. Null without such reasons, the
+ * words then said as they came
  */
 export function refusalLines(error: unknown, draft: Model): { note: string; list: string[] } | null {
   if (!(error instanceof ApiError) || !error.details.length) return null
-  const { blocked, items } = describeProblems(error.details, placeNames(draft, compile(draft)), settingName)
+  const { blocked, items } = describeProblems(noticesOf(error.details, error.codedDetails), placeNames(draft, compile(draft)))
   if (blocked) return { note: items.length ? `${PANEL_BLOCK_HINT}。另外还有\u00a0${items.length}\u00a0处要改：` : PANEL_BLOCK_HINT, list: items }
   return items.length === 1 ? { note: items[0]!, list: [] } : { note: `KixDNS\u00a0列出了\u00a0${items.length}\u00a0处要改：`, list: items }
 }

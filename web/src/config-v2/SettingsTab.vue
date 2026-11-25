@@ -5,7 +5,7 @@ import { apiRequest } from '../api/client'
 import type { QueryLogSettings } from '../api/types'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
 import { CONFIG_BOOTSTRAP_V1, retiredIn, settingName } from '../config-editor/schema'
-import { hasBootstrap, hostNamedUpstream, settingProblems } from '../config-editor/settings-checks'
+import { hasBootstrap, hostNameWarning, hostNamedUpstream, settingProblems } from '../config-editor/settings-checks'
 import QueryLogSettingsForm from '../components/logs/QueryLogSettingsForm.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
@@ -42,7 +42,7 @@ const problems = computed((): Record<string, string> => {
 const warnings = computed((): Record<string, string> => {
   if (!runtimeCapabilities.value.includes(CONFIG_BOOTSTRAP_V1) || hasBootstrap(model.settings)) return {}
   const host = hostNamedUpstream(compile(model))
-  return host ? { bootstrap: `上游 ${host} 写成了域名，没写引导 DNS 时交给系统解析；KixDNS 接管了本机的 53 端口时会绕回它自己，连不上` } : {}
+  return host ? { bootstrap: hostNameWarning(host) } : {}
 })
 // 默认上游写完（离开这一格、按回车、在框里按 Ctrl+S）时和上游组的地址按「完成」时一样，只写 IP、TCP 主机的按 53 补上端口；写到一半不动它，也不说错
 // 默认上游 once written (leaving the box, pressing Enter, Ctrl+S inside it) is treated as an upstream group's addresses on 完成: an IP or TCP

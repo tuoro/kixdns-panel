@@ -25,6 +25,29 @@ export interface Health {
   capabilities: string[]
 }
 
+/**
+ * 内核说的一种话（声明 message_codes_v1 的内核起有，见内核仓库的 docs/message-codes.md）：固定的代号、参数和英文原话 text。参数是文字、数、
+ * 文字的列表，或者套着的另一种话（原因）
+ * One kind of thing the kernel says (from kernels declaring message_codes_v1, see docs/message-codes.md in the kernel repository): a fixed
+ * code, the arguments and the English words, text. An argument is text, a number, a list of text, or another saying held within (a reason)
+ */
+export interface KernelSaying {
+  code: string
+  args: Record<string, KernelArg>
+  text: string
+}
+export type KernelArg = string | number | string[] | KernelSaying
+/**
+ * 内核报的一条话：说的是哪一处（settings.bootstrap、pipelines[0].rules[2].matchers[1] 这样的路径；Geo 数据的话没有，为 null）和说了什么。
+ * text 是位置、冒号和英文，没有位置时只有英文，和旁边那串原话里的一条一字不差
+ * One notice the kernel reports: where it is about (a path such as settings.bootstrap or pipelines[0].rules[2].matchers[1]; null for one on
+ * the Geo data) and what is said. text is the place, a colon and the English, or the English alone without a place, word for word the one
+ * in the list of words beside it
+ */
+export interface KernelNotice extends KernelSaying {
+  place: string | null
+}
+
 export interface ActiveConfig {
   protocol_version: number
   generation: number
@@ -36,6 +59,8 @@ export interface ActiveConfig {
     error: string | null
     /** 重载拒掉配置的原因，逐条（error 是它们连成的一句）；内核 2026.11.24.17 起报告 / The reasons the reload refused the config for, one by one (error is them joined); reported from kernel 2026.11.24.17 */
     problems?: string[]
+    /** problems 带着代号的那一份，一条对一条；声明 message_codes_v1 的内核起报告 / The coded copy of problems, one for one; reported from kernels declaring message_codes_v1 */
+    coded_problems?: KernelNotice[]
   }
   /** 配置里改过、要重启 KixDNS 才生效的设置（内核的设置名）；旧内核不报告 */
   restart_pending?: string[]
@@ -45,8 +70,12 @@ export interface ActiveConfig {
    * cleared by a successful reload. Reported from kernel 2026.11.23.39
    */
   problems?: string[]
+  /** problems 带着代号的那一份，一条对一条；声明 message_codes_v1 的内核起报告 / The coded copy of problems, one for one; reported from kernels declaring message_codes_v1 */
+  coded_problems?: KernelNotice[]
   /** 在用的配置照样生效、却值得知道的写法；内核 2026.11.23.49 起报告 / What the config in use writes that takes effect all the same yet is worth knowing; reported from kernel 2026.11.23.49 */
   warnings?: string[]
+  /** warnings 带着代号的那一份，一条对一条；声明 message_codes_v1 的内核起报告 / The coded copy of warnings, one for one; reported from kernels declaring message_codes_v1 */
+  coded_warnings?: KernelNotice[]
   /**
    * 配置文件为什么监视不了，监视着时没有：有位置监视不上时改在那里的 10 秒以内才重载，监视线程起不来时保存的配置不生效。内核 2026.11.23.49 起报告
    * Why the config file cannot be watched, absent while it is: with places that cannot be watched a change there reloads within 10 s, and
@@ -57,6 +86,8 @@ export interface ActiveConfig {
   doh_error?: string | null
   /** Geo 数据眼下的问题，随文件实时更新；内核 2026.11.24.15 起报告 / What is wrong with the Geo data right now, kept current with the files; reported from kernel 2026.11.24.15 */
   data_warnings?: string[]
+  /** data_warnings 带着代号的那一份，一条对一条，没有位置；声明 message_codes_v1 的内核起报告 / The coded copy of data_warnings, one for one and with no place; reported from kernels declaring message_codes_v1 */
+  coded_data_warnings?: KernelNotice[]
 }
 
 export interface NamedCount {
@@ -322,6 +353,8 @@ export interface ValidationResult {
   rule_count: number
   /** 这份配置照样能用、却值得知道的写法；内核 2026.11.23.49 起报告 / What this config writes that works all the same yet is worth knowing; reported from kernel 2026.11.23.49 */
   warnings?: string[]
+  /** warnings 带着代号的那一份，一条对一条；声明 message_codes_v1 的内核起报告 / The coded copy of warnings, one for one; reported from kernels declaring message_codes_v1 */
+  coded_warnings?: KernelNotice[]
 }
 
 export interface ConfigApplyResult {
