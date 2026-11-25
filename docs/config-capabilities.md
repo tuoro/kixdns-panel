@@ -14,7 +14,11 @@
 {
   "schema_version": 1,
   "config_capabilities": [
+    "config_bootstrap_v1",
+    "config_panel_block_v1",
+    "config_qtype_names_v1",
     "config_query_stats_v1",
+    "config_serve_stale_ttl_reset_v2",
     "config_static_cname_response_v1"
   ]
 }
@@ -28,15 +32,19 @@
 | --- | --- | --- |
 | `config_query_stats_v1` | 不再受控：`settings.statistics_enabled`、`settings.statistics_anonymize_client_ip` 只对旧内核起作用，面板不再提供这两个开关，也不因它们挡住保存（见控制协议的「查询统计配置」） | `stats_top_v1` |
 | `config_static_cname_response_v1` | 任一规则动作列表（`actions`、`response_actions_on_match`、`response_actions_on_miss`，含 `background_refresh_rule`）中的 `static_cname_response` | 无 |
+| `config_panel_block_v1` | 不受控，只作说明：顶层的 `panel` 是面板放整份模型的那一块，面板保存的配置都带着它，不挡保存和切换。2026.11.23.11 以前的内核按忽略处理；2026.11.23.11 到 2026.11.25.27 的把它当不认的键拒收，保存时内核的 `/v1/config/validate` 拒绝，面板照这次拒收提示把内核更新到最新；有这项能力的内核接受它 | 无 |
+| `config_bootstrap_v1` | `settings.bootstrap`（引导 DNS），写了就算，空字符串也算。2026.11.23.11 以前的内核悄悄忽略它，到 2026.11.23.49 当不认的键拒收 | 无 |
+| `config_qtype_names_v1` | `qtype`、`response_type` 匹配器的值不在 A、AAAA、CNAME、MX、TXT、NS、PTR、SRV、SOA、OPT 这十种里（不分大小写；`pipeline_select`、每条规则和 `background_refresh_rule` 里的都算），比如 HTTPS、SVCB、`TYPE65`。以前的内核编译不过这样的配置 | 无 |
+| `config_serve_stale_ttl_reset_v2` | 不受控：新旧内核都认 `settings.serve_stale_ttl_reset`，不挡保存和切换。有这项能力的内核默认关，开了是「过期应答的后台刷新失败以后，从失败时起重新计时」；没有的默认开，开了是「每交出一次过期应答就重新计时」。设置表单按它决定默认值和说法 | 无 |
 
-`static_cname_response` 是上游 KixDNS 自带的动作（固定 CNAME 应答），能力只声明这个二进制认得它；面板的域名映射和「固定 CNAME」动作都依赖它。不支持时，这个动作和域名映射模板不出现；已有的映射原样保留，域名映射页提示先更新或切换内核。字段类能力按 JSON Pointer 检查，动作类能力按动作的 `type` 检查。
+`static_cname_response` 是上游 KixDNS 自带的动作（固定 CNAME 应答），能力只声明这个二进制认得它；面板的域名映射和「固定 CNAME」动作都依赖它。不支持时，这个动作和域名映射模板不出现；已有的映射原样保留，域名映射页提示先更新或切换内核。字段类能力按 JSON Pointer 检查，动作类能力按动作的 `type` 检查，查询类型按 `qtype`、`response_type` 匹配器的值检查。
 
 兼容别名只用于识别已经运行的旧增强版。目标版本切换预检只信任经摘要校验的内核包能力或本地版本清单。
 
 ## 失败行为
 
 - 表单：不支持的动作不出现；已有的原样保留，页面提示先改掉或更新内核，JSON 原文不被改写。
-- 预验证、保存或恢复不兼容配置：返回 `422 unsupported_config_fields`。
+- 预验证、保存或恢复不兼容配置：返回 `422 unsupported_config_fields`，缺的几项按注册表的顺序一次说全，每项一句出路。
 - 安装或切换到不兼容版本：在停止服务和替换二进制之前返回相同错误。
 - 缺少或无法读取能力声明：保守视为不支持，不静默删除字段。
 
@@ -46,7 +54,7 @@ KixDNS 自身的 `/v1/config/validate` 仍是能力检查后的最终编译校�
 
 1. 在 fork 上实现新字段（按给上游提 PR 的标准），在 `panel/capabilities.json` 增加稳定的 `config_<功能>_vN` 名称，并让 health 返回同名能力。
 2. 发布新的日期版本；清单和内核包都会带上新能力。
-3. 在 `config_capabilities.rs` 的集中注册表中绑定 JSON Pointer、展示字段名和能力；新增的是动作时按动作 `type` 检查。
+3. 在 `config_capabilities.rs` 的集中注册表 `REQUIREMENTS` 里加一项：能力，和一个认出配置用到它管的写法、给出一句出路的函数；新增的是动作时按动作 `type` 检查。只改默认值或含义、新旧内核都能跑同一份配置的能力不进这张表，只给表单用。
 4. 在前端字段 schema 中声明 `requiresCapability`；仅在确有旧运行时等价信号时设置 `legacyCapabilities`。
 5. 补充后端拒绝/接受测试、前端隐藏/只读测试及增强运行契约测试。
 6. 已发布的版本和已安装的二进制保持原身份。
