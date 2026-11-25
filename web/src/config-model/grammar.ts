@@ -30,10 +30,11 @@ export const QTYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'S
 export const CONFIG_QTYPE_NAMES_V1 = 'config_qtype_names_v1'
 /**
  * 有 config_qtype_names_v1 的内核认的类型名：hickory-proto 0.26 的 Display 写得出的每一个名字（RecordType 每个有名字的变体），另外 * 也是
- * ANY。2026.11.23.33 起到内核修好这一处之间的几版只认 RecordType::from_str 的那些，OPT、IXFR、ZERO 保存时由内核拒收
+ * ANY（kixdns #563，2851950）。#563 以前的内核（2026.11.23.33 起，包括已经声明了这项能力的 2026.11.25.28 及以前那一两版）只认
+ * RecordType::from_str 的那些，OPT、IXFR、ZERO 保存时由内核拒收
  * The type names a kernel with config_qtype_names_v1 takes: every name hickory-proto 0.26's Display writes (each named variant of
- * RecordType), * being ANY too. The versions from 2026.11.23.33 until the kernel mended this took RecordType::from_str's only, OPT, IXFR and
- * ZERO being refused by the kernel on save
+ * RecordType), * being ANY too (kixdns #563, 2851950). Kernels before #563 (from 2026.11.23.33, the one or two declaring this capability up
+ * to 2026.11.25.28 among them) took RecordType::from_str's only, OPT, IXFR and ZERO being refused by the kernel on save
  */
 export const QTYPE_NAMES = [
   'A', 'AAAA', 'CNAME', 'HTTPS', 'SVCB', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'SOA', 'CAA', 'ANY', 'DS', 'DNSKEY', 'RRSIG', 'NSEC', 'NSEC3',
