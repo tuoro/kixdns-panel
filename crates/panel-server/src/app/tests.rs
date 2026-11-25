@@ -64,6 +64,7 @@ fn app_settings(directory: &TempDir) -> AppSettings {
         service_helper_socket: directory.path().join("helper.sock"),
         service_pidfile: None,
         service_log: None,
+        container_data: None,
         diagnostic_server: "127.0.0.1:53".parse().unwrap(),
         kernel_repository: "tuoro/kixdns".to_owned(),
         installed_source: None,
