@@ -1722,6 +1722,9 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       panel_error: null,
     } satisfies UpdateNotifications as T
   }
+  if (path === '/api/v1/container' && method === 'GET') {
+    return null as T
+  }
   if (path === '/api/v1/panel-update' && method === 'GET') {
     return panelUpdateStatus as T
   }

@@ -64,7 +64,8 @@ fn app_settings(directory: &TempDir) -> AppSettings {
         service_helper_socket: directory.path().join("helper.sock"),
         service_pidfile: None,
         service_log: None,
-        container_data: None,
+        container: None,
+        panel_release_api: None,
         diagnostic_server: "127.0.0.1:53".parse().unwrap(),
         kernel_repository: "tuoro/kixdns".to_owned(),
         installed_source: None,
@@ -852,6 +853,7 @@ async fn test_state(directory: &TempDir) -> super::AppState {
             versions_path: directory.path().join("versions"),
             bundled_metadata: directory.path().join("bundle"),
             github_token_path: directory.path().join("github-token"),
+            panel_release_api: None,
         },
     )
     .unwrap();
@@ -891,6 +893,7 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         )
         .await
         .unwrap(),
+        container: None,
     }
 }
 

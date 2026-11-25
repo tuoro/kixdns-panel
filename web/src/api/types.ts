@@ -594,6 +594,13 @@ export interface PanelUpdateStatus {
   updated_at: number
 }
 
+// 在容器里时系统页要的信息（不在容器里接口回 null）/ What the system page needs in a container (null elsewhere)
+export interface ContainerInfo {
+  data: string
+  image_version: string
+  online: boolean
+}
+
 export interface PanelUpdateStartResponse {
   accepted: boolean
   target_version: string

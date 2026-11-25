@@ -15,6 +15,7 @@ use super::MAX_BUILD_IDENTITY_BYTES;
 use super::MAX_CAPABILITIES_BYTES;
 use super::PREVIOUS_DROPPED_KEY;
 use super::PREVIOUS_VERSION_KEY;
+use super::PanelUpdateNotice;
 use super::RemoteVersion;
 use super::ServiceHost;
 use super::UPSTREAM_REPOSITORY;
@@ -41,6 +42,7 @@ use super::storage::stored_binary_size;
 use super::storage::update_stored_capabilities;
 use super::validation::kernel_architecture;
 use super::validation::kernel_libc;
+use super::validation::parse_kernel_version;
 use super::validation::persist;
 use super::validation::sha256;
 use super::validation::sync_directory;
@@ -59,6 +61,7 @@ use std::fs;
 use std::io::Cursor;
 use std::io::ErrorKind;
 use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -617,12 +620,13 @@ impl UpdateManager {
 
     pub(super) const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(5);
 
-    /// 下载一个发布文件，超过 `limit` 字节就放弃。发布页的文件是公开的，不带 Token；
+    /// 下载一个发布文件（`what` 是它在提示里的称呼），超过 `limit` 字节就放弃。发布页的文件是公开的，不带 Token；
     /// GitHub 回应跳转到存储服务，reqwest 跟过去。
-    /// Downloads one release file, giving up past `limit` bytes. Release files are public,
+    /// Downloads one release file (`what` names it in messages), giving up past `limit` bytes. Release files are public,
     /// so no token is sent; GitHub answers with a redirect to storage, which reqwest follows.
     pub(super) async fn fetch_limited(
         client: &reqwest::Client,
+        what: &str,
         url: &str,
         limit: usize,
         timeout: Duration,
@@ -633,7 +637,8 @@ impl UpdateManager {
         let network = |error: reqwest::Error| {
             if error.is_timeout() {
                 UpdateError::Network(format!(
-                    "下载 KixDNS 内核超时：网络太慢或连接断了，检查到 GitHub 的网络后再试（{error}）"
+                    "下载{}超时：网络太慢或连接断了，检查到 GitHub 的网络后再试（{error}）",
+                    after_cjk(what)
                 ))
             } else {
                 UpdateError::Network(error.to_string())
@@ -668,10 +673,11 @@ impl UpdateManager {
         Ok(bytes)
     }
 
-    /// 下载内核包并和发布清单里的 SHA-256 对照。
-    /// Downloads a kernel package and checks it against the release manifest's SHA-256.
+    /// 下载一个包并和发布的 SHA-256 对照（`what` 是它在提示里的称呼）。
+    /// Downloads a package and checks it against the published SHA-256 (`what` names it in messages).
     pub(super) async fn download_verified(
         client: &reqwest::Client,
+        what: &str,
         url: &str,
         digest: &str,
         timeout: Duration,
@@ -679,7 +685,7 @@ impl UpdateManager {
         let expected = digest
             .strip_prefix("sha256:")
             .ok_or_else(|| UpdateError::Verification("校验值格式无效".to_owned()))?;
-        let bytes = Self::fetch_limited(client, url, MAX_ARTIFACT_BYTES, timeout).await?;
+        let bytes = Self::fetch_limited(client, what, url, MAX_ARTIFACT_BYTES, timeout).await?;
         let actual = sha256(&bytes);
         if !actual.eq_ignore_ascii_case(expected) {
             return Err(UpdateError::Verification(format!(
@@ -699,13 +705,7 @@ impl UpdateManager {
         let key = VersionKey::remote(version)?;
         let active = self.active_version().await?;
         if self.version_exists(&key)? {
-            // 已经在本地：这次只多写替换前的那一份 / Already local: this time only the candidate is written
-            let size = stored_binary_size(&self.versions_path, &key)?;
-            let plan = self
-                .storage_plan(active.as_ref(), &key, size, false)
-                .await?;
-            self.make_room(plan, active.as_ref(), &key).await?;
-            return Ok(plan);
+            return self.stage_stored(active.as_ref(), &key).await;
         }
         // 发布清单已经说了这一版认哪些配置字段：当前配置用不了就不必下载。
         // The release manifest already says which config fields this version knows: when
@@ -714,6 +714,7 @@ impl UpdateManager {
             .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
         let archive = Self::download_verified(
             &self.client,
+            "KixDNS 内核",
             &version.download_url,
             &version.artifact_digest,
             Self::DOWNLOAD_TIMEOUT,
@@ -737,12 +738,6 @@ impl UpdateManager {
         ensure_config_supported(config, &extracted.config_capabilities)
             .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
         validate_elf(&extracted.binary)?;
-        // 下载、校验都过了、还没写盘：这时才知道新内核多大，先看放不放得下
-        // Downloaded and verified but not written yet: only now is the new kernel's size known, so check the room first
-        let plan = self
-            .storage_plan(active.as_ref(), &key, extracted.binary.len() as u64, true)
-            .await?;
-        self.make_room(plan, active.as_ref(), &key).await?;
         let manifest = VersionManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
             source: Some(VersionSource::Fork),
@@ -767,13 +762,131 @@ impl UpdateManager {
             binary_sha256: sha256(&extracted.binary),
             installed_at: unix_timestamp(),
         };
+        // 下载、校验都过了、还没写盘：这时才知道新内核多大 / Downloaded and verified but not written yet: only now is the new
+        // kernel's size known
+        self.stage_new(active.as_ref(), &key, manifest, extracted.binary)
+            .await
+    }
+
+    /// 要换上的版本已经在本机库存里：这次只多写替换前的那一份，按它的大小看空间、腾地方
+    /// The version to switch to is already stored here: this time only the candidate is written, so the room is checked and
+    /// made for its size
+    async fn stage_stored(
+        &self,
+        active: Option<&VersionKey>,
+        key: &VersionKey,
+    ) -> Result<StoragePlan, UpdateError> {
+        let size = stored_binary_size(&self.versions_path, key)?;
+        let plan = self.storage_plan(active, key, size, false).await?;
+        self.make_room(plan, active, key).await?;
+        Ok(plan)
+    }
+
+    /// 新的版本：先看放不放得下、腾地方，再存进本机库存。返回这次留不留上一个
+    /// A new version: the room is checked and made first, then it goes into the local store. Returns whether this switch
+    /// keeps the previous kernel
+    async fn stage_new(
+        &self,
+        active: Option<&VersionKey>,
+        key: &VersionKey,
+        manifest: VersionManifest,
+        binary: Vec<u8>,
+    ) -> Result<StoragePlan, UpdateError> {
+        let plan = self
+            .storage_plan(active, key, binary.len() as u64, true)
+            .await?;
+        self.make_room(plan, active, key).await?;
         let versions_path = Arc::clone(&self.versions_path);
-        tokio::task::spawn_blocking(move || {
-            store_version(&versions_path, &manifest, &extracted.binary)
+        tokio::task::spawn_blocking(move || store_version(&versions_path, &manifest, &binary))
+            .await
+            .map_err(|error| UpdateError::Install(error.to_string()))??;
+        Ok(plan)
+    }
+
+    /// 容器里镜像带的内核（`image_kernel`；它的身份就是完整包身份）比正在用的新时，换成它：走和在线更新同一套切换（配置兼容检查、
+    /// 重启、起不来就换回）。正在用的不比它旧（比如在线装上的更新的内核）就不动，和 install.sh 不把内核降级一样。换了返回换下的和
+    /// 换上的
+    ///
+    /// In a container, switches to the kernel the image carries (`image_kernel`, whose identity is the full-package identity)
+    /// when it is newer than the one in use, through the same switch as an online update (config compatibility check,
+    /// restart, back on failure). One in use that is not older (a newer kernel installed online, say) stays, as install.sh
+    /// never downgrades the kernel. Returns the replaced and the new kernel when it switched
+    pub async fn install_image_kernel(
+        &self,
+        image_kernel: &Path,
+        config: &Value,
+        host: &dyn ServiceHost,
+    ) -> Result<Option<(InstalledVersion, InstalledVersion)>, UpdateError> {
+        let _guard = self.apply_lock.lock().await;
+        let (Some(image), Some(active)) =
+            (self.initial_version_key()?, self.active_version().await?)
+        else {
+            return Ok(None);
+        };
+        if image == active {
+            return Ok(None);
+        }
+        let current = self.installed_version(&active, true).await?;
+        let path = image_kernel.to_path_buf();
+        let metadata = Arc::clone(&self.bundled_metadata);
+        let repository = Arc::clone(&self.kernel_repository);
+        let key = image.clone();
+        let (manifest, binary) = tokio::task::spawn_blocking(move || {
+            let binary = read_regular_file(&path, "镜像带的 KixDNS 二进制")?;
+            let manifest = load_bundled_manifest(&metadata, &repository, &key, &binary)?;
+            Ok::<_, UpdateError>((manifest, binary))
         })
         .await
         .map_err(|error| UpdateError::Install(error.to_string()))??;
-        Ok(plan)
+        let newer = match (
+            manifest.release_tag.as_deref(),
+            current.release_tag.as_deref(),
+        ) {
+            (Some(image), Some(active)) => {
+                parse_kernel_version(image)? > parse_kernel_version(active)?
+            }
+            _ => false,
+        };
+        if !newer {
+            return Ok(None);
+        }
+        ensure_config_supported(config, &manifest.config_capabilities)
+            .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
+        let plan = if self.version_exists(&image)? {
+            self.stage_stored(Some(&active), &image).await?
+        } else {
+            self.stage_new(Some(&active), &image, manifest, binary)
+                .await?
+        };
+        let installed = self
+            .activate_locked(&image, config, host, plan == StoragePlan::KeepPrevious)
+            .await?;
+        Ok(Some((current, installed)))
+    }
+
+    /// 容器里下载这个架构的面板安装包，和发布的 SHA-256 对照（装进去的事见 `crate::container`）
+    /// In a container, downloads this architecture's panel package and checks it against the published SHA-256 (installing
+    /// it is `crate::container`'s job)
+    pub async fn download_panel_package(
+        &self,
+        notice: &PanelUpdateNotice,
+    ) -> Result<Vec<u8>, UpdateError> {
+        let (Some(url), Some(digest)) = (
+            notice.download_url.as_deref(),
+            notice.artifact_digest.as_deref(),
+        ) else {
+            return Err(UpdateError::Verification(
+                "这一版的面板安装包缺少下载地址或校验值".to_owned(),
+            ));
+        };
+        Self::download_verified(
+            &self.client,
+            "面板安装包",
+            url,
+            digest,
+            Self::DOWNLOAD_TIMEOUT,
+        )
+        .await
     }
 
     /// musl 版存新内核前看空间，决定这次留不留上一个，见 [`space`]；别的构建总是留下上一个。

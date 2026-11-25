@@ -4,6 +4,7 @@ mod blocklist;
 mod blocklist_data;
 mod config_capabilities;
 mod config_store;
+mod container;
 mod control;
 mod db;
 mod digest;
@@ -24,6 +25,7 @@ mod updates;
 
 pub use app::{AppSettings, build_app, run};
 pub use auth::TrustedProxies;
+pub use container::ContainerSettings;
 
 /// 忘记密码时在面板所在的机器上执行：删除所有管理员和会话，面板回到「创建管理员」。返回删掉了几个管理员。
 /// Run on the panel's machine after a forgotten password: deletes every administrator and session so the panel opens on

@@ -17,9 +17,11 @@ services:
     # control count per client. When systemd-resolved holds port 53 on the host, see the Docker section of
     # docs/deployment.en.md
     network_mode: host
-    # 桥接网络：去掉上面的 network_mode，换成下面的端口映射。客户端 IP 都会是 Docker 网关的地址
-    # Bridge networking: drop network_mode above and map the ports below instead. Every client then shows up as the Docker
-    # gateway's address
+    # 桥接网络：去掉上面的 network_mode，换成下面的端口映射。这样可能看不到真实的客户端 IP，取决于 Docker 的网络设置（比如
+    # Docker Desktop、rootless、userland-proxy 时都是网关的地址）
+    # Bridge networking: drop network_mode above and map the ports below instead. The real client IPs may then be hidden,
+    # depending on Docker's network setup (Docker Desktop, rootless and the userland proxy, for example, show the gateway's
+    # address)
     # ports:
     #   - "53:53/udp"
     #   - "53:53/tcp"

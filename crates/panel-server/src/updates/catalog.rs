@@ -215,12 +215,6 @@ pub(super) fn to_panel_update_notice(
         "https://github.com/{PANEL_REPOSITORY}/releases/tag/{}",
         release.tag_name
     );
-    let download_url = asset.map(|asset| {
-        format!(
-            "https://github.com/{PANEL_REPOSITORY}/releases/download/{}/{}",
-            release.tag_name, asset.name
-        )
-    });
     Ok(PanelUpdateNotice {
         available,
         current_version: current_version.to_string(),
@@ -231,7 +225,7 @@ pub(super) fn to_panel_update_notice(
         release_url: Some(release_url),
         artifact: asset.map(|asset| asset.name.clone()),
         artifact_digest: asset.and_then(|asset| asset.digest.clone()),
-        download_url,
+        download_url: asset.and_then(|asset| asset.browser_download_url.clone()),
     })
 }
 
@@ -340,11 +334,15 @@ impl UpdateManager {
         {
             return Ok(cached.notice.clone());
         }
-        let release_url =
-            format!("https://api.github.com/repos/{PANEL_REPOSITORY}/releases/latest");
-        let release = self
-            .get_json_optional::<GithubRelease>(&release_url)
-            .await?;
+        let release = match self.panel_release_api.as_deref() {
+            Some(url) => self.get_json_without_token::<GithubRelease>(url).await?,
+            None => {
+                self.get_json_optional::<GithubRelease>(&format!(
+                    "https://api.github.com/repos/{PANEL_REPOSITORY}/releases/latest"
+                ))
+                .await?
+            }
+        };
         let notice = to_panel_update_notice(
             self.panel_commit.as_deref(),
             self.panel_release.as_deref(),
@@ -397,6 +395,7 @@ impl UpdateManager {
         );
         let bytes = Self::fetch_limited(
             &self.client,
+            "内核发布清单",
             &manifest_url,
             MAX_RELEASE_MANIFEST_BYTES,
             Self::API_TIMEOUT,

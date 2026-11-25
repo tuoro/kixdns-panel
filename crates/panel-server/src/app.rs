@@ -46,6 +46,7 @@ use crate::auth::{
 use crate::blocklist_data::BlocklistManager;
 use crate::config_capabilities::ensure_config_supported;
 use crate::config_store::{ConfigDocument, ConfigError, ConfigStore, MAX_CONFIG_BYTES, SaveResult};
+use crate::container::{Container, ContainerSettings};
 use crate::control::{
     ActiveConfig, CacheFlushResult, ControlClient, ControlError, Health, MetricsSnapshot,
     QueryStatsSnapshot, StatsClearResult, ValidationResult,
@@ -78,9 +79,12 @@ pub struct AppSettings {
     pub service_pidfile: Option<PathBuf>,
     /// procd 后端：服务日志文件；Some 时日志页不再问 journalctl
     pub service_log: Option<PathBuf>,
-    /// 容器里的数据卷（看管进程给的）；Some 时内核由看管进程管，状态问它 / The data volume in a container (given by the
-    /// supervisor); when Some the supervisor runs the kernel and is asked for its state
-    pub container_data: Option<PathBuf>,
+    /// 容器里（看管进程给的）；Some 时内核由看管进程管、状态问它，面板自己在线更新 / In a container (given by the
+    /// supervisor); when Some the supervisor runs the kernel and is asked for its state, and the panel updates itself
+    pub container: Option<ContainerSettings>,
+    /// 面板最新发布的接口地址，见 `UpdateSettings::panel_release_api` / Where the panel's latest release is read, see
+    /// `UpdateSettings::panel_release_api`
+    pub panel_release_api: Option<String>,
     pub diagnostic_server: SocketAddr,
     pub kernel_repository: String,
     pub installed_source: Option<String>,
@@ -119,6 +123,7 @@ pub struct AppState {
     dummy_password_hash: Arc<str>,
     recent_history: Arc<std::sync::Mutex<RecentHistory>>,
     querylog: querylog::QueryLog,
+    container: Option<Arc<Container>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -345,6 +350,7 @@ pub async fn run(settings: AppSettings) -> anyhow::Result<()> {
 /// 数据库、密码哈希或初始配置历史初始化失败时返回错误。
 pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     let operations = operations(&settings)?;
+    let container = open_container(settings.container.clone()).await?;
     ensure_database_parent(&settings.database_path)?;
     let database = Database::open(settings.database_path.clone()).await?;
     let querylog = querylog::QueryLog::open(
@@ -369,6 +375,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
             versions_path: settings.kixdns_versions,
             bundled_metadata: settings.bundled_metadata,
             github_token_path: settings.github_token_path,
+            panel_release_api: settings.panel_release_api,
         },
     )
     .map_err(|error| anyhow::anyhow!(error))?;
@@ -402,6 +409,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         dummy_password_hash: Arc::from(dummy_password_hash),
         recent_history: Arc::default(),
         querylog,
+        container,
     };
     spawn_update_scheduler(state.clone());
     spawn_builtin_geosite_seed(state.clone());
@@ -411,7 +419,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     spawn_config_reconciler(state.clone());
     spawn_metrics_sampler(state.clone());
     querylog::spawn_querylog_collector(state.clone());
-    updates::spawn_legacy_kernel_replacement(state.clone());
+    updates::spawn_kernel_replacement(state.clone());
     // procd 后端（OpenWrt）的内核日志写在内存盘上：一直跑着时也按大小滚 / The procd backend's (`OpenWrt`'s) kernel log lives on
     // a RAM disk: it rolls by size while the kernel keeps running too
     #[cfg(unix)]
@@ -435,6 +443,26 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .layer(middleware::from_fn(security_headers)))
 }
 
+/// 在容器里：认出正在跑的是哪一份面板（程序在它的 bin/ 下），整理上次在线更新的状态
+/// In a container: tells which panel copy runs (its program sits in bin/) and settles the last online update's state
+async fn open_container(
+    settings: Option<ContainerSettings>,
+) -> anyhow::Result<Option<Arc<Container>>> {
+    let Some(settings) = settings else {
+        return Ok(None);
+    };
+    let running = std::env::current_exe()?
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf)
+        .context("找不到面板程序所在的目录")?;
+    let container = Container::new(settings, running)?;
+    if let Err(error) = container.settle_update().await {
+        tracing::warn!(error = ?error, "整理面板在线更新的状态失败");
+    }
+    Ok(Some(Arc::new(container)))
+}
+
 /// 服务后端：systemd（默认）、procd（给了 pid 文件）、看管进程（在容器里）；日志给了日志文件就读它
 /// The service backend: systemd (the default), procd (a pid file given) or the supervisor (in a container); logs come
 /// from the log file when one is given
@@ -449,7 +477,7 @@ fn operations(settings: &AppSettings) -> anyhow::Result<Operations> {
         settings.service_pidfile.clone(),
         settings.service_log.clone(),
     );
-    let operations = if settings.container_data.is_some() {
+    let operations = if settings.container.is_some() {
         operations.with_supervisor()
     } else {
         operations

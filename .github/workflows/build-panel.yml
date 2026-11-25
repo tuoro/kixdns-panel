@@ -798,7 +798,7 @@ jobs:
           docker build -f deploy/docker/Dockerfile -t kixdns-panel:acceptance dist/docker
 
       - name: Accept the image
-        run: bash scripts/test-docker-image.sh kixdns-panel:acceptance
+        run: bash scripts/test-docker-image.sh kixdns-panel:acceptance "dist/kixdns-panel-openwrt-${{ matrix.arch }}.tar.gz"
 
   acceptance:
     name: Accept packaged installation
