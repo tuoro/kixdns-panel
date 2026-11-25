@@ -1914,8 +1914,11 @@ kixdns_replaced() {
   [[ ${KIXDNS_BINARY_CHANGED} == true || ${KIXDNS_UNIT_CHANGED} == true ]]
 }
 
-# 输出 KixDNS 要监听的「协议 地址」；配置里没写时按上游默认的 0.0.0.0:53。
-# Print the "protocol address" pairs KixDNS will listen on; missing settings fall back to upstream's 0.0.0.0:53.
+# 输出 KixDNS 要监听的「协议 地址」；配置里没写时按内核的默认值 0.0.0.0:5533：完整安装换上安装包带的内核，它是打包时最新的发布，
+# 2026.11.24.9 起的内核都默认 5533（以前是 5353）
+# Print the "protocol address" pairs KixDNS will listen on; a missing setting falls back to the kernel's default 0.0.0.0:5533: a full
+# install puts in the package's kernel, the latest release when the package was built, and kernels from 2026.11.24.9 on default to
+# 5533 (5353 before)
 kixdns_listen_addresses() {
   # 迁移的副本要到安装那一步才写出来，在那之前按原配置查 / The migration copy is only written at install time; until then read the original
   local config=${ORIGINAL_KIXDNS_CONFIG_PATH:-${KIXDNS_CONFIG_PATH}}
@@ -1925,7 +1928,7 @@ kixdns_listen_addresses() {
   for protocol in udp tcp; do
     value="$(grep -oE "\"bind_${protocol}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "${config}" 2>/dev/null |
       head -n 1 | sed -E 's/.*"([^"]*)"$/\1/' || true)"
-    printf '%s %s\n' "${protocol}" "${value:-0.0.0.0:53}"
+    printf '%s %s\n' "${protocol}" "${value:-0.0.0.0:5533}"
   done
 }
 
