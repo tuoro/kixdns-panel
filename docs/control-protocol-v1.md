@@ -26,6 +26,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 - `querylog_stored_v1`：fork 内核 2026.11.02.11 起，取查询日志时可以带 `stored`，内核只删面板说存好了的；几个等着的请求各自会被叫醒（见下文）
 - `querylog_until_v1`：fork 内核 2026.11.02.12 起，取查询日志时可以带 `until`，只交到这个序号为止（见下文）
 - `querylog_records_v1`：fork 内核 2026.11.03.4 起，取查询日志时可以带 `format=records1`，把编好的记录原样交出来（见下文）
+- `message_codes_v1`：配置问题、告警、拒掉配置的原因和 Geo 数据的问题，每条旁边另有一份带代号和参数的（见下文「带代号的话」）
 
 运行时能力负责当前进程的配置门控。尚未启动的目标版本使用内核包内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
@@ -55,6 +56,14 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
   "warnings": [
     "pipelines[1].rules[0]: jumping to \"a\" comes back round to \"b\", …"
   ],
+  "coded_warnings": [
+    {
+      "place": "pipelines[1].rules[0]",
+      "code": "jump_cycle",
+      "args": { "target": "a", "back_to": "b" },
+      "text": "pipelines[1].rules[0]: jumping to \"a\" comes back round to \"b\", …"
+    }
+  ],
   "data_warnings": []
 }
 ~~~
@@ -73,6 +82,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 | `watch_error` | 2026.11.23.49 | 配置文件为什么监视不了，监视着时为 `null`。监视线程起不来时改了文件不重载，保存的配置不生效；有位置监视不上时，经监视得上的地方改的照样马上重载，监视不上的地方改的由每 10 秒一次的核对察觉、再等写完的 0.3 秒才重载。客户端有这一项时，等重载要把这段算进去 |
 | `doh_error` | 2026.11.24.14 | 配了的入站 DoH 为什么没起来，起来了或没配时为 `null`。DoH 的设置只在启动时读，校验和重载不读证书，这一项到下次启动才会变 |
 | `data_warnings` | 2026.11.24.15 | Geo 数据眼下的问题，一样一句话：配置了却不存在或读不了的文件、读得出来却没有规则用到的标签了的文件、起不来的监视线程、有位置监视不上的文件、规则用到却没有数据提供的标签。随文件监视实时更新 |
+| `coded_problems`、`coded_warnings`、`last_reload.coded_problems`、`coded_data_warnings` | 声明 `message_codes_v1` 的内核 | `problems`、`warnings`、`last_reload.problems`、`data_warnings` 带着代号的那一份，见下文「带代号的话」 |
 
 `problems`、`warnings`、`last_reload.problems` 每条开头是说哪一处的路径（`pipelines[0].rules[2].matchers[1]: …`、`settings.bind_udp: …`、`pipeline_select[0]: …`），按位置说，因为规则名可以重复。内核不读的键也这样说，比如顶层的 `panel` 是 `panel: the kernel does not read this key, …`：2026.11.23.11 到 2026.11.25.27 的内核把面板的配置块当作不读的键拒掉，之后的内核接受它并声明 `config_panel_block_v1`。每条截到 2048 字。
 
@@ -147,6 +157,41 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 ~~~
 
 `message` 是错误连同原因链，截到 2048 字。`problems`（内核 2026.11.24.17 起）逐条列出拒掉的原因（配置问题、监听地址和 DoH 的前提、说不通的设置、编译不了的匹配器），每条截到同样长，一条不落；读不了配置这类别的错误时为空。更早的内核只有 `message`，各条原因用 `; ` 连着。
+
+声明 `message_codes_v1` 的内核另给带着代号的那一份：成功时 `coded_warnings` 对应 `warnings`，`422` 时 `error.coded_problems` 对应 `error.problems`，见下文「带代号的话」。
+
+### 带代号的话
+
+声明 `message_codes_v1` 的内核，每个字符串列表旁边另有一份带代号和参数的，一条对一条、顺序一样；原来的字段一字不变：
+
+| 字符串列表 | 带代号的那一份 |
+| --- | --- |
+| `/v1/config/active` 的 `problems` | `coded_problems` |
+| `/v1/config/active` 的 `warnings` | `coded_warnings` |
+| `/v1/config/active` 的 `last_reload.problems` | `last_reload.coded_problems` |
+| `/v1/config/active` 的 `data_warnings` | `coded_data_warnings` |
+| `/v1/config/validate` 成功时的 `warnings` | `coded_warnings` |
+| `/v1/config/validate` `422` 时的 `error.problems` | `error.coded_problems` |
+
+每一项是：
+
+~~~json
+{
+  "place": "pipelines[0].rules[2].matchers[1]",
+  "code": "matches_every_name",
+  "args": { "matcher": "domain_suffix", "value": "." },
+  "text": "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name"
+}
+~~~
+
+- `place`：原话开头的那段路径；Geo 数据的话没有位置，为 `null`。
+- `code`：固定的代号，每条都有。更新的内核可能加新代号，客户端认不出的照 `text` 显示。
+- `args`：参数，不截。值是文字、数、文字的列表，或者套着的原因 `{code, args, text}`（只在 `upstream_unusable`、`bootstrap_server_unusable` 的 `reason` 和 `default_upstream_over` 的 `problem` 里）。库和系统给的错误文字没有代号，作为文字参数 `error` 原样给出。
+- `text`：字符串列表里对应的那一条，一字不差：有位置时是 `place`、冒号、空格和英文，没有位置时只有英文；和字符串一样截到 2048 字（`data_warnings` 不截）。
+
+全部代号、各自的参数和什么时候出现，见内核仓库的[配置问题和提醒的代号](https://github.com/tuoro/kixdns/blob/main/docs/message-codes.md)（[English](https://github.com/tuoro/kixdns/blob/main/docs/message-codes.en.md)）。
+
+面板服务原样转给页面：`/api/v1/overview` 等带出的在用配置里有上面这几个字段；KixDNS 不接受一份配置时，422 的 `error.details` 是逐条的原因，`error.coded_details` 是带着代号的那一份。页面按代号用面板的叫法说成中文（`web/src/kernel-sayings.ts`），认不出的代号、旧内核没有代号时照原话显示，标明是 KixDNS 的原话。面板的检查工具（`tools/kernel-config-check --message-codes`）写出最新的内核的代号清单，CI 核对页面的中文表正好覆盖每个代号、参数名对得上。
 
 ### `POST /v1/cache/flush`
 

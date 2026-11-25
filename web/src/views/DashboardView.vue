@@ -19,9 +19,9 @@ import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
 import { backUnconfirmed, downShownHere, noteRead, readBeforeTelling, useServiceStart } from '../composables/useServiceStart'
 import { serviceLabel as labelOfService, serviceTone as toneOfService, type ServiceTone } from '../service-state'
-import { settingName, settingNames } from '../config-editor/schema'
+import { settingNames } from '../config-editor/schema'
 import KernelNotes from '../components/KernelNotes.vue'
-import { dataNote, problemsNote, type KernelNote } from '../kernel-problems'
+import { dataNote, describeProblem, noticesOf, problemsNote, type KernelNote } from '../kernel-problems'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, flowView, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
@@ -38,8 +38,15 @@ const overview = ref<Overview | null>(null)
 const kernelNotes = computed(() => {
   const active = overview.value?.live ? overview.value.active_config : null
   if (!active) return []
-  const problems = problemsNote(active.problems ?? [], null, settingName)
-  return [problems?.update ? problems : null, dataNote(active.data_warnings)].filter((note): note is KernelNote => note !== null)
+  const problems = problemsNote(noticesOf(active.problems, active.coded_problems), null)
+  return [problems?.update ? problems : null, dataNote(noticesOf(active.data_warnings, active.coded_data_warnings))].filter((note): note is KernelNote => note !== null)
+})
+// 上次应用为什么失败：内核带着代号逐条列了原因（声明 message_codes_v1 的内核）就按代号说成中文，一条接一条；没有时照它那一句原话
+// Why the last apply failed: with the reasons listed one by one and coded (kernels declaring message_codes_v1) they are said in Chinese by
+// their codes, one after another; otherwise its one sentence of words stands
+const reloadWords = computed(() => {
+  const reload = overview.value?.active_config.last_reload
+  return reload && !reload.success && reload.coded_problems?.length ? reload.coded_problems.map((notice) => describeProblem(notice, null)).join('；') : null
 })
 const service = ref<ServiceStatus | null>(null)
 const stats = ref<QueryStatsSnapshot | null>(null)
@@ -1021,7 +1028,8 @@ onBeforeUnmount(() => {
                    What the reader checks here is which version is running: the panel's version number leads (the same number as the config page and history), and the other four sit in the strip under the hairline -->
               <template v-if="overview">
                 <p class="overview-config-lead"><span>配置版本</span><strong>{{ runningVersion !== null ? `#${runningVersion}` : '面板外的配置' }}</strong></p>
-                <p v-if="!overview.active_config.last_reload.success && overview.active_config.last_reload.error" class="overview-reload-error ui-mono">{{ overview.active_config.last_reload.error }}</p>
+                <p v-if="reloadWords" class="overview-reload-error">{{ reloadWords }}</p>
+                <p v-else-if="!overview.active_config.last_reload.success && overview.active_config.last_reload.error" class="overview-reload-error ui-mono">{{ overview.active_config.last_reload.error }}</p>
                 <!-- 每一对「名称 值」是一个不拆开的块，点在块之间；哈希照常用等宽 / Each name–value pair is one unbroken block with dots between blocks; hashes stay mono -->
                 <p class="overview-config-line ui-dots"><span>已应用 <span class="ui-num">{{ overview.active_config.reload_sequence }}</span> 次</span><span v-if="overview.health.release_version">内核 <span class="ui-num">{{ overview.health.release_version }}</span></span><span v-else>补丁集 <span class="ui-num">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</span></span><span>配置摘要 <span class="ui-mono">{{ shortHash(overview.active_config.sha256, 14) }}</span></span><span>原版提交 <span class="ui-mono">{{ shortHash(overview.health.upstream_commit, 12) }}</span></span></p>
                 <dl class="ui-strip overview-config-hashes">

@@ -1611,11 +1611,11 @@ async fn activate_candidate(
                 .map_err(map_config_error)?;
             let message = format!("{}，仍在用之前的配置", reload_failure(&error));
             mark_candidate_failed(state, result.version_id, message.clone()).await?;
-            let reasons = match error {
-                ControlError::Rejected(refusal) => refusal.problems,
-                _ => Vec::new(),
+            let (reasons, coded) = match error {
+                ControlError::Rejected(refusal) => (refusal.problems, refusal.coded_problems),
+                _ => Default::default(),
             };
-            return Err(AppError::Refused("reload_failed", message, reasons));
+            return Err(AppError::Refused("reload_failed", message, reasons, coded));
         }
     };
     state
@@ -2098,9 +2098,12 @@ fn map_config_error(error: ConfigError) -> AppError {
 
 fn map_control_error(error: ControlError) -> AppError {
     match error {
-        ControlError::Rejected(refusal) => {
-            AppError::Refused("kixdns_rejected", refusal.message, refusal.problems)
-        }
+        ControlError::Rejected(refusal) => AppError::Refused(
+            "kixdns_rejected",
+            refusal.message,
+            refusal.problems,
+            refusal.coded_problems,
+        ),
         ControlError::Unavailable(message) => AppError::ServiceUnavailable(
             "kixdns_unavailable",
             normalize_control_unavailable_message(&message),

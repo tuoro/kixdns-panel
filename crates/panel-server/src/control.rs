@@ -58,6 +58,16 @@ pub struct Health {
     pub capabilities: Vec<String>,
 }
 
+/// 内核报的一串话带着代号的那一份（声明 `message_codes_v1` 的内核起有，见内核仓库的 docs/message-codes.md）：每条
+/// `{place, code, args, text}`，和旁边那串原话一条对一条、顺序一样，`text` 就是那句原话。面板服务不读它，原样转给页面，
+/// 页面按代号和参数说成自己的话
+///
+/// The coded copy of a list of what the kernel says (from kernels declaring `message_codes_v1`, see docs/message-codes.md in
+/// the kernel repository): each `{place, code, args, text}`, one for one with the list of words beside it and in the same
+/// order, `text` being those very words. The panel server does not read it and passes it on to the page as it is, which says
+/// it in its own words by the code and the arguments
+pub type CodedNotices = Vec<Value>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveConfig {
     pub protocol_version: u8,
@@ -80,6 +90,10 @@ pub struct ActiveConfig {
     /// 2026.11.23.39)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problems: Option<Vec<String>>,
+    /// `problems` 带着代号的那一份（见 [`CodedNotices`]），不报告它的内核为 `None` / The coded copy of `problems` (see
+    /// [`CodedNotices`]), `None` from a kernel that does not report it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coded_problems: Option<CodedNotices>,
     /// 在用的配置照样生效、却值得知道的写法（跳转绕圈、Geo 标签没有数据、整体超时太短这些），每次生效换成那份配置的。不报告
     /// 它的内核（2026.11.23.49 以前）为 `None`
     ///
@@ -88,6 +102,10 @@ pub struct ActiveConfig {
     /// `None` from a kernel that does not report it (before 2026.11.23.49)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
+    /// `warnings` 带着代号的那一份（见 [`CodedNotices`]），不报告它的内核为 `None` / The coded copy of `warnings` (see
+    /// [`CodedNotices`]), `None` from a kernel that does not report it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coded_warnings: Option<CodedNotices>,
     /// 配置文件为什么监视不了，监视着（或者内核早于 2026.11.23.49、不报告）时为 `None`：监视线程起不来时改了文件不重载，保存的配置
     /// 不生效；有位置监视不上时，改在那里的由内核每 10 秒一次的核对察觉再重载（见 [`ControlClient::wait_for_config`]）
     ///
@@ -112,6 +130,10 @@ pub struct ActiveConfig {
     /// 2026.11.24.15)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_warnings: Option<Vec<String>>,
+    /// `data_warnings` 带着代号的那一份（见 [`CodedNotices`]），没有位置，不报告它的内核为 `None` / The coded copy of
+    /// `data_warnings` (see [`CodedNotices`]), with no place, `None` from a kernel that does not report it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coded_data_warnings: Option<CodedNotices>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +146,10 @@ pub struct ReloadResult {
     /// empty when it succeeded or failed for another reason, `None` from a kernel that does not report them
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problems: Option<Vec<String>>,
+    /// `problems` 带着代号的那一份（见 [`CodedNotices`]），不报告它的内核为 `None` / The coded copy of `problems` (see
+    /// [`CodedNotices`]), `None` from a kernel that does not report it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coded_problems: Option<CodedNotices>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +164,10 @@ pub struct ValidationResult {
     /// [`ActiveConfig::warnings`]); `None` from a kernel that does not report it (before 2026.11.23.49)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
+    /// `warnings` 带着代号的那一份（见 [`CodedNotices`]），不报告它的内核为 `None` / The coded copy of `warnings` (see
+    /// [`CodedNotices`]), `None` from a kernel that does not report it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coded_warnings: Option<CodedNotices>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -697,6 +727,11 @@ pub struct Refusal {
     /// 2026.11.24.17 do not report them, and they are empty for other errors (a config that cannot be read, causes besides
     /// compiling), leaving the words alone
     pub problems: Vec<String>,
+    /// `problems` 带着代号的那一份（见 [`CodedNotices`]）：422 的 `error.coded_problems`、重载的
+    /// `last_reload.coded_problems`，不报告它的内核为空
+    /// The coded copy of `problems` (see [`CodedNotices`]): a 422's `error.coded_problems`, a reload's
+    /// `last_reload.coded_problems`, empty from a kernel that does not report it
+    pub coded_problems: CodedNotices,
 }
 
 impl std::fmt::Display for Refusal {
@@ -851,6 +886,7 @@ impl ControlClient {
                         .error
                         .unwrap_or_else(|| "没有给出原因".to_owned()),
                     problems: active.last_reload.problems.unwrap_or_default(),
+                    coded_problems: active.last_reload.coded_problems.unwrap_or_default(),
                 }));
             }
             if started.elapsed() >= reload_wait(&active) {
@@ -1095,13 +1131,16 @@ async fn read_reply(
         return Err(ControlError::Rejected(Refusal {
             message,
             problems: error.problems,
+            coded_problems: error.coded_problems,
         }));
     }
     Ok((status.as_u16(), bytes))
 }
 
-/// 内核回的错误：`{"error":{"code","message","problems"}}`，`problems` 只在配置被拒（422）时有
-/// A kernel's error reply: `{"error":{"code","message","problems"}}`, with `problems` only for a refused config (422)
+/// 内核回的错误：`{"error":{"code","message","problems","coded_problems"}}`，`problems` 和带着代号的
+/// `coded_problems`（见 [`CodedNotices`]）只在配置被拒（422）时有
+/// A kernel's error reply: `{"error":{"code","message","problems","coded_problems"}}`, with `problems` and the coded
+/// `coded_problems` (see [`CodedNotices`]) only for a refused config (422)
 #[cfg(unix)]
 #[derive(Deserialize)]
 struct KernelErrorEnvelope {
@@ -1114,6 +1153,8 @@ struct KernelError {
     message: Option<String>,
     #[serde(default)]
     problems: Vec<String>,
+    #[serde(default)]
+    coded_problems: CodedNotices,
 }
 
 /// 普通控制请求的应答时限 / The reply limit for ordinary control requests
@@ -2122,21 +2163,56 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
         assert_eq!((tally.attempts, tally.aborted, tally.throttled), (12, 2, 0));
     }
 
-    /// 在用配置的状态照内核报的读：启动时读的配置里要改的写法、重载被拒的逐条原因；更早的内核不报，读成 `None`，转给页面时也不写，
-    /// 面板存下的旧快照照样读得出来
-    /// The active config's state is read as the kernel reports it: what the config read at startup writes that must change, and the
-    /// reasons a reload was refused for one by one; an earlier kernel reports neither, read as `None` and left out when passed on to the
-    /// page, and an old snapshot the panel stored still reads
+    /// 在用配置的状态照内核报的读：启动时读的配置里要改的写法、重载被拒的逐条原因，和它们带着代号的那一份；更早的内核不报，读成
+    /// `None`，转给页面时也不写，面板存下的旧快照照样读得出来。带着代号的原样转给页面
+    /// The active config's state is read as the kernel reports it: what the config read at startup writes that must change, the
+    /// reasons a reload was refused for one by one, and their coded copies; an earlier kernel reports none, read as `None` and
+    /// left out when passed on to the page, and an old snapshot the panel stored still reads. The coded ones reach the page as
+    /// they are
     #[test]
     fn the_active_config_carries_the_problems_the_kernel_reports() {
+        let notice = |text: &str| {
+            serde_json::json!({
+                "place": "settings.bootstrap", "code": "host_names_without_bootstrap",
+                "args": { "host": "dns.google" }, "text": text,
+            })
+        };
+        let geo = serde_json::json!({
+            "place": null, "code": "data_file_missing",
+            "args": { "file": "geosite", "path": "/x.dat" }, "text": "d",
+        });
         let kernel = serde_json::json!({
             "protocol_version": 1, "generation": 2, "sha256": "s", "loaded_at_unix": 0, "reload_sequence": 3,
-            "last_reload": { "success": false, "error": "a; b", "problems": ["a", "b"] },
+            "last_reload": {
+                "success": false, "error": "a; b", "problems": ["a", "b"],
+                "coded_problems": [notice("a"), notice("b")],
+            },
             "restart_pending": [], "problems": ["panel: the kernel does not read this key"],
-            "warnings": ["w"], "watch_error": "OS file watch limit reached.", "doh_error": null,
-            "data_warnings": ["d"],
+            "coded_problems": [{ "place": "panel", "code": "key_not_read", "args": {}, "text": "panel: the kernel does not read this key" }],
+            "warnings": ["w"], "coded_warnings": [notice("w")],
+            "watch_error": "OS file watch limit reached.", "doh_error": null,
+            "data_warnings": ["d"], "coded_data_warnings": [geo],
         });
-        let active: super::ActiveConfig = serde_json::from_value(kernel).unwrap();
+        let active: super::ActiveConfig = serde_json::from_value(kernel.clone()).unwrap();
+        assert_eq!(
+            (
+                active.last_reload.coded_problems.as_deref(),
+                active.coded_warnings.as_deref(),
+                active.coded_data_warnings.as_deref(),
+            ),
+            (
+                Some(&[notice("a"), notice("b")][..]),
+                Some(&[notice("w")][..]),
+                Some(&[geo][..]),
+            )
+        );
+        assert_eq!(active.coded_problems.as_deref().map(<[_]>::len), Some(1));
+        let mut page = serde_json::to_value(&active).unwrap();
+        page["doh_error"] = serde_json::Value::Null;
+        assert_eq!(
+            page, kernel,
+            "everything reaches the page as the kernel said it"
+        );
         assert_eq!(
             (
                 active.warnings.as_deref(),
@@ -2167,13 +2243,22 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
         let active: super::ActiveConfig = serde_json::from_value(older.clone()).unwrap();
         assert!(active.problems.is_none() && active.last_reload.problems.is_none());
         assert!(active.warnings.is_none() && active.data_warnings.is_none());
+        assert!(active.coded_problems.is_none() && active.last_reload.coded_problems.is_none());
+        assert!(active.coded_warnings.is_none() && active.coded_data_warnings.is_none());
         assert_eq!(serde_json::to_value(&active).unwrap(), older);
-        // 校验的回答：照样能用、值得知道的写法 / A validation's answer: what works all the same yet is worth knowing
-        let validation: super::ValidationResult = serde_json::from_value(serde_json::json!({
+        // 校验的回答：照样能用、值得知道的写法，和带着代号的那一份；旧内核没有那一份 / A validation's answer: what works all
+        // the same yet is worth knowing, and its coded copy; an old kernel has no such copy
+        let answer = serde_json::json!({
             "protocol_version": 1, "valid": true, "pipeline_count": 1, "rule_count": 2, "warnings": ["w"],
-        }))
-        .unwrap();
+            "coded_warnings": [notice("w")],
+        });
+        let validation: super::ValidationResult = serde_json::from_value(answer.clone()).unwrap();
         assert_eq!(validation.warnings.as_deref(), Some(&["w".to_owned()][..]));
+        assert_eq!(serde_json::to_value(&validation).unwrap(), answer);
+        let mut older = answer;
+        older.as_object_mut().unwrap().remove("coded_warnings");
+        let validation: super::ValidationResult = serde_json::from_value(older).unwrap();
+        assert!(validation.coded_warnings.is_none());
     }
 
     fn active_watching(watch_error: Option<&str>) -> super::ActiveConfig {

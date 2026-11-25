@@ -9,6 +9,13 @@ import type { GlobalSettings } from './types'
 // What the settings page says under a box: writings the kernel refuses (problems), and ones that work yet are worth knowing about
 // (warnings). Both read as the kernel reads them: problems() and warnings() for settings (kernel src/config.rs)
 
+// 这几句内核报同一件事时也这样说（kernel-sayings.ts） / These sentences say the same when the kernel reports it (kernel-sayings.ts)
+export const DOH_PATH_PROBLEM = '要以 / 开头：不以它开头的路径谁也对不上，DoH 每个请求都回 404'
+export const LISTEN_ADDRESS_PROBLEM = '要写成「IP:端口」，比如 0.0.0.0:53 或 [::]:53'
+/** 上游 host 写成了域名、又没写引导 DNS 时说的那句（内核 host_names_without_bootstrap 的那条 warning） / What is said when the upstream
+ * host is written with a host name and no bootstrap is written (the warning of the kernel's host_names_without_bootstrap) */
+export const hostNameWarning = (host: string): string => `上游 ${host} 写成了域名，没写引导 DNS 时交给系统解析；KixDNS 接管了本机的 53 端口时会绕回它自己，连不上`
+
 /** 逗号分开的一串地址，去掉空白和空的几段（内核的 split_upstreams） / A comma-separated list, trimmed with empty parts dropped (the kernel's split_upstreams) */
 export const splitAddresses = (text: string): string[] => text.split(',').map((part) => part.trim()).filter(Boolean)
 
@@ -37,11 +44,11 @@ export function settingProblems(settings: GlobalSettings, capabilities: readonly
     problems.request_timeout_ms = `不能小于上游超时（${upstream} 毫秒）`
   }
   const doh = settings.doh_path
-  if (doh !== undefined && (typeof doh !== 'string' || !doh.startsWith('/'))) problems.doh_path = '要以 / 开头：不以它开头的路径谁也对不上，DoH 每个请求都回 404'
+  if (doh !== undefined && (typeof doh !== 'string' || !doh.startsWith('/'))) problems.doh_path = DOH_PATH_PROBLEM
   for (const key of ['bind_udp', 'bind_tcp', 'bind_doh']) {
     const bind = settings[key]
     if (bind === undefined || (bind === null && key === 'bind_doh')) continue
-    if (!isSocketAddress(bind)) problems[key] = '要写成「IP:端口」，比如 0.0.0.0:53 或 [::]:53'
+    if (!isSocketAddress(bind)) problems[key] = LISTEN_ADDRESS_PROBLEM
   }
   // 写了 DoH 监听地址（写错的也算）就要证书和私钥，空的字符串也算写了 / A DoH listen address written (a wrong one too) needs the
   // certificate and key, an empty string counting as written

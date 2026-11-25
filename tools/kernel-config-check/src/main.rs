@@ -16,6 +16,14 @@
 //!   each reason starts with) being exactly these; when it cannot be read as a config at all (a wrong type, with no reasons one
 //!   by one) only an item naming one setting counts;
 //! - `"warns": ["settings.bootstrap", …]`: the kernel accepts it, the settings its warnings speak of being exactly these.
+//!
+//! 带 `--message-codes` 时什么都不读，只把内核说的每种话的代号和参数名（`kixdns::notice::CODES`）写成 JSON 到标准输出：
+//! `[["no_upstream", []], ["upstream_unusable", ["upstream", "reason"]], …]`。web/src/kernel-sayings.test.ts 拿它核对面板的中文表
+//! 正好覆盖每个代号。
+//!
+//! With `--message-codes` it reads nothing and writes the code and argument names of every kind of thing the kernel says
+//! (`kixdns::notice::CODES`) to standard output as JSON: `[["no_upstream", []], ["upstream_unusable", ["upstream", "reason"]], …]`.
+//! web/src/kernel-sayings.test.ts checks against it that the panel's Chinese table covers every code exactly.
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -24,6 +32,10 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--message-codes") {
+        println!("{}", serde_json::json!(kixdns::notice::CODES));
+        return ExitCode::SUCCESS;
+    }
     let mut raw = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut raw) {
         eprintln!("读不了标准输入 / cannot read standard input: {error}");

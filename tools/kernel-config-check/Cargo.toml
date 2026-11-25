@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 license = "GPL-3.0-only"
 publish = false
-description = "Runs the latest KixDNS kernel's (main) config::validate on the configs the panel compiles and the settings it checks (CI only)"
+description = "Runs the latest KixDNS kernel's (main) config::validate on the configs the panel compiles and the settings it checks, and lists its message codes (CI only)"
 
 # 内核的源码由 CI 取最新的内核（内核仓库 main 这次运行时指到的提交）放到 .upstream/kixdns（不进仓库）；本地把 .upstream/kixdns
 # 指向内核 main 的检出。锁文件用内核自己的（CI 里先把 .upstream/kixdns/Cargo.lock 拷过来），依赖的版本和那个内核一样。

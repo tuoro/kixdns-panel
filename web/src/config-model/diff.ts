@@ -7,8 +7,6 @@ import { normalUrl, shortName } from './blocklist'
 // and only an unknown key is written as it is
 const SETTING_FIELDS = new Map(SETTING_SECTIONS.flatMap((section) => section.fields.map((field) => [field.key, field] as const)))
 const settingLabel = (field: SettingField) => field.label.replace(/\s*[(（][^)）]*[)）]$/, '')
-// Geo 数据的路径不在设置表里，用 Geo 数据页上的叫法 / Geo data paths are not in the settings schema; they take the Geo data page's names
-const GEO_LABELS: Record<string, string> = { geoip_db_path: 'GeoIP MMDB 文件', geoip_dat_path: 'GeoIP DAT 文件', geosite_data_paths: 'GeoSite 文件' }
 function settingText(value: unknown, field: SettingField | undefined): string {
   if (typeof value === 'boolean') return value ? '开' : '关'
   if (Array.isArray(value)) return value.length ? value.map(String).join('、') : '（空）'
@@ -161,7 +159,7 @@ export function diffModels(now: Model, then: Model, toward: 'save' | 'restore' =
     const b = then.settings[k]
     if (JSON.stringify(a) === JSON.stringify(b)) continue
     const field = SETTING_FIELDS.get(k)
-    blocks.push({ kind: a === undefined ? '加上' : b === undefined ? '去掉' : '改了', title: field ? settingLabel(field) : GEO_LABELS[k] ?? (settingName(k) !== k ? settingName(k) : `设置 ${k}`), lines: [...(a === undefined ? [] : [{ sign: '-' as const, text: settingText(a, field) }]), ...(b === undefined ? [] : [{ sign: '+' as const, text: settingText(b, field) }])] })
+    blocks.push({ kind: a === undefined ? '加上' : b === undefined ? '去掉' : '改了', title: field ? settingLabel(field) : settingName(k) !== k ? settingName(k) : `设置 ${k}`, lines: [...(a === undefined ? [] : [{ sign: '-' as const, text: settingText(a, field) }]), ...(b === undefined ? [] : [{ sign: '+' as const, text: settingText(b, field) }])] })
   }
   if (JSON.stringify(now.defaults) !== JSON.stringify(then.defaults)) blocks.push({ kind: '改了', title: '拦截时怎么回应', lines: [{ sign: '-', text: BLOCK_NAME[now.defaults.block] ?? now.defaults.block }, { sign: '+', text: BLOCK_NAME[then.defaults.block] ?? then.defaults.block }] })
   // 映射只换了顺序：先后决定哪条先命中 / Mappings only reordered: the order decides which matches first

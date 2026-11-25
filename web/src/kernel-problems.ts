@@ -1,10 +1,23 @@
-// 内核逐条说的配置问题（校验被拒时 422 的 problems、重载被拒时的 last_reload.problems、启动时读的配置的 problems）。每条开头是说哪一处
-// 的路径（pipelines[0].rules[2].matchers[1]: …、settings.bind_udp: …），按位置说，因为规则名可以重复。这里把路径换成配置页上的叫法，
-// 后面内核的原话照留；认不出的整条照原样
-// The configuration problems the kernel lists one by one (a 422's problems on a refused validation, last_reload.problems on a refused
-// reload, the problems of the config read at startup). Each opens with the path of the place it speaks of (pipelines[0].rules[2].matchers[1]:
-// …, settings.bind_udp: …), by place because rule names may repeat. Here the path becomes what the config page calls it, and the kernel's
-// words after it stay as they are; anything not recognised stays whole
+import type { KernelNotice } from './api/types'
+import { settingName } from './config-editor/schema'
+import { kernelSaid, sayKernel } from './kernel-sayings'
+
+// 内核逐条说的配置问题和提醒（校验被拒时 422 的 problems、重载被拒时的 last_reload.problems、启动时读的配置的 problems、warnings、Geo 数据的
+// data_warnings）。声明 message_codes_v1 的内核每条另带代号和参数（KernelNotice），按代号说成中文（kernel-sayings.ts）；说的是哪一处的路径
+// （pipelines[0].rules[2].matchers[1]、settings.bind_udp）按位置说，因为规则名可以重复，这里换成配置页上的叫法。没有代号（旧内核）、代号认不出
+// 时照内核的原话说，标明是原话，开头的路径照样换成配置页上的叫法
+// The configuration problems and warnings the kernel lists one by one (a 422's problems on a refused validation, last_reload.problems on a
+// refused reload, the problems and warnings of the config in use, the Geo data's data_warnings). Kernels declaring message_codes_v1 add a
+// code and arguments to each (KernelNotice), said in Chinese by the code (kernel-sayings.ts); the path of the place spoken of
+// (pipelines[0].rules[2].matchers[1], settings.bind_udp), by place because rule names may repeat, becomes what the config page calls it.
+// Without a code (an old kernel) or with one not known, the kernel's words are said, marked as such, the opening path still named as the
+// config page names it
+
+/** 内核说的一条：带着代号的（KernelNotice），或者旧内核只有原话的 / One thing the kernel says: coded (KernelNotice), or an old kernel's words alone */
+export type Notice = KernelNotice | { text: string }
+
+/** 内核报的一串话：有带着代号的那一份就用它，没有（旧内核）就用原话 / A list of what the kernel says: its coded copy when there is one, the words otherwise (an old kernel) */
+export const noticesOf = (texts: readonly string[] | undefined, coded: readonly KernelNotice[] | undefined): readonly Notice[] => coded ?? (texts ?? []).map((text) => ({ text }))
 
 /**
  * 内核不认面板的配置块（顶层 panel 键）时说的话。2026.11.23.11 到 2026.11.25.27 的内核把它当作不读的键：启动时记成问题，校验和重载都
@@ -26,6 +39,10 @@ const PANEL_BLOCK = /(?:^|[;；:：]\s*)panel: the kernel does not read this key
 
 /** 这句话（内核的原话，或者面板带着它说的话）说的是不认面板的配置块 / Whether this text (the kernel's words, or the panel's words carrying them) says the panel's block is not taken */
 export const refusesPanelBlock = (text: string): boolean => PANEL_BLOCK.test(text)
+
+/** 内核的一条说的是不认面板的配置块：带着代号的按代号认（顶层 panel 这个键不读），旧内核的照原话认 / Whether one notice says the panel's block is
+ * not taken: by the code when coded (the top-level key panel not read), by the words from an old kernel */
+const blocksPanel = (notice: Notice): boolean => ('code' in notice ? notice.code === 'key_not_read' && notice.place === 'panel' : refusesPanelBlock(notice.text))
 
 /** 说不认面板配置块的话换成 PANEL_BLOCK_HINT，别的照原样（Geo 数据、拦截列表的更新没成时的原因这类） / Words saying the panel's block is not taken become PANEL_BLOCK_HINT, anything else stays (why a Geo data or blocklist update failed, say) */
 export const panelBlockWords = (text: string): string => (refusesPanelBlock(text) ? PANEL_BLOCK_HINT : text)
@@ -52,38 +69,52 @@ export interface PlaceNames {
   quoted?: (id: string) => string | null
 }
 
-// 开头的路径：哪个 Pipeline、哪条规则、哪个设置，后面还有一截（.matchers[1]、.ecs.prefix）时另外记着；再往后是内核的原话
-// The opening path: which pipeline, which rule or which setting, with any further part (.matchers[1], .ecs.prefix) kept apart; after it come the kernel's words
-const PLACE = /^(?:pipelines\[(\d+)\](?:\.rules\[(\d+)\])?|settings\.(\w+))((?:\.\w+|\[\d+\])*): ([\s\S]+)$/
+// 说的是哪一处：哪个 Pipeline、哪条规则、哪个设置，后面还有一截（.matchers[1]、.ecs.prefix）时另外记着；原话里它在开头，冒号后面是内核的话
+// The place spoken of: which pipeline, which rule or which setting, with any further part (.matchers[1], .ecs.prefix) kept apart; in the words
+// it comes first, the kernel's own words after a colon
+const PATH = /^(?:pipelines\[(\d+)\](?:\.rules\[(\d+)\])?|settings\.(\w+))((?:\.\w+|\[\d+\])*)$/
+const OPENING = /^([\w.[\]]+): ([\s\S]+)$/
 
 /**
- * 内核说的一条问题，换成页面上的说法：不认面板配置块的那条说怎么办；开头的路径换成规则、列表、设置在页面上的叫法（路径后面多的一截放在
- * 括号里，高级规则看得懂），引号里的 Pipeline id 后面补上它的叫法。settingName 给设置的叫法
- * One problem the kernel names, in the page's words: the one about the panel's block says what to do; the opening path becomes what the
- * rule, list or setting is called on the page (any further part of the path in brackets, which an advanced rule can follow), and a quoted
- * pipeline id gets its name after it. settingName names a setting
+ * 一处在页面上的叫法：规则、列表、设置的叫法，路径后面多的一截放在括号里（高级规则看得懂）；认不出、或者没有 names（不知道是哪份配置）时
+ * 认不出规则和列表，为 null。设置总认得出
+ * What a place is called on the page: the rule, list or setting's name, any further part of the path in brackets (which an advanced rule can
+ * follow); null when unknown, rules and lists being unknown too without names (when it is unknown which config). A setting is always known
  */
-export function describeProblem(problem: string, names: PlaceNames | null, settingName: (key: string) => string): string {
-  if (refusesPanelBlock(problem)) return PANEL_BLOCK_HINT
-  const place = PLACE.exec(problem)
-  if (!place) return problem
-  const [, pipeline, rule, setting, further, said] = place
-  const where = setting !== undefined ? `设置 ${settingName(setting)}`
-    : !names ? null
+function placeName(place: string, names: PlaceNames | null): string | null {
+  const [, pipeline, rule, setting, further] = PATH.exec(place) ?? []
+  const where = setting !== undefined ? `设置\u00a0${settingName(setting)}`
+    : !names || pipeline === undefined ? null
       : rule !== undefined ? names.rule(Number(pipeline), Number(rule)) : names.pipeline(Number(pipeline))
-  if (!where) return problem
-  const words = names?.quoted ? said!.replace(/"([\w.-]+)"/g, (whole, id: string) => { const name = names.quoted!(id); return name ? `${whole}（${name}）` : whole }) : said!
-  return `${where}${further ? `（${further.replace(/^\./, '')}）` : ''}：${words}`
+  return where && `${where}${further ? `（${further.replace(/^\./, '')}）` : ''}`
 }
 
 /**
- * 几条问题换成页面上的说法（见 describeProblem）；不认面板配置块的那条不列，由 blocked 说：那时先要更新内核
- * Several problems in the page's words (see describeProblem); the one about the panel's block is not listed but told by blocked: the kernel
- * then has to be updated first
+ * 内核说的一条，换成页面上的说法：不认面板配置块的那条说怎么办；带着代号的按代号说成中文，前面是那一处的叫法（认不出的照写路径）；没有代号、
+ * 代号认不出的照原话说、标明是原话，开头的路径认得出时换成叫法。引号里的 Pipeline id 后面补上它的叫法
+ * One notice of the kernel's, in the page's words: the one about the panel's block says what to do; a coded one is said in Chinese by its code,
+ * after the name of its place (the path as written when unknown); one without a code, or with an unknown code, is said in the kernel's words,
+ * marked as such, the opening path named when known. A quoted pipeline id gets its name after it
  */
-export function describeProblems(problems: readonly string[], names: PlaceNames | null, settingName: (key: string) => string): { blocked: boolean; items: string[] } {
-  const items = problems.filter((problem) => !refusesPanelBlock(problem)).map((problem) => describeProblem(problem, names, settingName))
-  return { blocked: items.length < problems.length, items }
+export function describeProblem(notice: Notice, names: PlaceNames | null): string {
+  if (blocksPanel(notice)) return PANEL_BLOCK_HINT
+  if ('code' in notice) {
+    const said = sayKernel(notice, names?.quoted)
+    if (said !== null) return notice.place === null ? said : `${placeName(notice.place, names) ?? notice.place}：${said}`
+  }
+  const [, place, words] = OPENING.exec(notice.text) ?? []
+  const where = place === undefined ? null : placeName(place, names)
+  return where ? `${where}，${kernelSaid(words!, names?.quoted)}` : kernelSaid(notice.text, names?.quoted)
+}
+
+/**
+ * 几条换成页面上的说法（见 describeProblem）；不认面板配置块的那条不列，由 blocked 说：那时先要更新内核
+ * Several in the page's words (see describeProblem); the one about the panel's block is not listed but told by blocked: the kernel then has to
+ * be updated first
+ */
+export function describeProblems(notices: readonly Notice[], names: PlaceNames | null): { blocked: boolean; items: string[] } {
+  const items = notices.filter((notice) => !blocksPanel(notice)).map((notice) => describeProblem(notice, names))
+  return { blocked: items.length < notices.length, items }
 }
 
 /**
@@ -99,9 +130,9 @@ export interface KernelNote { tone: 'err' | 'warn' | 'off'; title: string; detai
  * it is to be fixed before the next save. With the one about the panel's block, updating the kernel comes first: without it no change can be
  * saved. Without names (when it is unknown which config is in use) the paths stay as they are
  */
-export function problemsNote(problems: readonly string[], names: PlaceNames | null, settingName: (key: string) => string): KernelNote | null {
+export function problemsNote(problems: readonly Notice[], names: PlaceNames | null): KernelNote | null {
   if (!problems.length) return null
-  const { blocked, items } = describeProblems(problems, names, settingName)
+  const { blocked, items } = describeProblems(problems, names)
   if (blocked) {
     return { tone: 'err', title: PANEL_BLOCK_HINT, detail: items.length ? `更新之前，保存、恢复版本和 Geo\u00a0数据、拦截列表的更新都不会生效。另外还有\u00a0${items.length}\u00a0处下次保存前要改掉：` : '更新之前，保存、恢复版本和 Geo\u00a0数据、拦截列表的更新都不会生效', items, update: true }
   }
@@ -114,9 +145,9 @@ export function problemsNote(problems: readonly string[], names: PlaceNames | nu
  * What takes effect all the same yet is worth knowing (jumps going round, Geo tags without data, an overall timeout too short and the like):
  * the config in use's (active's warnings) or the draft just checked (validate's warnings). Saving works without changing them, so it is not red
  */
-export function warningsNote(warnings: readonly string[], names: PlaceNames | null, settingName: (key: string) => string): KernelNote | null {
+export function warningsNote(warnings: readonly Notice[], names: PlaceNames | null): KernelNote | null {
   if (!warnings.length) return null
-  return { tone: 'off', title: `在用的配置有\u00a0${warnings.length}\u00a0条提醒`, detail: '照样生效，但值得知道', items: warnings.map((warning) => describeProblem(warning, names, settingName)) }
+  return { tone: 'off', title: `在用的配置有\u00a0${warnings.length}\u00a0条提醒`, detail: '照样生效，但值得知道', items: warnings.map((warning) => describeProblem(warning, names)) }
 }
 
 /**
@@ -146,7 +177,7 @@ export function dohNote(dohError: string | null | undefined): KernelNote | null 
  * What is wrong with the Geo data right now (active's data_warnings): files missing or unreadable, tags rules use without data, watches that
  * fail. Conditions using them may not match as meant; once the files are fixed KixDNS reads them in by itself
  */
-export function dataNote(dataWarnings: readonly string[] | undefined): KernelNote | null {
-  if (!dataWarnings?.length) return null
-  return { tone: 'warn', title: `Geo\u00a0数据有\u00a0${dataWarnings.length}\u00a0个问题`, detail: '用到它们的 GeoSite、GeoIP 条件可能不会照想的命中；文件改好以后 KixDNS 会自己读进来', items: [...dataWarnings] }
+export function dataNote(dataWarnings: readonly Notice[]): KernelNote | null {
+  if (!dataWarnings.length) return null
+  return { tone: 'warn', title: `Geo\u00a0数据有\u00a0${dataWarnings.length}\u00a0个问题`, detail: '用到它们的 GeoSite、GeoIP 条件可能不会照想的命中；文件改好以后 KixDNS 会自己读进来', items: dataWarnings.map((warning) => describeProblem(warning, null)) }
 }

@@ -181,19 +181,21 @@ export const RETIRED_SETTINGS: readonly string[] = [
 /** 设置里写着的退役旧设置，按写的顺序 / The retired settings written in settings, in the order written */
 export const retiredIn = (settings: GlobalSettings): string[] => Object.keys(settings).filter((key) => RETIRED_SETTINGS.includes(key))
 
-// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有、只能在 JSON 里改的和退役的旧设置在这里起名，再没有的照写内核的名字。
-// TCP 错误阈值不放进表单：内核的 TCP、DoT 连接一出错就重建，这一项不起作用（见内核文档）
-// What a setting name the kernel reports is called on the page: the form's label without the bracketed unit; one the form lacks
-// (editable in JSON only) and the retired ones are named here, and anything else keeps the kernel's name. TCP 错误阈值 stays out of the
-// form: the kernel rebuilds a TCP or DoT connection on its first error, so the setting has no effect (see the kernel docs)
-const JSON_ONLY_NAMES: Record<string, string> = {
+// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有的在这里起名——Geo 数据那一栏的几个照那里的叫法，只能在 JSON 里改的
+// 和退役的旧设置另起，再没有的照写内核的名字。TCP 错误阈值不放进表单：内核的 TCP、DoT 连接一出错就重建，这一项不起作用（见内核文档）
+// What a setting name the kernel reports is called on the page: the form's label without the bracketed unit; one the form lacks is named
+// here — those of the Geo data section as that section calls them, the ones editable in JSON only and the retired ones named apart — and
+// anything else keeps the kernel's name. TCP 错误阈值 stays out of the form: the kernel rebuilds a TCP or DoT connection on its first
+// error, so the setting has no effect (see the kernel docs)
+const UNFORMED_NAMES: Record<string, string> = {
+  geoip_db_path: 'GeoIP MMDB 文件', geoip_dat_path: 'GeoIP DAT 文件', geosite_data_paths: 'GeoSite 文件',
   doh_health_check_error_threshold: 'DoH 错误阈值', tcp_health_check_error_threshold: 'TCP 错误阈值', prefetch: '预取',
   statistics_enabled: '查询统计', statistics_anonymize_client_ip: '客户端地址脱敏', geoip_auto_convert: 'GeoIP 自动转换', geoip_filter_countries: 'GeoIP 国家过滤',
 }
 const FORM_FIELDS = SETTING_SECTIONS.flatMap((section) => section.fields)
 export function settingName(key: string): string {
   const field = FORM_FIELDS.find((item) => item.key === key)
-  return field ? field.label.replace(/\s*\([^)]*\)$/, '') : JSON_ONLY_NAMES[key] ?? key
+  return field ? field.label.replace(/\s*\([^)]*\)$/, '') : UNFORMED_NAMES[key] ?? key
 }
 
 // 一串设置名，放在句末冒号后面用（名字可能以字母开头、结尾，挨着标点就不用另外隔空格）：

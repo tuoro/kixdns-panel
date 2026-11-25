@@ -4,6 +4,7 @@ import { blocklistKey, compile, ruleTitle, type Model, type Rule } from '../conf
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
 import { appliedModel, applyUpstreamStats, changeCount, groupHealth, changesBesidesFile, newId, placeBack, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
+import type { KernelNotice } from '../api/types'
 
 // 保存条数出来的每一处修改，「改了哪些」里都要看得到：以前改监听标签时保存条说改了 1 处，对比却说「一样」
 // Every change the save bar counts must show in the review: setting a listener tag once read 「已修改 1 处」 while the review said nothing changed
@@ -401,12 +402,15 @@ describe('哪些原因说的是 KixDNS 停了', () => {
 describe('校验的提醒', () => {
   beforeEach(() => resetTo(demoModel()))
 
-  it('换成页面上的叫法；没有提醒的校验不列', async () => {
+  it('按代号说成中文，旧内核照原话；没有提醒的校验不列', async () => {
     const { validation, validationWarnings } = await import('./useConfigDocument')
     validation.value = { protocol_version: 1, valid: true, pipeline_count: 1, rule_count: 1 }
     expect(validationWarnings.value).toEqual([])
-    validation.value = { ...validation.value, warnings: ['settings.cache_capacity: 2000000 entries may take much memory'] }
-    expect(validationWarnings.value).toEqual([expect.stringMatching(/^设置\u00a0缓存容量：2000000 entries/)])
+    const text = 'settings.cache_capacity: 2000000 is very large and may take a lot of memory'
+    validation.value = { ...validation.value, warnings: [text] }
+    expect(validationWarnings.value).toEqual(['设置\u00a0缓存容量，KixDNS\u00a0的原话：2000000 is very large and may take a lot of memory'])
+    validation.value = { ...validation.value, coded_warnings: [{ place: 'settings.cache_capacity', code: 'cache_capacity_large', args: { value: 2_000_000 }, text }] }
+    expect(validationWarnings.value).toEqual(['设置\u00a0缓存容量：2000000 条很大，可能占掉很多内存'])
     validation.value = null
   })
 })
@@ -422,12 +426,21 @@ describe('被拒的原因逐条列出', () => {
     const draft = demoModel()
     const at = compile(draft).pipelines.findIndex((p) => p.rules.some((r) => r.name === '公司内网'))
     const j = compile(draft).pipelines[at]!.rules.findIndex((r) => r.name === '公司内网')
-    const details = [`pipelines[${at}].rules[${j}].matchers[0]: domain_suffix "." matches every name`, 'settings.cache_capacity: must be at least 1']
-    const lines = refusalLines(new ApiError(details.join('; '), 422, 'kixdns_rejected', details), draft)!
+    const place = `pipelines[${at}].rules[${j}].matchers[0]`
+    const details = [`${place}: domain_suffix "." matches every name`, 'settings.cache_capacity: 0 leaves the cache no room for any answer; it must be greater than 0']
+    const coded: KernelNotice[] = [
+      { place, code: 'matches_every_name', args: { matcher: 'domain_suffix', value: '.' }, text: details[0]! },
+      { place: 'settings.cache_capacity', code: 'cache_capacity_zero', args: {}, text: details[1]! },
+    ]
+    const lines = refusalLines(new ApiError(details.join('; '), 422, 'kixdns_rejected', details, coded), draft)!
     expect(lines.note).toBe('KixDNS\u00a0列出了\u00a02\u00a0处要改：')
-    expect(lines.list[0]).toBe('规则「公司内网」（matchers[0]）：domain_suffix "." matches every name')
-    expect(lines.list[1]).toMatch(/^设置\u00a0缓存容量：/)
-    expect(refusalLines(new ApiError(details[1]!, 422, 'kixdns_rejected', [details[1]!]), draft)).toEqual({ note: lines.list[1], list: [] })
+    expect(lines.list).toEqual(['规则「公司内网」（matchers[0]）：「域名属于」写的是「.」，对每个域名都成立', '设置\u00a0缓存容量：填大于 0 的整数：0 让缓存一条回答也存不下'])
+    expect(refusalLines(new ApiError(details[1]!, 422, 'kixdns_rejected', [details[1]!], [coded[1]!]), draft)).toEqual({ note: lines.list[1], list: [] })
+    // 旧内核没有代号：照原话说，标明是原话，路径照样换成规则名 / An old kernel without codes: the words are said, marked as such, the path
+    // still named as the rule
+    const old = refusalLines(new ApiError(details.join('; '), 422, 'kixdns_rejected', details), draft)!
+    expect(old.list[0]).toBe('规则「公司内网」（matchers[0]），KixDNS\u00a0的原话：domain_suffix "." matches every name')
+    expect(old.list[1]).toMatch(/^设置\u00a0缓存容量，KixDNS\u00a0的原话：0 leaves/)
     // 没有逐条的原因（更早的内核）时照原话说 / Without listed reasons (an earlier kernel) the words are said as they came
     expect(refusalLines(new ApiError('bad', 422, 'kixdns_rejected'), draft)).toBeNull()
   })
@@ -438,6 +451,7 @@ describe('被拒的原因逐条列出', () => {
     const { PANEL_BLOCK_HINT } = await import('../kernel-problems')
     const panel = 'panel: the kernel does not read this key, so what it says has no effect; check its spelling and where it is written'
     expect(refusalLines(new ApiError(panel, 422, 'kixdns_rejected', [panel]), demoModel())).toEqual({ note: PANEL_BLOCK_HINT, list: [] })
+    expect(refusalLines(new ApiError(panel, 422, 'kixdns_rejected', [panel], [{ place: 'panel', code: 'key_not_read', args: {}, text: panel }]), demoModel())).toEqual({ note: PANEL_BLOCK_HINT, list: [] })
     const both = refusalLines(new ApiError('', 422, 'kixdns_rejected', [panel, 'settings.cache_capacity: must be at least 1']), demoModel())!
     expect(both.note).toBe(`${PANEL_BLOCK_HINT}。另外还有\u00a01\u00a0处要改：`)
     expect(both.list).toHaveLength(1)

@@ -1,9 +1,12 @@
 
+import type { KernelNotice } from './types'
+
 interface ErrorEnvelope {
   error?: {
     code?: string
     message?: string
     details?: string[]
+    coded_details?: KernelNotice[]
   }
 }
 
@@ -14,6 +17,8 @@ export class ApiError extends Error {
     public readonly code: string,
     /** 逐条的细节：KixDNS 不接受一份配置时它列出的各条原因（内核 2026.11.24.17 起），没有时为空 / The details one by one: the reasons KixDNS lists when it does not accept a config (kernels from 2026.11.24.17), empty without any */
     public readonly details: readonly string[] = [],
+    /** details 带着代号的那一份，一条对一条（声明 message_codes_v1 的内核起），旧内核没有 / The coded copy of details, one for one (from kernels declaring message_codes_v1), absent from an old kernel */
+    public readonly codedDetails?: readonly KernelNotice[],
   ) {
     super(message)
   }
@@ -108,6 +113,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
       response.status,
       body.error?.code ?? (proxyAnswered ? 'panel_unavailable' : 'request_failed'),
       body.error?.details ?? [],
+      body.error?.coded_details,
     )
   }
   return response.json() as Promise<T>

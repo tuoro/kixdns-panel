@@ -112,9 +112,14 @@ export function negationProblem(matchers: readonly MatcherConfig[], chainOperato
   const first = matchers[0]
   if (!first) return null
   if (!negated(first.operator) && !(matchers.length === 1 && matchOperator(first.operator) === 'and' && negated(chainOperator))) return null
-  return scope === 'response'
-    ? '第一个回答条件前面没有东西可合，写的「不是」不起作用，KixDNS 不收；要在它不成立时处理，把动作写到「不满足或没有回答时」'
-    : '第一个条件前面没有东西可合，写的「不是」不起作用，KixDNS 不收；要排除它，前面先加一个「所有请求」条件'
+  return negationWords(scope === 'response')
+}
+/** 白写的「不是」怎么说（见 negationProblem），written 是写的那个运算符的叫法；内核报的同一件事也这样说 / How a negation written for nothing
+ * is said (see negationProblem), written being what the operator written is called; the kernel's report of it reads the same */
+export function negationWords(response: boolean, written = '不是'): string {
+  return response
+    ? `第一个回答条件前面没有东西可合，写的「${written}」不起作用，KixDNS 不收；要在它不成立时处理，把动作写到「不满足或没有回答时」`
+    : `第一个条件前面没有东西可合，写的「${written}」不起作用，KixDNS 不收；要排除它，前面先加一个「所有请求」条件`
 }
 
 export function actionFieldErrors(
