@@ -92,7 +92,7 @@ describe('配置字段共享校验', () => {
   // 固定响应码六个都能用，大小写不论；OTHER 和别的写法内核不收 / All six fixed rcodes, in any case; OTHER and anything else the kernel refuses
   it('固定响应码照 parse_rcode 读', () => {
     for (const rcode of ['NOERROR', 'FORMERR', 'SERVFAIL', 'NXDOMAIN', 'NOTIMP', 'refused']) expect(actionFieldErrors({ type: 'static_response', rcode })).toEqual({})
-    for (const rcode of ['OTHER', 'NOTAUTH', '']) expect(actionFieldErrors({ type: 'static_response', rcode }).rcode).toBe('KixDNS 只认 NOERROR、SERVFAIL、NXDOMAIN、REFUSED、FORMERR、NOTIMP')
+    for (const rcode of ['OTHER', 'NOTAUTH', ' NXDOMAIN', '']) expect(actionFieldErrors({ type: 'static_response', rcode }).rcode).toBe('KixDNS 只认 NOERROR、SERVFAIL、NXDOMAIN、REFUSED、FORMERR、NOTIMP')
   })
 
 })
