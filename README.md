@@ -17,7 +17,8 @@
 - **内核更新**：在面板内把 KixDNS 更新到 fork 最新发布的日期版本，或回到上一个，激活失败自动恢复
 - **面板自更新**：系统页一键更新到最新正式版，双重校验摘要，不动 KixDNS
 - **OpenWrt**：路由器上一条命令装好；启动 KixDNS 时自动接管 53 端口，dnsmasq 照常管 DHCP 和局域网主机名
-- **安全**：Argon2id 认证、HttpOnly 会话、CSRF 防护、登录限流；systemd 版的面板进程不以 root 运行
+- **Docker**：一个容器、一个数据目录；面板和内核照样在面板里在线更新，更新面板时 DNS 不断
+- **安全**：Argon2id 认证、HttpOnly 会话、CSRF 防护、登录限流；systemd 版和 Docker 版的面板、内核都不以 root 运行
 - 桌面与手机均可用
 
 ## 内核
@@ -52,6 +53,18 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 > [!IMPORTANT]
 > **路由器上要开着智能流控。** 比 v4.3.7 新的安装包装好就开着；用 v4.3.7 及更早版本装的是关的，升级也不会改，请在「配置 → 基础设置 → 智能流控」打开，保存后按提示重启一次 KixDNS。路由器内存小，不开的话，有设备猛发查询、上游又回得慢时，内核可能被系统因为内存不足杀掉，DNS 跟着断；开着时，发得多的那台设备收到 SERVFAIL，别的设备照常解析。[详细说明](deploy/openwrt/README.md#启用-dns)
+
+### Docker
+
+x86_64 和 arm64。面板和内核在一个容器里，数据都在 `./data`：
+
+```bash
+mkdir kixdns-panel && cd kixdns-panel
+curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/docker/compose.yaml
+docker compose up -d
+```
+
+装完打开 `http://<主机地址>:5738` 创建管理员。默认用 host 网络（内核才看得到真实的客户端 IP），KixDNS 随容器启动、听主机的 53 端口；Ubuntu 这类 53 被 systemd-resolved 占着的主机先看[部署指南的 Docker 一节](docs/deployment.md#docker)。面板和内核都在「系统」页在线更新；要备份的只有 `./data/config`。
 
 每个版本的变化见 [Releases](https://github.com/tuoro/kixdns-panel/releases)。
 

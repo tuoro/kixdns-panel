@@ -19,7 +19,7 @@ Panel Web ---- Panel Server ---- SQLite
                     +---- config/pipeline.json
                     +---- versions/<source>-<package-id>-<commit>/
                     +---- geo/<kind>-<sha256>.<ext>
-                    +---- systemd 或 procd（经 root helper）
+                    +---- systemd、procd 或容器的看管进程（经 root helper）
                     +---- GitHub API / Release 下载
                     |
                     v
@@ -31,6 +31,8 @@ Panel Web ---- Panel Server ---- SQLite
                     v
              UDP / TCP / DoH
 ~~~
+
+在容器里，服务助手换成看管模式（`kixdns-panel-helper supervise`）当主进程：它把内核和面板当子进程跑（都不是 root），崩了照 procd 的规矩拉起，记住用户的启停，对面板提供和 systemd、OpenWrt 上一样的 helper 套接字（多一个 `status`，面板据此分清在重拉、起不来和被停下）。面板跑镜像里的和 `/data/panel` 里在线装的两份中更新的那份，换面板时内核不停。
 
 面板只依赖版本化的[控制协议](control-protocol-v1.md)，不导入上游 crate，所以上游适配不会迫使管理端跟着改。原始 JSON 是配置的事实来源，表单只改已知字段、保留未知字段；字段支持与否由[配置能力契约](config-capabilities.md)决定，不按版本号猜。
 
@@ -52,6 +54,7 @@ fork 的 `main` 每推进一次就发布一个日期版本 `YYYY.MM.DD`，同一
 - **面板**：`build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。每次运行先挑一次 fork 的最新发布（两个架构用同一版），由 `scripts/fetch-kixdns-release.sh` 下载并核对清单、资源摘要、包内 `SHA256SUMS`、来源说明、配置能力和 ELF 架构，不重新编译 KixDNS。这一步在 PR 上也跑。正式版通过面板 GitHub Release 发布
 - 发布构建在 Ubuntu 22.04 容器中完成，拒绝依赖高于 `GLIBC_2.35` 符号的二进制；完整包还要在 Ubuntu 22.04 临时机上跑安装、覆盖升级、面板联调、systemd 控制和卸载验收
 - **OpenWrt 安装包**：面板和服务助手编成 musl 静态程序，配上 fork 的 musl 内核，由 `scripts/package-openwrt.sh` 拼成 `kixdns-panel-openwrt-<架构>.tar.gz`；在 OpenWrt 官方 rootfs 容器里（x86_64、arm64 各测 25.12 和 24.10）跑安装、启停内核、在线更新、回滚、卸载和一键安装验收，不过就不发布
+- **容器镜像**：`scripts/package-docker.sh` 从同一个 OpenWrt 安装包取出程序、网页、GeoSite 和内核身份，`deploy/docker/Dockerfile` 拼成 alpine 镜像（目标阶段只有 COPY，多架构构建不用模拟）；两个架构各在原生 runner 上跑 `scripts/test-docker-image.sh`：搬来的配置、建管理员、低端口解析、保存配置、经面板重启停止内核、从本机的假 Release 在线更新（期间 DNS 一直答）、新版起不来时退回、重建容器以后数据和在线装的版本都在、桥接网络。PR 上也跑；正式版资产传好以后推到 `ghcr.io/tuoro/kixdns-panel`（`X.Y.Z`、`X.Y`、`latest`）
 - PR 只跑对应边界的验证，不发布；OpenWrt 包在 PR 上也打出来并验收，作为保留 7 天的 CI 产物。纯文档变更不触发打包
 
 每个内核包携带 `KIXDNS_CAPABILITIES.json`，与二进制和来源说明一起写入 `SHA256SUMS`。
@@ -63,6 +66,7 @@ fork 的 `main` 每推进一次就发布一个日期版本 `YYYY.MM.DD`，同一
 **进程与权限**
 
 - Panel Server 以独立非 root 账号运行；systemd 单元启用只读系统目录、私有临时目录和地址族限制。OpenWrt 上没有独立账号，面板以 root 运行，默认只听 LAN 口的地址；helper 只执行 root 所有、别人写不进的 init 脚本和更新器
+- 容器里看管进程是唯一的 root 进程：它重新执行自己（`run-as`）降成内核和面板的用户再 exec 目标程序，内核只在 ambient 集合里带 `CAP_NET_BIND_SERVICE`，两者都设 `no_new_privs`，所以 root 从不执行 `/data` 里面板写得进的文件。`/data` 本身面板写不进，看管进程的记录放在只归 root 的 `/data/supervisor/`；用户放进 `config/` 的文件只按 `O_NOFOLLOW` 打开再改属主，不跟链接
 - 启停和自更新经 root helper 转发：专属 Unix Socket（`0600`）+ `SO_PEERCRED` 校验 UID；只接受安装时确定的 unit 与 `start`、`stop`、`restart`，以及固定的 `panel-update`
 - 不接受任意命令或 Shell 片段；KixDNS 没有重载动作，面板也不提供
 - 控制协议只走本机 Unix Socket（`0660`），不监听网络端口
@@ -82,7 +86,7 @@ fork 的 `main` 每推进一次就发布一个日期版本 `YYYY.MM.DD`，同一
 - 发布标签、清单和 GitHub 记下的资源大小与摘要逐项一致；包内 `KIXDNS_SOURCE.json` 的仓库、版本、提交、原版提交、架构和控制协议与清单一致，配置能力也一致
 - 安装前校验外层与包内 SHA-256、ELF 与架构；激活前再校验一次；替换后必须通过健康检查，否则恢复
 - 配置保存、历史恢复和版本激活共用后端能力注册表；不兼容的版本在停服务之前就被拒绝，面板不自动删除或降级用户字段
-- 面板自更新只认本项目最新正式 Release，校验资产摘要和包内摘要，事务不改 KixDNS 的二进制、配置、身份和启停状态。OpenWrt 上由一次性 procd 服务运行更新器，从 GitHub API 的资产地址下载 OpenWrt 包，装不成整个放回
+- 面板自更新只认本项目最新正式 Release，校验资产摘要和包内摘要，事务不改 KixDNS 的二进制、配置、身份和启停状态。OpenWrt 上由一次性 procd 服务运行更新器，从 GitHub API 的资产地址下载 OpenWrt 包，装不成整个放回。容器里面板自己下载同一个 OpenWrt 包、核对 SHA-256，只解出面板、网页和 GeoSite（拒绝链接、特殊文件和带 `..` 的路径），标签对得上才放进 `/data/panel/<版本>/`，再请看管进程换上；新版本起不来由看管进程退回上一份
 - 内核在线更新按本机的 libc 取包（musl 版面板取 `-musl` 包，并核对程序没有动态加载器）；OpenWrt 上存新内核之前先看闪存还剩多少，只够放新内核时不留上一个
 - Geo 数据只接受 HTTPS，每次解析和重定向都固定公网地址并重新检查，限制体积和文件数；文件以 `0640` 内容寻址存放，`kixdns` 通过同组只读
 - 安装包自带的 GeoSite 只读放在 `/usr/share/kixdns-panel/geo`，导入时按 `geosite.json` 核对 SHA-256 和大小再复制进内容寻址存储，来源记为它的下载链接。全新安装由安装脚本留下的一次性标记触发首次启动导入；已有 GeoSite 时服务端拒绝导入，升级不改用户的数据和配置
@@ -97,4 +101,4 @@ fork 的 `main` 每推进一次就发布一个日期版本 `YYYY.MM.DD`，同一
 
 ## 运行平台
 
-生产目标为带 systemd 的 Linux x86_64/ARM64，以及 OpenWrt 24.10 和 25.12（procd，x86_64/arm64）。Panel Server 保持跨平台编译，Windows 服务与命名管道可作为同一接口的适配实现。
+生产目标为带 systemd 的 Linux x86_64/ARM64，OpenWrt 24.10 和 25.12（procd，x86_64/arm64），以及 Docker（amd64/arm64，看管进程当主进程）。Panel Server 保持跨平台编译，Windows 服务与命名管道可作为同一接口的适配实现。
