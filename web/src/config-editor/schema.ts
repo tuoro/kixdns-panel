@@ -19,12 +19,26 @@ export interface SettingField {
   min?: number
   max?: number
   nullable?: boolean
+  // 清空时照写成空的，不退回内核的默认值（别的文字框清空就是没写）：默认上游清空了要人填一个，框下说「至少填一个地址」，不悄悄换成
+  // 1.1.1.1:53
+  // A cleared box stays written as empty instead of falling back to the kernel's default (any other text box cleared is unset): a
+  // cleared 默认上游 wants an address filled in, the box saying 「至少填一个地址」, rather than quietly becoming 1.1.1.1:53
+  keepsEmpty?: boolean
   wide?: boolean
   visibleWhen?: string
   visibleWhenAny?: string[]
+  // 内核有这项能力才列出；没有时配置里没写就不列，写了的照样列出、说内核不认它，好在这里清空
+  // Listed only when the kernel has this capability; without it the field is left out unless the config writes it, which is still
+  // listed, saying the kernel does not read it, so it can be cleared here
+  requiresCapability?: string
+  // 内核没有 capability 这项能力时的读法：名字、说明、默认值换成这里的；有的时候照字段本身
+  // How the field reads on a kernel without `capability`: its label, note and default become these; with it the field reads as itself
+  without?: { capability: string } & Pick<SettingField, 'label' | 'title' | 'default'>
 }
 
 export const CONFIG_STATIC_CNAME_RESPONSE_V1 = 'config_static_cname_response_v1'
+export const CONFIG_BOOTSTRAP_V1 = 'config_bootstrap_v1'
+export const CONFIG_SERVE_STALE_TTL_RESET_V2 = 'config_serve_stale_ttl_reset_v2'
 
 export interface SettingSection {
   id: string
@@ -47,6 +61,10 @@ export interface MatcherDefinition extends SelectOption {
   fields: Array<'value' | 'cidr' | 'expect' | 'country_codes' | 'mode'>
 }
 
+const BIND_NOTE = '不写就用内核的默认端口，内核版本不同默认也不同；要固定在哪个端口就写上'
+const BOOTSTRAP_NOTE = '上游写成域名（如 tls://dns.google）时，先问这里的 DNS 要它的 IP。写成「IP:端口」，多个用逗号隔开，同时问、用先答的。' +
+  '不写就交给系统解析：路由器上 KixDNS 接管了 53 端口时，系统解析会绕回 KixDNS 自己，写成域名的上游就连不上，这时一定要写'
+
 export const SETTING_SECTIONS: SettingSection[] = [
   {
     id: 'network',
@@ -54,14 +72,18 @@ export const SETTING_SECTIONS: SettingSection[] = [
     description: '监听地址和请求超时',
     tone: 'green',
     fields: [
-      { key: 'bind_udp', label: 'UDP 监听地址', type: 'text', default: '0.0.0.0:5353' },
-      { key: 'bind_tcp', label: 'TCP 监听地址', type: 'text', default: '0.0.0.0:5353' },
+      // 内核的默认端口 2026.11.24.9 起从 5353 换成了 5533，没有能力分得出来：不写默认是哪个，只说不写就随内核
+      // The kernel's default port went from 5353 to 5533 at 2026.11.24.9, and no capability tells them apart: the form names no default,
+      // saying only that an unset one follows the kernel
+      { key: 'bind_udp', label: 'UDP 监听地址', type: 'text', placeholder: '内核默认', title: BIND_NOTE },
+      { key: 'bind_tcp', label: 'TCP 监听地址', type: 'text', placeholder: '内核默认', title: BIND_NOTE },
       { key: 'bind_doh', label: 'DoH 监听地址', type: 'text', placeholder: '留空禁用 DoH' },
       { key: 'doh_path', label: 'DoH 查询路径', type: 'text', default: '/dns-query' },
       { key: 'doh_tls_cert', label: 'DoH TLS 证书', type: 'text', example: '/path/to/cert.pem', wide: true },
       { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', example: '/path/to/key.pem', wide: true },
       // 只有带高级规则时才显示（其余时候由「其余请求」决定）：说清它管的是哪些请求 / Shown only with advanced rules (otherwise 其余请求 decides it): say which requests it serves
-      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true, title: '高级规则里「交给默认上游」和没写地址的转发用这里的地址，多个用逗号隔开' },
+      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', keepsEmpty: true, wide: true, title: '高级规则里「交给默认上游」和没写地址的转发用这里的地址，多个用逗号隔开' },
+      { key: 'bootstrap', label: '引导 DNS', type: 'text', example: '223.5.5.5:53, 119.29.29.29:53', wide: true, requiresCapability: CONFIG_BOOTSTRAP_V1, title: BOOTSTRAP_NOTE },
       { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', default: 0 },
       { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
       { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, unit: '毫秒', nullable: true, placeholder: '自动计算' },
@@ -110,7 +132,17 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'serve_stale', label: '过期后继续用旧结果', type: 'boolean', default: false },
       { key: 'serve_stale_ttl', label: '旧结果的 TTL (s)', type: 'number', min: 1, unit: '秒', default: 30, visibleWhen: 'serve_stale' },
       { key: 'serve_stale_expire_ttl', label: '旧结果最多用多久 (s)', type: 'number', min: 0, unit: '秒', default: 86400, visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_ttl_reset', label: '每用一次旧结果就重新计时', type: 'boolean', default: true, visibleWhen: 'serve_stale' },
+      // 2026.11.23.45 起默认关，含义改成「后台刷新失败以后才重新计时」，内核带 config_serve_stale_ttl_reset_v2；以前的默认开，每交出一次旧结果就重新计时
+      // From 2026.11.23.45 it is off by default and means 「count afresh only once a background refresh fails」, the kernel declaring
+      // config_serve_stale_ttl_reset_v2; before, it was on by default and every stale answer served started the time again
+      {
+        key: 'serve_stale_ttl_reset', label: '刷新失败后重新计时', type: 'boolean', default: false, visibleWhen: 'serve_stale',
+        title: '旧结果的后台刷新失败以后，从失败时起重新算它还能用多久。上游一直取不到新的、又一直有人问的域名会一直用旧结果，不受「旧结果最多用多久」限制',
+        without: {
+          capability: CONFIG_SERVE_STALE_TTL_RESET_V2, label: '每用一次旧结果就重新计时', default: true,
+          title: '每交出一次旧结果都重新计时：一直有人问的域名会一直用旧结果，不受「旧结果最多用多久」限制',
+        },
+      },
       { key: 'serve_stale_client_timeout_ms', label: '客户端等待 (ms)', type: 'number', min: 0, unit: '毫秒', default: 0, visibleWhen: 'serve_stale' },
     ],
   },
@@ -179,7 +211,7 @@ export function settingValues(values: Record<string, unknown>): string {
       if (!field) return '默认值'
       if (typeof field.default === 'boolean') return `默认${switchWord(field.default)}`
       if (field.default !== undefined) return glue(`默认 ${String(field.default)}${unit}`)
-      return field.placeholder?.includes('自动') ? '自动' : '留空'
+      return field.placeholder?.includes('自动') ? '自动' : field.placeholder?.includes('默认') ? '默认值' : '留空'
     }
     return typeof value === 'boolean' ? switchWord(value) : glue(`${String(value)}${unit}`)
   }
@@ -275,6 +307,24 @@ const FIELD_DEFAULTS = new Map(SETTING_SECTIONS.flatMap((section) => section.fie
 /** 这一项现在的值：配置里没写就是内核的默认值 / The setting's current value: the kernel default when the config omits it */
 export function settingValue(settings: GlobalSettings, key: string): unknown {
   return settings[key] ?? FIELD_DEFAULTS.get(key)
+}
+
+/**
+ * 照内核报的能力读的设置分组：没有 without.capability 的内核上换成那种读法；要能力而内核没有的，配置里没写就不列
+ * The setting groups as the kernel's capabilities read them: on a kernel without without.capability a field reads that way; one
+ * needing a capability the kernel lacks is left out unless the config writes it
+ */
+export function settingSections(capabilities: readonly string[], settings: GlobalSettings): SettingSection[] {
+  const has = (capability: string) => capabilities.includes(capability)
+  const read = (field: SettingField): SettingField => {
+    if (!field.without || has(field.without.capability)) return field
+    const { capability: _capability, ...reading } = field.without
+    return { ...field, ...reading }
+  }
+  return SETTING_SECTIONS.map((section) => ({
+    ...section,
+    fields: section.fields.filter((field) => !field.requiresCapability || has(field.requiresCapability) || settings[field.key] !== undefined).map(read),
+  }))
 }
 
 export function settingVisible(field: SettingField, settings: GlobalSettings): boolean {

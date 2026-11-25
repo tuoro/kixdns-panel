@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { SETTING_SECTIONS, geoSummary, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
+import { SETTING_SECTIONS, geoSummary, settingSections, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
 import UiDotText from '../ui/UiDotText.vue'
@@ -24,13 +24,19 @@ const version = defineModel<string | undefined>('version')
 // tail：排在最后的一组，内容由使用方经 #tail 插槽给出（「查询日志」是面板自己的设置，不在配置里）；search 是搜得到它的词
 // tail: a group listed last whose content the caller supplies through the #tail slot (查询日志 is the panel's own setting,
 // not part of the config); search holds the words that find it
+// warnings：照样能用、却值得知道的设置，key 对一句说法，写在框下面，不标红；同一项有 problems 时只说 problems
+// warnings: settings that work yet are worth knowing about, key to one sentence under the box, not in red; problems win for the same key
+// capabilities：内核报的配置能力，决定哪些设置列出来、怎么读（见 settingSections）
+// capabilities: the kernel's config capabilities, deciding which settings are listed and how they read (see settingSections)
 const props = defineProps<{
   changed?: ReadonlySet<string>
   hiddenKeys?: readonly string[]
   lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean; help?: string }
   tail?: { id: string; title: string; description: string; summary: string[]; search: string }
   problems?: Readonly<Record<string, string>>
+  warnings?: Readonly<Record<string, string>>
   commit?: Readonly<Record<string, (value: string) => string>>
+  capabilities?: readonly string[]
 }>()
 const problemId = (field: SettingField) => `settings-problem-${field.key}`
 // 正在打字的那一格不说错（打到一半总是错的，「8」也会被说成写错了）：离开这一格、按回车、在框里按 Ctrl+S 时才说，和条件的出错一样。
@@ -39,6 +45,9 @@ const problemId = (field: SettingField) => `settings-problem-${field.key}`
 // on Enter, or on Ctrl+S inside it, as conditions do. A value not typed here (read in, edited in the JSON) is told at once as usual
 const typing = reactive(new Set<string>())
 const problemFor = (field: SettingField): string | undefined => (typing.has(field.key) ? undefined : props.problems?.[field.key])
+const warningFor = (field: SettingField): string | undefined => (problemFor(field) ? undefined : props.warnings?.[field.key])
+const warningId = (field: SettingField) => `settings-warning-${field.key}`
+const describedBy = (field: SettingField): string | undefined => (problemFor(field) ? problemId(field) : warningFor(field) ? warningId(field) : undefined)
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
 const search = ref('')
 const searchInput = ref<HTMLInputElement>()
@@ -56,8 +65,9 @@ onMounted(() => mobileViewport.addEventListener('change', resize))
 onBeforeUnmount(() => mobileViewport.removeEventListener('change', resize))
 const query = computed(() => search.value.trim().toLowerCase())
 const allFields = SETTING_SECTIONS.flatMap((section) => section.fields)
+const sections = computed(() => settingSections(props.capabilities ?? [], settings.value))
 
-const visibleSections = computed(() => SETTING_SECTIONS.map((section) => {
+const visibleSections = computed(() => sections.value.map((section) => {
   const available = section.fields.filter(shown)
   const matches = available.filter((field) => `${section.title} ${field.label} ${field.key}`.toLowerCase().includes(query.value))
   const relatedKeys = new Set(matches.flatMap((field) => [field.key, ...dependencyKeys(field)]))
@@ -121,7 +131,7 @@ const tailMatches = computed(() => Boolean(query.value && props.tail && `${props
 // 格式版本在搜索「版本」「version」时也要找得到 / The format version must turn up when searching 版本 or version
 const versionMatches = computed(() => !query.value || '格式版本 version 配置文件'.includes(query.value))
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
-const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
+const navSections = computed(() => sections.value.map((section) => ({
   ...section,
   fields: section.fields.filter((field) => shown(field) && settingVisible(field, settings.value)),
 })).filter((section) => section.fields.length > 0))
@@ -142,6 +152,10 @@ function placeholderFor(field: SettingField): string {
   if (field.default !== undefined && typeof field.default !== 'boolean') return `默认 ${field.default}`
   if (field.example) return `如 ${field.example}`
   return field.placeholder ?? ''
+}
+// 开关没写时按这一项的默认值画（照内核能力读出来的那个） / An unset switch is drawn at the field's default (as the kernel's capabilities read it)
+function switchedOn(field: SettingField): boolean {
+  return Boolean(settings.value[field.key] ?? field.default)
 }
 function booleanState(field: SettingField): string {
   const value = settings.value[field.key]
@@ -177,9 +191,20 @@ function listValue(field: SettingField): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
+// 清空的文字框就是没写：内核用默认值（地址、路径写成空的，内核都不收）；keepsEmpty 的照写成空的，由使用方说出要填什么
+// A cleared text box means unset: the kernel takes its default (an address or path written empty is refused by the kernel); a keepsEmpty
+// one stays written as empty, the caller saying what to fill in
 function setText(field: SettingField, event: Event): void {
   typing.add(field.key)
-  setValue(field.key, (event.currentTarget as HTMLInputElement).value)
+  const value = (event.currentTarget as HTMLInputElement).value
+  if (value === '' && !field.keepsEmpty) unset(field.key)
+  else setValue(field.key, value)
+}
+
+function unset(key: string): void {
+  const next = { ...settings.value }
+  delete next[key]
+  settings.value = next
 }
 
 // 写完一格：使用方要整理的整理一遍，整理出来不一样才换 / A box written: tidied when the caller asks, replaced only when that changes it
@@ -201,11 +226,7 @@ function setNumber(field: SettingField, event: Event): void {
   const raw = (event.currentTarget as HTMLInputElement).value
   if (raw === '') {
     if (field.nullable) setValue(field.key, null)
-    else {
-      const next = { ...settings.value }
-      delete next[field.key]
-      settings.value = next
-    }
+    else unset(field.key)
     return
   }
   setValue(field.key, Number(raw))
@@ -265,7 +286,7 @@ function removeListItem(field: SettingField, index: number): void {
           <template v-for="field in section.fields" :key="field.key">
             <label v-if="field.type === 'boolean'" class="ui-setrow ui-setrow--toggle" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
-              <span class="ui-switch"><small v-if="booleanState(field)">{{ booleanState(field) }}</small><input type="checkbox" role="switch" :checked="Boolean(settingValue(settings, field.key))" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @change="setBoolean(field, $event)"><i aria-hidden="true"></i></span>
+              <span class="ui-switch"><small v-if="booleanState(field)">{{ booleanState(field) }}</small><input type="checkbox" role="switch" :checked="switchedOn(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @change="setBoolean(field, $event)"><i aria-hidden="true"></i></span>
             </label>
             <div v-else-if="field.type === 'list'" class="ui-setrow" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
@@ -279,11 +300,11 @@ function removeListItem(field: SettingField, index: number): void {
               <!-- 框和出错的说法在同一格里：说法紧跟在框下面，不被左边几行说明顶下去 / The box and its error share one cell, so the error follows the box
                    directly instead of being pushed down by a several-line note on the left -->
               <span class="ui-setrow__control settings-control"><span class="ui-input">
-                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="problemFor(field) ? problemId(field) : undefined" @input="setText(field, $event)" @change="commitText(field, $event)" @blur="typing.delete(field.key)" @keydown="saveKey(field, $event)">
-                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="problemFor(field) ? problemId(field) : undefined" @input="setNumber(field, $event)">
-                <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="problemFor(field) ? problemId(field) : undefined" @input="setCsv(field, $event)">
+                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setText(field, $event)" @change="commitText(field, $event)" @blur="typing.delete(field.key)" @keydown="saveKey(field, $event)">
+                <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setNumber(field, $event)">
+                <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" :aria-invalid="Boolean(problemFor(field)) || undefined" :aria-describedby="describedBy(field)" @input="setCsv(field, $event)">
                 <em v-if="field.unit" class="ui-setrow__unit">{{ field.unit }}</em>
-              </span><span v-if="problemFor(field)" :id="problemId(field)" class="ui-field-error">{{ problemFor(field) }}</span></span>
+              </span><span v-if="problemFor(field)" :id="problemId(field)" class="ui-field-error">{{ problemFor(field) }}</span><span v-else-if="warningFor(field)" :id="warningId(field)" class="ui-field-warn">{{ warningFor(field) }}</span></span>
             </label>
           </template>
           <label v-if="section.id === 'network' && versionMatches" class="ui-setrow"><span class="ui-setrow__label"><span>格式版本<i v-if="changed?.has('version')" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small>KixDNS 按它判断配置的写法</small><code v-if="query" class="settings-row__key">version</code></span><span class="ui-input ui-setrow__control"><input v-model="version" type="text" aria-label="配置格式版本" :aria-description="changed?.has('version') ? '已修改' : undefined" placeholder="1.0"></span></label>

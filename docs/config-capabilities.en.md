@@ -43,7 +43,7 @@ Compatibility aliases are used only to identify an old enhanced build that is al
 
 ## Failure behaviour
 
-- Forms: unsupported actions do not appear. Existing ones are kept as they are, the page prompts to change them or update the kernel first, and the raw JSON is not rewritten.
+- Forms: unsupported actions do not appear. Existing ones are kept as they are, the page prompts to change them or update the kernel first, and the raw JSON is not rewritten. A setting that needs a capability (引导 DNS, bootstrap DNS) does not appear while unwritten; a written one is still listed, with a red note under the box saying the kernel does not read it, and clearing the box leaves it unwritten. One that only changes a default and a meaning (`serve_stale_ttl_reset`) takes its name, note and default from the kernel's capabilities. While KixDNS reports no capabilities, nothing is said by capability.
 - Pre-validating, saving or restoring an incompatible configuration: returns `422 unsupported_config_fields`, naming every missing item at once in registry order, one remedy each.
 - Installing or switching to an incompatible version: returns the same error before the service is stopped and the binary is replaced.
 - Capability declaration missing or unreadable: conservatively treated as unsupported. Fields are not silently deleted.
