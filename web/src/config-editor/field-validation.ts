@@ -1,6 +1,6 @@
 import { byteLength, isIp, isNet, isQclass, isQtype, isRcode, isTtl, kernelRegexCause, QCLASSES, qtypeRule, RCODES, regexCauseText, TTL_PROBLEM, TXT_SEGMENT_BYTES } from '../config-model/grammar'
 import { kernelRegexChecking, type RegexKind } from '../config-model/regex-check'
-import { forwardTarget, splitAddrs } from '../config-model/kernel'
+import { forwardTarget, matchOperator, splitAddrs } from '../config-model/kernel'
 import { upstreamProblem } from '../config-model/model'
 import { matcherHint } from './matcher-hints'
 import { MATCHER_DEFINITIONS } from './schema'
@@ -54,8 +54,12 @@ export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope):
   const errors: Record<string, string> = {}
   const fields = MATCHER_DEFINITIONS[scope].find((item) => item.value === matcher.type)?.fields ?? []
   const required = requiredFieldError(matcherHint(matcher).label, matcher.type === 'qtype')
+  // TXT 内容「等于」空的只命中空的 TXT，内核照收；「开头是」「匹配正则」空着对每份带 TXT 的回答都成立，内核不收
+  // TXT content 「等于」 empty matches only an empty TXT and the kernel takes it; 「开头是」 or 「匹配正则」 empty holds for every answer with
+  // TXT, which the kernel refuses
+  const emptyTxt = matcher.type === 'response_txt_content' && matcher.mode === 'exact' && typeof matcher.value === 'string'
   for (const field of ['value', 'cidr'] as const) {
-    if (fields.includes(field) && !matcher[field]?.trim()) errors[field] = required
+    if (fields.includes(field) && !matcher[field]?.trim() && !(field === 'value' && emptyTxt)) errors[field] = required
   }
   if (!errors.value && isGeoSiteMatcher(matcher) && /^geosite:/i.test(matcher.value?.trim() ?? '')) errors.value = GEOSITE_PREFIX_ERROR
   if (fields.includes('country_codes') && !matcher.country_codes?.some((code) => code.trim())) {
@@ -94,9 +98,27 @@ const ACTION_REQUIRED = {
 
 // defaultUpstream 是写进内核的默认上游（没写时内核用 1.1.1.1:53）：没写上游的转发问它 / defaultUpstream is the default upstream as written to
 // the kernel (1.1.1.1:53 when it writes none), which a forward writing no upstream asks
+/**
+ * 一串条件里白写的「不是」（config.rs ignored_negation）：第一个条件前面没有东西可合，它身上的「且不是 / 或不是」不把它取反；只有一个条件时，
+ * 规则级的取反也只落在它身上，一样白写。内核把这两种当配置问题，不收。说的是怎么改：请求条件前面放一个「所有请求」，回答条件把动作挪到
+ * 「不满足或没有回答时」
+ * A negation written for nothing in a chain of conditions (config.rs ignored_negation): the first condition has nothing before it to
+ * join, so its and-not or or-not does not negate it; with a single condition a chain-level negation lands on it alone, for nothing just
+ * the same. The kernel takes either as a configuration problem and refuses it. What is said is how to fix it: put 所有请求 first for
+ * request conditions, move the actions to 不满足或没有回答时 for answer conditions
+ */
+export function negationProblem(matchers: readonly MatcherConfig[], chainOperator: string, scope: MatcherScope): string | null {
+  const negated = (op: string | undefined) => ['and_not', 'or_not'].includes(matchOperator(op))
+  const first = matchers[0]
+  if (!first) return null
+  if (!negated(first.operator) && !(matchers.length === 1 && matchOperator(first.operator) === 'and' && negated(chainOperator))) return null
+  return scope === 'response'
+    ? '第一个回答条件前面没有东西可合，写的「不是」不起作用，KixDNS 不收；要在它不成立时处理，把动作写到「不满足或没有回答时」'
+    : '第一个条件前面没有东西可合，写的「不是」不起作用，KixDNS 不收；要排除它，前面先加一个「所有请求」条件'
+}
+
 export function actionFieldErrors(
   action: ActionConfig,
-  currentPipelineId: string,
   pipelineIds: readonly string[] = [],
   defaultUpstream = '1.1.1.1:53',
 ): Record<string, string> {
@@ -108,12 +130,16 @@ export function actionFieldErrors(
   }
   const requiredField = requiredFields[action.type]
   if (requiredField && !action[requiredField]?.trim()) errors[requiredField] = ACTION_REQUIRED[requiredField]
+  // TXT 至少一段，空的那段也算（[""] 内核照收，[] 不收） / TXT takes at least one segment, an empty one counting ([""] the kernel takes, [] not)
   if (action.type === 'static_txt_response' || action.type === 'replace_txt_response') {
-    const values = Array.isArray(action.text) ? action.text : [action.text ?? '']
+    const values = Array.isArray(action.text) ? action.text : action.text === undefined ? [] : [action.text]
     const long = values.find((value) => byteLength(value) > TXT_SEGMENT_BYTES)
-    if (!values.some((value) => value.trim())) errors.text = requiredFieldError('文本')
+    if (!values.length) errors.text = 'TXT 至少要有一段，空的也行'
     else if (long !== undefined) errors.text = `每段 TXT 最长 ${TXT_SEGMENT_BYTES} 字节，有一段 ${byteLength(long)} 字节`
   }
+  // 固定响应码照 parse_rcode 读：六个之一，大小写不论（OTHER 只在回答条件里有） / A fixed rcode read as parse_rcode does: one of the six, in
+  // any case (OTHER belongs to answer conditions only)
+  if (action.type === 'static_response' && (!isRcode(action.rcode ?? '') || /^other$/i.test(action.rcode ?? ''))) errors.rcode = `KixDNS 只认 ${RCODES.join('、')}`
   // 固定 IP 照内核读：逗号隔开，每一项都是 IP / Fixed IPs as the kernel reads them: comma-separated, each one an IP
   if (action.type === 'static_ip_response' && !errors.ip && !(action.ip ?? '').split(',').every((ip) => isIp(ip.trim()))) errors.ip = 'IP 写得不对，几个 IP 用逗号隔开'
   // 转发的每个上游照 upstream_problem 读，没写前缀的按这个动作的 transport（「自动识别协议」是没写，按 UDP）。上游空着就不写这个键，问默认上游，
@@ -130,13 +156,11 @@ export function actionFieldErrors(
     const bad = asked.map((u) => [u, upstreamProblem(u, transport)] as const).find(([, p]) => p)
     if (bad) errors.upstream = `${written.length ? '上游' : '没写上游，问的是默认上游'} ${bad[0]}${bad[1]}`
   }
-  if (action.type === 'static_cname_response') {
-    if (!errors.target && !validDnsName(action.target ?? '')) errors.target = 'CNAME 目标域名写得不对'
-    if (action.ttl !== undefined && !isTtl(action.ttl)) errors.ttl = TTL_PROBLEM
-  }
-  if (action.type === 'jump_to_pipeline' && !errors.pipeline) {
-    if (action.pipeline === currentPipelineId) errors.pipeline = '不能转到自己所在的这一组'
-    else if (pipelineIds.length > 0 && !pipelineIds.includes(action.pipeline ?? '')) errors.pipeline = '要转到的组不存在'
-  }
+  if (action.type === 'static_cname_response' && !errors.target && !validDnsName(action.target ?? '')) errors.target = 'CNAME 目标域名写得不对'
+  // TTL 是 u32，0 也行 / A TTL is a u32, 0 included
+  if ((action.type === 'static_cname_response' || action.type === 'static_txt_response') && action.ttl !== undefined && !isTtl(action.ttl)) errors.ttl = TTL_PROBLEM
+  // 转到自己所在的这一组内核照收（只记一条提醒：跳转绕了圈），这里也不拦 / A jump to its own group the kernel takes (noting only a warning
+  // that the jumps go round), so it is not stopped here either
+  if (action.type === 'jump_to_pipeline' && !errors.pipeline && pipelineIds.length > 0 && !pipelineIds.includes(action.pipeline ?? '')) errors.pipeline = '要转到的组不存在'
   return errors
 }

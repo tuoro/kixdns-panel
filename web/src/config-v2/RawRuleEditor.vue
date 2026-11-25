@@ -4,6 +4,7 @@ import { ref } from 'vue'
 import ActionList from '../components/config/ActionList.vue'
 import MatcherList from '../components/config/MatcherList.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
+import { negationProblem } from '../config-editor/field-validation'
 import { applyMatcherMode, inferMatcherMode } from '../config-editor/model'
 import type { MatcherConfig, PipelineConfig, PipelineSelectMode, RuleConfig } from '../config-editor/types'
 
@@ -15,7 +16,7 @@ import type { MatcherConfig, PipelineConfig, PipelineSelectMode, RuleConfig } fr
 const rules = defineModel<RuleConfig[]>({ required: true })
 // defaultUpstream：没写上游的转发问的默认上游（写进内核的那样） / defaultUpstream: the default upstream a forward writing none asks (as written
 // to the kernel)
-defineProps<{ pipelines: PipelineConfig[]; currentPipelineId: string; capabilities: string[]; defaultUpstream?: string; showErrors?: boolean; pipelineName?: (id: string) => string | null }>()
+defineProps<{ pipelines: PipelineConfig[]; capabilities: string[]; defaultUpstream?: string; showErrors?: boolean; pipelineName?: (id: string) => string | null }>()
 const relationOptions = [{ value: 'all', label: '全部满足' }, { value: 'any', label: '任一满足' }, { value: 'custom', label: '自定义组合' }]
 // 选过「自定义组合」的条件链记在这里：切回「全部 / 任一」时清掉 / Chains set to 自定义组合 are remembered here and forgotten when set back to 全部 / 任一
 const custom = ref(new Set<MatcherConfig[]>())
@@ -47,24 +48,27 @@ function removeRule(index: number): void { rules.value.splice(index, 1) }
       <section class="rawed__stage">
         <h3 class="rawed__title">匹配哪些请求<UiSelect v-if="rule.matchers.length > 1" class="rawed__relation" size="sm" :model-value="mode(rule.matchers, rule.matcher_operator)" :options="relationOptions" label="请求条件关系" @update:model-value="setMode(rule, 'request', $event)" /></h3>
         <MatcherList v-model="rule.matchers" scope="request" :operator-mode="operatorMode(rule.matchers, rule.matcher_operator)" :show-errors="showErrors" />
+        <!-- 白写的「不是」只会从 JSON 带进来，不等离开字段就说 / A negation written for nothing only comes in from JSON, so it is said at once -->
+        <p v-if="negationProblem(rule.matchers, rule.matcher_operator, 'request')" class="ui-field-error">{{ negationProblem(rule.matchers, rule.matcher_operator, 'request') }}</p>
       </section>
       <section class="rawed__stage">
         <h3 class="rawed__title">怎么处理</h3>
-        <ActionList v-model="rule.actions" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="pipelineName" />
+        <ActionList v-model="rule.actions" :pipelines="pipelines" :capabilities="capabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="pipelineName" />
       </section>
       <details class="ui-expand rawed__response" :open="rule.response_matchers.length > 0 || rule.response_actions_on_match.length > 0 || rule.response_actions_on_miss.length > 0">
         <summary>回答后检查<small class="rawed__sum">拿到上游的回答后再检查一次；没条件就不检查</small></summary>
         <section class="rawed__stage">
           <h3 class="rawed__title">回答满足<UiSelect v-if="rule.response_matchers.length > 1" class="rawed__relation" size="sm" :model-value="mode(rule.response_matchers, rule.response_matcher_operator)" :options="relationOptions" label="回答条件关系" @update:model-value="setMode(rule, 'response', $event)" /></h3>
           <MatcherList v-model="rule.response_matchers" scope="response" :operator-mode="operatorMode(rule.response_matchers, rule.response_matcher_operator)" :show-errors="showErrors" />
+          <p v-if="negationProblem(rule.response_matchers, rule.response_matcher_operator, 'response')" class="ui-field-error">{{ negationProblem(rule.response_matchers, rule.response_matcher_operator, 'response') }}</p>
         </section>
         <section class="rawed__stage">
           <h3 class="rawed__title">满足时</h3>
-          <ActionList v-model="rule.response_actions_on_match" phase="response" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="pipelineName" />
+          <ActionList v-model="rule.response_actions_on_match" phase="response" :pipelines="pipelines" :capabilities="capabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="pipelineName" />
         </section>
         <section class="rawed__stage">
           <h3 class="rawed__title">不满足或没有回答时</h3>
-          <ActionList v-model="rule.response_actions_on_miss" phase="response" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="pipelineName" />
+          <ActionList v-model="rule.response_actions_on_miss" phase="response" :pipelines="pipelines" :capabilities="capabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="pipelineName" />
         </section>
       </details>
     </article>
