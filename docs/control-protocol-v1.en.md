@@ -41,14 +41,40 @@ Returns the config currently in effect, not the state of the file on disk:
   "loaded_at_unix": 1785215400,
   "reload_sequence": 24,
   "last_reload": {
-    "success": true,
-    "error": null
-  }
+    "success": false,
+    "error": "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name; settings.bind_udp: …",
+    "problems": [
+      "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name",
+      "settings.bind_udp: …"
+    ]
+  },
+  "restart_pending": ["bind_udp"],
+  "problems": [],
+  "watch_error": null,
+  "doh_error": null,
+  "warnings": [
+    "pipelines[1].rules[0]: jumping to \"a\" comes back round to \"b\", …"
+  ],
+  "data_warnings": []
 }
 ~~~
 
 After Panel Server saves a config, it reports the config as in effect only when this endpoint's `sha256` matches the config on disk.
 `reload_sequence` increments each time a hot reload succeeds or finally fails. A client must wait until it is greater than the value from before the write, so that an old receipt is not mistaken for the result of this reload.
+
+The fields after `generation` came later, and earlier kernels do not send them, so a client must treat them as optional:
+
+| Field | Kernel version | Meaning |
+| --- | --- | --- |
+| `last_reload.problems` | 2026.11.24.17 | The reasons the last reload refused the config for, one by one, none left out. `error` is them joined into one sentence and cut at 2048 characters, which leaves some out when there are many. Empty when the reload succeeded or failed for another reason |
+| `restart_pending` | 2026.10.25 | The settings the current config changed that take a restart to apply (the kernel's setting names) |
+| `problems` | 2026.11.23.39 | What the config read at startup writes that a reload or a validation refuses. Startup loads it all the same and logs an error for each; a successful reload means the new config has none, and the list is cleared. A client should say these must change before the next save |
+| `warnings` | 2026.11.23.49 | What the current config writes that takes effect all the same yet is worth knowing: jumps going round, Geo tags without data, upstreams written as host names without `bootstrap`, an overall timeout shorter than 2.5 times the upstream timeout, capital letters in a regex, a cache capacity above one million, retired settings and the like. Replaced by those of each config as it takes effect |
+| `watch_error` | 2026.11.23.49 | Why the config file cannot be watched, `null` while it is. Without the watch thread a change to the file is not reloaded and a save does not take; with places that cannot be watched, a change made through the places watched is still reloaded at once, while one made where the watch cannot see is noticed by the check every 10 seconds and reloaded after 0.3 seconds of quiet. With this field set, a client waiting for a reload must allow for that |
+| `doh_error` | 2026.11.24.14 | Why the inbound DoH configured did not start, `null` when it started or none is configured. The DoH settings are read at startup alone, and validation and reloads read no certificate, so this changes at the next start only |
+| `data_warnings` | 2026.11.24.15 | What is wrong with the Geo data right now, a sentence each: configured files that are missing or cannot be read, files that read yet have none of the tags rules use any more, watch threads that cannot start, files with places that cannot be watched, and tags rules use that no data provides. Kept current as the watched files change |
+
+Each of `problems`, `warnings` and `last_reload.problems` opens with the path of the place it speaks of (`pipelines[0].rules[2].matchers[1]: …`, `settings.bind_udp: …`, `pipeline_select[0]: …`), by position, because rule names may repeat. A key the kernel does not read is told the same way, the top-level `panel` reading `panel: the kernel does not read this key, …`: kernels 2026.11.23.11 to 2026.11.25.27 refuse the panel's block as a key they do not read, and later kernels take it and declare `config_panel_block_v1`. Each is cut at 2048 characters.
 
 ### `GET /v1/metrics`
 
@@ -72,7 +98,7 @@ Since enhanced build p20, the following series are added. When they are missing,
 - `kixdns_request_latency_ms_bucket{le="10|50|100|500|1000|+Inf"}`, `kixdns_request_latency_ms_sum`, `kixdns_request_latency_ms_count`: end-to-end latency histogram and cumulative values (milliseconds, `_sum` keeps three decimal places).
 - `kixdns_upstream_latency_ms_sum{upstream,transport}`, `kixdns_upstream_latency_ms_count{upstream,transport}`: cumulative latency and count of upstream attempts that got a result, excluding `aborted` and `throttled`.
 - `kixdns_upstream_response_latency_ms_sum{upstream,transport}`, `kixdns_upstream_response_latency_ms_count{upstream,transport}`: counts only attempts that got a response, that is, `success` and `rejected`. `error` from timeouts and connection errors is not counted; otherwise one timeout would add the whole timeout duration to the average latency.
-- `kixdns_upstream_rcodes_total{upstream,rcode}`: count of response codes in upstream answers. `rcode` is the hickory variant name (`NoError`, `NXDomain`, `ServFail`, `Refused` and so on).
+- `kixdns_upstream_rcodes_total{upstream,rcode}`: count of response codes in upstream answers. `rcode` is the response code's mnemonic, spelt as the config and the query log spell it (`NOERROR`, `NXDOMAIN`, `SERVFAIL`, `REFUSED` and so on; see how response codes are written under "Encoded records" below). Kernels before 2026.11.24.14 write hickory's variant names (`NoError`, `NXDomain`, `ServFail`), and the panel takes both.
 - `kixdns_upstream_via_total{upstream,transport,via}`: `transport` is the transport selected for this address. `via` is the transport that actually brought the answer back. `transport="udp"` with `via="tcp"` means TCP fallback.
 
 From kernel 2026.11.23, flow control's series follow; an older kernel has none of them, and the panel then shows no 智能流控 (flow control) card on the overview:
@@ -88,7 +114,39 @@ Label values must be escaped and may come only from the bounded sets of Pipeline
 
 ### `POST /v1/config/validate`
 
-The request body is a candidate KixDNS JSON config, at most 4 MiB. The enhanced process validates the config with exactly the same parsing, normalization and runtime compilation flow as hot reload, but does not modify the disk or the active config. On success it returns the Pipeline and rule counts. On failure it returns `422` and a structured error.
+The request body is a candidate KixDNS JSON config, at most 4 MiB. The enhanced process validates the config with exactly the same parsing, normalization and runtime compilation flow as hot reload, but does not modify the disk or the active config. A body that is not UTF-8 gets `400` `config_body_invalid`.
+
+On success it returns:
+
+~~~json
+{
+  "protocol_version": 1,
+  "valid": true,
+  "pipeline_count": 3,
+  "rule_count": 12,
+  "warnings": ["settings.cache_capacity: …"]
+}
+~~~
+
+`warnings` (since kernel 2026.11.23.49) is what this config writes that works all the same yet is worth knowing, the same kind as `warnings` in `/v1/config/active`, each cut at 2048 characters.
+
+A config that cannot be used gets `422`:
+
+~~~json
+{
+  "protocol_version": 1,
+  "error": {
+    "code": "config_invalid",
+    "message": "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name; panel: the kernel does not read this key, …",
+    "problems": [
+      "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name",
+      "panel: the kernel does not read this key, …"
+    ]
+  }
+}
+~~~
+
+`message` is the error with its cause chain, cut at 2048 characters. `problems` (since kernel 2026.11.24.17) lists the reasons it was refused for one by one (config problems, the listener addresses and DoH prerequisites, settings that make no sense, matchers that do not compile), each cut to the same length, none left out; it is empty for other errors, such as a config that cannot be read. Earlier kernels give only `message`, the reasons joined by `; `.
 
 ### `POST /v1/cache/flush`
 
@@ -240,7 +298,7 @@ Enum numbers, counting from 0:
 | The `upstream` step's `result` | `success`, `rejected`, `error`, `aborted`, `throttled` |
 | `reason` | `throttled` |
 
-When a response code is written as JSON: 0–10 are, in order, `NOERROR`, `FORMERR`, `SERVFAIL`, `NXDOMAIN`, `NOTIMP`, `REFUSED`, `YXDOMAIN`, `YXRRSET`, `NXRRSET`, `NOTAUTH`, `NOTZONE`. Others are written as `RCODE` plus the number.
+When a response code is written as JSON: 0–10 are, in order, `NOERROR`, `FORMERR`, `SERVFAIL`, `NXDOMAIN`, `NOTIMP`, `REFUSED`, `YXDOMAIN`, `YXRRSET`, `NXRRSET`, `NOTAUTH`, `NOTZONE`. Of the extended codes a header and an OPT together can carry, 16 is `BADVERS` and 23 is `BADCOOKIE` (RFC 7873; since kernel 2026.11.24.17, `RCODE23` before). Others are written as `RCODE` plus the number.
 
 Changing the encoding requires a new version: a new capability name and `format` (`querylog_records_v2`, `records2`), and the version byte at the start changes with them. A kernel test hard-codes the bytes of a page; when the encoding changes, that test fails.
 

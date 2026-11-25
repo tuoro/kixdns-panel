@@ -41,14 +41,40 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
   "loaded_at_unix": 1785215400,
   "reload_sequence": 24,
   "last_reload": {
-    "success": true,
-    "error": null
-  }
+    "success": false,
+    "error": "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name; settings.bind_udp: …",
+    "problems": [
+      "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name",
+      "settings.bind_udp: …"
+    ]
+  },
+  "restart_pending": ["bind_udp"],
+  "problems": [],
+  "watch_error": null,
+  "doh_error": null,
+  "warnings": [
+    "pipelines[1].rules[0]: jumping to \"a\" comes back round to \"b\", …"
+  ],
+  "data_warnings": []
 }
 ~~~
 
 Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致时才报告已生效。
 `reload_sequence` 在每次热加载成功或最终失败时递增，客户端必须等待它大于写入前的值，避免把旧回执误判为本次结果。
+
+`generation` 之后的字段是后来加的，更早的内核不发，客户端要当作可有可无：
+
+| 字段 | 内核版本 | 含义 |
+| --- | --- | --- |
+| `last_reload.problems` | 2026.11.24.17 | 上一次重载拒掉配置的原因，逐条，一条不落；`error` 是它们连成的一句，截到 2048 字，原因多了就列不全。重载成功、或者因为别的原因失败时为空 |
+| `restart_pending` | 2026.10.25 | 当前配置改了、要重启才生效的设置（内核的设置名） |
+| `problems` | 2026.11.23.39 | 启动时读的配置里、重载和校验会拒绝的写法。启动时照样加载，各记一条 error；重载成功说明新配置没有这样的写法，就清空。客户端应提示下次保存前要改掉 |
+| `warnings` | 2026.11.23.49 | 当前配置照样生效、却值得知道的写法：跳转绕圈、Geo 标签没有数据、没设 `bootstrap` 却用了写成主机名的上游、整体超时短于上游超时的 2.5 倍、正则写了大写字母、缓存容量大于 100 万、退役的设置等。每次生效换成那份配置的 |
+| `watch_error` | 2026.11.23.49 | 配置文件为什么监视不了，监视着时为 `null`。监视线程起不来时改了文件不重载，保存的配置不生效；有位置监视不上时，经监视得上的地方改的照样马上重载，监视不上的地方改的由每 10 秒一次的核对察觉、再等写完的 0.3 秒才重载。客户端有这一项时，等重载要把这段算进去 |
+| `doh_error` | 2026.11.24.14 | 配了的入站 DoH 为什么没起来，起来了或没配时为 `null`。DoH 的设置只在启动时读，校验和重载不读证书，这一项到下次启动才会变 |
+| `data_warnings` | 2026.11.24.15 | Geo 数据眼下的问题，一样一句话：配置了却不存在或读不了的文件、读得出来却没有规则用到的标签了的文件、起不来的监视线程、有位置监视不上的文件、规则用到却没有数据提供的标签。随文件监视实时更新 |
+
+`problems`、`warnings`、`last_reload.problems` 每条开头是说哪一处的路径（`pipelines[0].rules[2].matchers[1]: …`、`settings.bind_udp: …`、`pipeline_select[0]: …`），按位置说，因为规则名可以重复。内核不读的键也这样说，比如顶层的 `panel` 是 `panel: the kernel does not read this key, …`：2026.11.23.11 到 2026.11.25.27 的内核把面板的配置块当作不读的键拒掉，之后的内核接受它并声明 `config_panel_block_v1`。每条截到 2048 字。
 
 ### `GET /v1/metrics`
 
@@ -72,7 +98,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `kixdns_request_latency_ms_bucket{le="10|50|100|500|1000|+Inf"}`、`kixdns_request_latency_ms_sum`、`kixdns_request_latency_ms_count`：端到端耗时直方图与累计值（毫秒，`_sum` 保留三位小数）。
 - `kixdns_upstream_latency_ms_sum{upstream,transport}`、`kixdns_upstream_latency_ms_count{upstream,transport}`：已得到结果的上游尝试累计耗时与次数，不含 `aborted` 和 `throttled`。
 - `kixdns_upstream_response_latency_ms_sum{upstream,transport}`、`kixdns_upstream_response_latency_ms_count{upstream,transport}`：只算拿到响应的尝试，即 `success` 与 `rejected`；超时和连接错误的 `error` 不计入，否则一次超时就把整段超时时长加进平均耗时。
-- `kixdns_upstream_rcodes_total{upstream,rcode}`：上游应答的响应码计数，`rcode` 为 hickory 的变体名（`NoError`、`NXDomain`、`ServFail`、`Refused` 等）。
+- `kixdns_upstream_rcodes_total{upstream,rcode}`：上游应答的响应码计数，`rcode` 是响应码的助记名，和配置、查询日志的写法一样（`NOERROR`、`NXDOMAIN`、`SERVFAIL`、`REFUSED` 等，见下面「编好的记录」里响应码的写法）。2026.11.24.14 之前的内核写 hickory 的变体名（`NoError`、`NXDomain`、`ServFail`），面板两种都认。
 - `kixdns_upstream_via_total{upstream,transport,via}`：`transport` 为该地址选定的传输，`via` 为实际带回答案的传输；`transport="udp"` 且 `via="tcp"` 即 TCP 兜底。
 
 内核 2026.11.23 起追加智能流控的序列；更早的内核没有，面板就不出概览页的「智能流控」卡片：
@@ -88,7 +114,39 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 
 ### `POST /v1/config/validate`
 
-请求体为候选 KixDNS JSON 配置，最大 4 MiB。增强进程使用与热加载完全相同的解析、规范化和运行时编译流程验证配置，但不修改磁盘或活动配置。成功返回 Pipeline 与规则数量；失败返回 `422` 和结构化错误。
+请求体为候选 KixDNS JSON 配置，最大 4 MiB。增强进程使用与热加载完全相同的解析、规范化和运行时编译流程验证配置，但不修改磁盘或活动配置。请求体不是 UTF-8 时返回 `400` `config_body_invalid`。
+
+成功时返回：
+
+~~~json
+{
+  "protocol_version": 1,
+  "valid": true,
+  "pipeline_count": 3,
+  "rule_count": 12,
+  "warnings": ["settings.cache_capacity: …"]
+}
+~~~
+
+`warnings`（内核 2026.11.23.49 起）是这份配置照样能用、却值得知道的写法，和 `/v1/config/active` 的 `warnings` 同一类，每条截到 2048 字。
+
+配置用不了时返回 `422`：
+
+~~~json
+{
+  "protocol_version": 1,
+  "error": {
+    "code": "config_invalid",
+    "message": "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name; panel: the kernel does not read this key, …",
+    "problems": [
+      "pipelines[0].rules[2].matchers[1]: domain_suffix \".\" matches every name",
+      "panel: the kernel does not read this key, …"
+    ]
+  }
+}
+~~~
+
+`message` 是错误连同原因链，截到 2048 字。`problems`（内核 2026.11.24.17 起）逐条列出拒掉的原因（配置问题、监听地址和 DoH 的前提、说不通的设置、编译不了的匹配器），每条截到同样长，一条不落；读不了配置这类别的错误时为空。更早的内核只有 `message`，各条原因用 `; ` 连着。
 
 ### `POST /v1/cache/flush`
 
@@ -240,7 +298,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 | `upstream` 步的 `result` | `success`、`rejected`、`error`、`aborted`、`throttled` |
 | `reason` | `throttled` |
 
-响应码写成 JSON 时：0–10 依次是 `NOERROR`、`FORMERR`、`SERVFAIL`、`NXDOMAIN`、`NOTIMP`、`REFUSED`、`YXDOMAIN`、`YXRRSET`、`NXRRSET`、`NOTAUTH`、`NOTZONE`，别的写成 `RCODE` 加数字。
+响应码写成 JSON 时：0–10 依次是 `NOERROR`、`FORMERR`、`SERVFAIL`、`NXDOMAIN`、`NOTIMP`、`REFUSED`、`YXDOMAIN`、`YXRRSET`、`NXRRSET`、`NOTAUTH`、`NOTZONE`；头部加上 OPT 能写出的扩展码 16 是 `BADVERS`，23 是 `BADCOOKIE`（RFC 7873，内核 2026.11.24.17 起，之前写成 `RCODE23`）；别的写成 `RCODE` 加数字。
 
 改了编法就要换版本：新的能力名和 `format`（`querylog_records_v2`、`records2`），开头的版本字节也跟着变。内核的测试把一页的字节写死了，改了编法那个测试会红。
 
