@@ -1,4 +1,6 @@
 #[cfg(target_os = "linux")]
+mod health;
+#[cfg(target_os = "linux")]
 mod protocol;
 #[cfg(target_os = "linux")]
 mod run_as;
@@ -42,7 +44,7 @@ mod linux {
         for connection in listener.incoming() {
             match connection {
                 Ok(stream) => {
-                    if let Err(error) = protocol::answer(stream, args.allowed_uid, |action| {
+                    if let Err(error) = protocol::answer(stream, &[args.allowed_uid], |action| {
                         execute_request(action, &args).map(|()| String::new())
                     }) {
                         eprintln!("kixdns-panel-helper: {error}");
@@ -505,11 +507,12 @@ mod linux {
     }
 }
 
-/// 第一个参数是子命令时走子命令：`supervise`（容器的主进程）和 `run-as`（看管进程降权执行内核、面板用）；别的照旧是服务控制 helper
+/// 第一个参数是子命令时走子命令：`supervise`（容器的主进程）、`run-as`（看管进程降权执行内核、面板用）和 `health`（镜像的健康
+/// 检查）；别的照旧是服务控制 helper
 ///
-/// A first argument naming a subcommand runs it: `supervise` (the container's main process) and `run-as` (used by the
-/// supervisor to run the kernel and the panel with lowered privileges); anything else is the service-control helper as
-/// before
+/// A first argument naming a subcommand runs it: `supervise` (the container's main process), `run-as` (used by the
+/// supervisor to run the kernel and the panel with lowered privileges) and `health` (the image's health check); anything
+/// else is the service-control helper as before
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use clap::Parser;
@@ -520,6 +523,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             supervise::run(&supervise::Args::parse_from(std::env::args_os().skip(1)))
         }
         Some("run-as") => run_as::run(&run_as::Args::parse_from(std::env::args_os().skip(1))),
+        Some("health") => health::run(&health::Args::parse_from(std::env::args_os().skip(1))),
         _ => linux::run(),
     }
 }

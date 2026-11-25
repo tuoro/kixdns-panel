@@ -65,17 +65,17 @@ pub fn listen(path: &Path, owner: u32) -> Result<UnixListener, Box<dyn Error>> {
     Ok(listener)
 }
 
-/// 答一个连接：只认 `allowed_uid` 的请求，读出动作交给 `handle`，它给的详情跟在 `OK` 后面，出错回 `ERROR 原因`
+/// 答一个连接：只认 `allowed` 里这些用户的请求，读出动作交给 `handle`，它给的详情跟在 `OK` 后面，出错回 `ERROR 原因`
 ///
-/// Answers one connection: only requests from `allowed_uid` count; the action read goes to `handle`, whose detail follows
-/// `OK`, and an error answers `ERROR <reason>`
+/// Answers one connection: only requests from the users in `allowed` count; the action read goes to `handle`, whose detail
+/// follows `OK`, and an error answers `ERROR <reason>`
 pub fn answer(
     mut stream: UnixStream,
-    allowed_uid: u32,
+    allowed: &[u32],
     handle: impl FnOnce(ServiceAction) -> Result<String, Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
     let credentials = socket_peercred(&stream)?;
-    if credentials.uid.as_raw() != allowed_uid {
+    if !allowed.contains(&credentials.uid.as_raw()) {
         return Err("拒绝非面板用户的 helper 请求".into());
     }
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;

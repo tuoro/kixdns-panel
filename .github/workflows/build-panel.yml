@@ -13,6 +13,8 @@ on:
       - scripts/fetch-kixdns-release.sh
       - scripts/package-openwrt.sh
       - scripts/test-openwrt-package.sh
+      - scripts/package-docker.sh
+      - scripts/test-docker-image.sh
       - scripts/npm-audit.py
       - scripts/test-npm-audit.py
       - scripts/check-kernel-regex-versions.py
@@ -45,6 +47,8 @@ on:
       - scripts/fetch-kixdns-release.sh
       - scripts/package-openwrt.sh
       - scripts/test-openwrt-package.sh
+      - scripts/package-docker.sh
+      - scripts/test-docker-image.sh
       - scripts/npm-audit.py
       - scripts/test-npm-audit.py
       - scripts/check-kernel-regex-versions.py
@@ -756,6 +760,46 @@ jobs:
           PACKAGE: dist/kixdns-panel-openwrt-${{ matrix.arch }}.tar.gz
         run: bash scripts/test-openwrt-package.sh "$PACKAGE" "$IMAGE"
 
+  # 容器镜像的验收：镜像里的程序、内核、前端和 GeoSite 都取自上面的 OpenWrt 安装包（scripts/package-docker.sh），两个架构各在
+  # 原生 runner 上构建，用 scripts/test-docker-image.sh 走一遍：搬来的配置、建管理员、低端口解析、保存配置、经面板重启停止内核、
+  # 重建容器以后数据都在、桥接网络。PR 上也跑：本机没有 Docker，这里是唯一跑得起容器的地方。不过就不发布
+  # Acceptance of the container image: the programs, kernel, web console and GeoSite in the image all come from the OpenWrt
+  # package above (scripts/package-docker.sh); each architecture is built on a native runner and walked through
+  # scripts/test-docker-image.sh: a config brought over, the administrator, answers on a low port, saving a config,
+  # restarting and stopping the kernel from the panel, data surviving a rebuilt container, and bridge networking. It runs
+  # on pull requests too, as this is the only place containers run. No release is published without it
+  docker-acceptance:
+    name: Accept Docker image ${{ matrix.arch }}
+    needs: package-openwrt
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download OpenWrt package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: kixdns-panel-openwrt-${{ matrix.arch }}
+          path: dist
+
+      - name: Build the image
+        run: |
+          bash scripts/package-docker.sh dist/docker "dist/kixdns-panel-openwrt-${{ matrix.arch }}.tar.gz"
+          docker build -f deploy/docker/Dockerfile -t kixdns-panel:acceptance dist/docker
+
+      - name: Accept the image
+        run: bash scripts/test-docker-image.sh kixdns-panel:acceptance
+
   acceptance:
     name: Accept packaged installation
     # 推到 main 时 e2e 被跳过，「跳过」会顺着依赖往下传：不写 !cancelled()、只看 build 的结果的话，build 照常构建了，
@@ -790,7 +834,8 @@ jobs:
       !cancelled() && github.event_name == 'release'
       && needs.build.result == 'success' && needs.acceptance.result == 'success'
       && needs.package-openwrt.result == 'success' && needs.openwrt-acceptance.result == 'success'
-    needs: [build, acceptance, package-openwrt, openwrt-acceptance]
+      && needs.docker-acceptance.result == 'success'
+    needs: [build, acceptance, package-openwrt, openwrt-acceptance, docker-acceptance]
     permissions:
       actions: read
       contents: write
@@ -813,3 +858,47 @@ jobs:
           [[ ${#packages[@]} -eq 4 ]]
           gh release upload "${GITHUB_REF_NAME}" "${packages[@]}" \
             --repo "$GITHUB_REPOSITORY" --clobber
+
+  # 发布正式版时把两个架构的镜像推到 GHCR，标签是版本号、主次版本和 latest。镜像和 Release 的资产来自同一份 OpenWrt 安装包，
+  # 资产传好了才推。第一次推上去的包默认是私有的，要在 GitHub 的包设置里改成公开
+  # A stable release pushes the image for both architectures to GHCR, tagged with the version, the major.minor and latest.
+  # The image and the release assets come from the same OpenWrt packages, and the push waits for the assets. A package
+  # pushed for the first time is private, to be made public in its GitHub package settings
+  publish-image:
+    name: Publish Docker image
+    if: >-
+      !cancelled() && github.event_name == 'release' && needs.publish.result == 'success'
+    needs: publish
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download OpenWrt packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: kixdns-panel-openwrt-*
+          path: dist
+          merge-multiple: true
+
+      - name: Build and push the image
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/package-docker.sh dist/docker \
+            dist/kixdns-panel-openwrt-x86_64.tar.gz dist/kixdns-panel-openwrt-arm64.tar.gz
+          version="${GITHUB_REF_NAME#v}"
+          [[ ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s\n' "${REGISTRY_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          # 默认的 docker 驱动建不了多架构镜像 / The default docker driver cannot build multi-architecture images
+          docker buildx create --use
+          docker buildx build --platform linux/amd64,linux/arm64 -f deploy/docker/Dockerfile \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "index:org.opencontainers.image.version=${version}" \
+            -t "${image}:${version}" -t "${image}:${version%.*}" -t "${image}:latest" --push dist/docker

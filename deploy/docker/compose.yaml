@@ -1,0 +1,46 @@
+# KixDNS 面板 + 内核，一个容器。放进一个空目录，`docker compose up -d`，再打开 http://<主机地址>:5738 创建管理员。
+# 要备份的只有 ./data/config（内核配置 pipeline.json 和面板数据库 panel.db）。
+# 从现有安装搬过来：先把原来的 pipeline.json 放到 ./data/config/pipeline.json 再启动，面板会把它导入成第一个版本。
+#
+# KixDNS panel + kernel in one container. Put this in an empty directory, run `docker compose up -d`, then open
+# http://<host>:5738 to create the administrator. Only ./data/config needs a backup (the kernel config pipeline.json and
+# the panel database panel.db). Moving an existing install: put its pipeline.json at ./data/config/pipeline.json before
+# the first start, and the panel imports it as the first version.
+services:
+  kixdns-panel:
+    image: ghcr.io/tuoro/kixdns-panel:latest
+    container_name: kixdns-panel
+    restart: unless-stopped
+    # 推荐 host 网络：内核看得到真实的客户端 IP，按客户端分流、查询日志、智能流控才按人算。主机上 53 端口被 systemd-resolved
+    # 占着时，见 docs/deployment.md 的 Docker 一节
+    # Host networking is recommended: the kernel sees the real client IPs, so per-client rules, the query log and flow
+    # control count per client. When systemd-resolved holds port 53 on the host, see the Docker section of
+    # docs/deployment.en.md
+    network_mode: host
+    # 桥接网络：去掉上面的 network_mode，换成下面的端口映射。客户端 IP 都会是 Docker 网关的地址
+    # Bridge networking: drop network_mode above and map the ports below instead. Every client then shows up as the Docker
+    # gateway's address
+    # ports:
+    #   - "53:53/udp"
+    #   - "53:53/tcp"
+    #   - "5738:5738/tcp"
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: Asia/Shanghai
+      # 面板的运行参数，和 systemd 版 panel.env 里的同名变量一样 / The panel's settings, as the same names in the systemd
+      # panel.env
+      # 面板只听这个地址；host 网络下默认听所有网卡，不要把它直接暴露到公网 / The panel listens here only; with host
+      # networking it listens on every interface by default, so keep it off the public internet
+      # KIXDNS_PANEL_BIND: 0.0.0.0:5738
+      # 面板在 HTTPS 反向代理后面时 / Behind an HTTPS reverse proxy
+      # KIXDNS_PANEL_SECURE_COOKIE: "true"
+      # KIXDNS_TRUSTED_PROXIES: 127.0.0.1/32,::1/128
+      # 查询 GitHub 用的 Token 文件（容器里的路径），默认 /data/config/github-token / The GitHub token file (a path in the
+      # container), /data/config/github-token by default
+      # KIXDNS_GITHUB_TOKEN_FILE: /data/config/github-token
+      # 查询日志的目录，默认 /data/logs/querylog；放内存就指到一个 tmpfs / The query log directory, /data/logs/querylog by
+      # default; point it at a tmpfs to keep it in memory
+      # KIXDNS_QUERYLOG_DIR: /querylog
+    # tmpfs:
+    #   - /querylog

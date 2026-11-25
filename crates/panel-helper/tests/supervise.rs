@@ -394,3 +394,39 @@ fn a_failing_online_panel_falls_back_while_dns_keeps_running() {
     assert_eq!(supervisor.kernel_pid(), Some(kernel), "换面板时内核不停");
     supervisor.stop();
 }
+
+/// 健康检查：面板答 200、内核没放弃就健康，用户停了内核也算健康；面板不答 200 就不健康
+/// The health check: healthy while the panel answers 200 and the kernel was not given up on, a kernel the user stopped
+/// included; unhealthy once the panel does not answer 200
+#[test]
+fn the_health_check_follows_the_panel_and_the_kernel() {
+    let mut supervisor = Supervisor::new();
+    supervisor.start();
+    wait_for("内核起来", || supervisor.kernel_pid().is_some());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for (answer, stream) in ["200 OK", "200 OK", "503 Service Unavailable"]
+            .into_iter()
+            .zip(listener.incoming())
+        {
+            let mut stream = stream.unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            write!(stream, "HTTP/1.1 {answer}\r\ncontent-length: 0\r\n\r\n").unwrap();
+        }
+    });
+    let health = || {
+        Command::new(env!("CARGO_BIN_EXE_kixdns-panel-helper"))
+            .args(["health", "--bind", &bind.to_string(), "--socket"])
+            .arg(supervisor.path("run/kixdns-panel/control.sock"))
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(health(), "面板答 200、内核在跑");
+    assert_eq!(supervisor.ask("stop"), "OK");
+    assert!(health(), "用户停了内核不算不健康");
+    assert!(!health(), "面板不答 200");
+    supervisor.stop();
+}
