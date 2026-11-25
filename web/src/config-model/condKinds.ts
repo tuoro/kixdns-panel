@@ -1,11 +1,12 @@
-import { QCLASSES, QTYPES, RCODES } from './grammar'
+import { QCLASSES, qtypeSuggestions, RCODES } from './grammar'
 import type { FieldDef, OpDef } from './model'
 
-// 输入时的建议：地区用固定的常见值；记录类型、类别、响应码就是内核认的那几个（grammar.ts），建议出来的都存得进去；GeoSite 分类从数据里读，见 geosite.ts
-// Suggestions while typing: regions are a fixed list of common values; record types, classes and rcodes are exactly the ones the kernel takes
-// (grammar.ts), so whatever is suggested can be saved; GeoSite categories come from the data, see geosite.ts
+// 输入时的建议：地区用固定的常见值；记录类型、类别、响应码是内核认的（grammar.ts），建议出来的都存得进去，记录类型看运行中的内核认哪些；
+// GeoSite 分类从数据里读，见 geosite.ts
+// Suggestions while typing: regions are a fixed list of common values; record types, classes and rcodes are ones the kernel takes
+// (grammar.ts), so whatever is suggested can be saved, the record types being those the running kernel takes; GeoSite categories come from
+// the data, see geosite.ts
 export const COUNTRY_SUGGESTIONS = ['CN', 'HK', 'TW', 'JP', 'SG', 'US', 'private']
-export const QTYPE_SUGGESTIONS: readonly string[] = QTYPES
 export const QCLASS_SUGGESTIONS: readonly string[] = QCLASSES
 export const RCODE_SUGGESTIONS: readonly string[] = RCODES
 
@@ -21,7 +22,7 @@ export const RESPONSE_ORDER = ['rcode', 'answer_ip', 'answer_country', 'answer_p
 
 export const SUGGEST: Record<string, readonly string[]> = {
   client_country: COUNTRY_SUGGESTIONS, answer_country: COUNTRY_SUGGESTIONS,
-  qtype: QTYPE_SUGGESTIONS, answer_type: QTYPE_SUGGESTIONS, qclass: QCLASS_SUGGESTIONS, rcode: RCODE_SUGGESTIONS,
+  get qtype() { return qtypeSuggestions() }, get answer_type() { return qtypeSuggestions() }, qclass: QCLASS_SUGGESTIONS, rcode: RCODE_SUGGESTIONS,
 }
 
 // 一个运算落到条件上：是不是排除、是不是正则、TXT 怎么比 / One comparison applied to a condition: whether it excludes, whether it is a regex, how TXT compares

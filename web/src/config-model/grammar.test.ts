@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it, vi } from 'vitest'
-import { isCnameTarget, isIp, isNet, isQclass, isQtype, isRcode, kernelRegexOk, QTYPES, upstreamFault, type UpstreamFault } from './grammar'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CONFIG_QTYPE_NAMES_V1, isCnameTarget, isIp, isNet, isQclass, isQtype, isRcode, kernelRegexOk, QTYPE_NAMES, QTYPES, setKernelCapabilities, upstreamFault, type UpstreamFault } from './grammar'
 
 // 内核怎么读正则：每一条都拿内核的 config::validate 跑过，服务端和页面共用 / How the kernel reads regexes: each run through the kernel's
 // config::validate, shared by the server and the page
@@ -14,11 +14,13 @@ const tableAnswer = ({ kind, pattern }: { kind: 'domain' | 'txt'; pattern: strin
   return { verdict: 'refused' as const, cause, error }
 }
 
-// grammar.ts 照内核的读法写：下面每一条的答案都是把这个写法放进一份最小配置、跑 kixdns 79e8fd5 的 config::validate 得到的。
-// 内核收的这里也收、内核拒绝的这里也拒绝；少数几个内核收、这里查不出来的（CNAME 目标里的 IDN 域名）单独说明，宁可多拦不放过
+// grammar.ts 照内核的读法写：下面每一条的答案都是把这个写法放进一份最小配置、跑 kixdns d2b5fc3 的 config::validate 得到的（记录类型照
+// 2851950，#563 起 OPT、IXFR、ZERO 也认；只认十种的旧内核是 a5126b9 之前的）。内核收的这里也收、内核拒绝的这里也拒绝；少数几个内核收、这里
+// 查不出来的（CNAME 目标里的 IDN 域名）单独说明，宁可多拦不放过
 // grammar.ts follows the kernel's reading: every answer below came from putting the form into a minimal config and running the
-// config::validate of kixdns 79e8fd5. What the kernel takes is taken here and what it refuses is refused; the few the kernel takes that
-// cannot be checked here (IDN names as CNAME targets) are noted apart, erring on the strict side
+// config::validate of kixdns d2b5fc3 (record types by 2851950, which since #563 takes OPT, IXFR and ZERO too; the older kernel taking ten is
+// one before a5126b9). What the kernel takes is taken here and what it refuses is refused; the few the kernel takes that cannot be checked
+// here (IDN names as CNAME targets) are noted apart, erring on the strict side
 
 const both = <T>(ok: T[], refused: T[], check: (v: T) => boolean) => {
   expect(ok.filter((v) => !check(v)), '内核收的').toEqual([])
@@ -44,13 +46,32 @@ describe('内核的读法', () => {
     )
   })
 
-  it('记录类型、类别、响应码', () => {
-    both(['A', 'aaaa', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT'], ['HTTPS', 'SVCB', 'CAA', 'ANY', 'SPF', 'DS'], isQtype)
+  // 只有 ASCII 字母换成大写，不去空白：「 A」、土耳其的无点 ı、长 s「ſ」、全角字母内核都不认
+  // Only ASCII letters are upper-cased and no whitespace is trimmed: 「 A」, the Turkish dotless ı, the long s 「ſ」 and full-width letters
+  // are all refused by the kernel
+  const NOT_ASCII = [' A', 'A ', 'hınfo', 'ſrv', 'ＡＡＡＡ']
+  it('记录类型：旧内核只认十种', () => {
+    both(['A', 'aaaa', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT', 'opt'], ['HTTPS', 'SVCB', 'CAA', 'ANY', 'SPF', 'DS', 'TYPE65', ...NOT_ASCII], isQtype)
     expect([...QTYPES].sort()).toEqual(['A', 'AAAA', 'CNAME', 'MX', 'NS', 'OPT', 'PTR', 'SOA', 'SRV', 'TXT'])
-    both(['IN', 'in', 'CH', 'CHAOS', 'HS'], ['ANY', 'NONE'], isQclass)
-    // 认不出的响应码内核照收，只是当成「其余的响应码」：这里只收它认得出的六个和明写的 OTHER
-    // The kernel takes an unknown rcode and reads it as 「any other code」: only the six it knows and an explicit OTHER are taken here
-    both(['NOERROR', 'FORMERR', 'SERVFAIL', 'servfail', 'NXDOMAIN', 'NOTIMP', 'REFUSED', 'OTHER'], ['NOTAUTH', 'YXDOMAIN', 'BADVERS', 'nonsense'], isRcode)
+  })
+
+  describe('记录类型：有 config_qtype_names_v1 的内核', () => {
+    afterEach(() => setKernelCapabilities([]))
+    it('认 hickory Display 写得出的全部类型名和 TYPEnnn', () => {
+      setKernelCapabilities([CONFIG_QTYPE_NAMES_V1])
+      both(
+        [...QTYPE_NAMES, 'a', 'https', 'Https', 'svcb', 'opt', 'ixfr', '*', 'any', 'TYPE65', 'type65', 'Type65', 'TYPE+65', 'TYPE065', 'TYPE0', 'TYPE41', 'TYPE251', 'TYPE65535', 'type4321'],
+        ['SPF', 'HTTPSS', 'UNKNOWN', 'CH', 'TYPE65536', 'TYPE70000', 'TYPE', 'TYPE-1', 'TYPE 65', 'TYPE٦٥', ...NOT_ASCII],
+        isQtype,
+      )
+    })
+  })
+
+  it('类别、响应码', () => {
+    both(['IN', 'in', 'CH', 'CHAOS', 'chaos', 'HS'], ['ANY', 'NONE', ' IN', 'ın'], isQclass)
+    // 内核只认六个响应码和明写的 OTHER，写别的整份配置都不收 / The kernel takes the six rcodes and an explicit OTHER only, anything else having
+    // the whole config refused
+    both(['NOERROR', 'FORMERR', 'SERVFAIL', 'servfail', 'NXDOMAIN', 'NOTIMP', 'REFUSED', 'OTHER', 'other'], ['NOTAUTH', 'YXDOMAIN', 'BADVERS', 'nonsense', ' SERVFAIL'], isRcode)
   })
 
   // 正则的回答来自面板服务端照内核编译（见 regex-check.ts）：这里拿内核跑出来的那份表顶替服务端，另起一份模块，不碰下面「还没回答」的那条
@@ -117,6 +138,13 @@ describe('内核的读法', () => {
       'tcp://[2001:db8::1]:53', '[fe80::1%2]:53', 'https://dns.example/dns-query', 'https://dns.example', 'doh://dns.example/dns-query', 'tls://dns.alidns.com',
       'tls://dns.alidns.com:853', 'tls://1.1.1.1', 'tls://[2001:db8::1]', 'tls://dns.example?sni=x.example', 'dot://dns.example', 'quic://223.5.5.5?sni=alidns.com',
       'quic://dns.alidns.com', 'doq://dns.alidns.com:853', 'TCP://223.5.5.5:53', 'HTTPS://dns.example/dns-query', 'tls://dns_x.example', 'tls://xn--fiq228c.example',
+      // DoH 的参数原样带给上游（host 除外）；DoT 认 sni、servername，DoQ 再认 0rtt、enable_0rtt，键和值大小写不论，空的 sni 不算
+      // DoH passes its parameters on (but host); DoT takes sni and servername, DoQ 0rtt and enable_0rtt too, keys and values in any case, an
+      // empty sni not counting
+      'https://dns.example?host=x', 'https://dns.example/dns-query?foo=bar', 'https://dns.example#x', 'tls://dns.example?servername=a.example', 'tls://dns.example?SNI=a.example',
+      'tls://dns.example?sni=', 'tls://dns.example?sni', 'tls://dns.example?', 'tls://dns.example?&', 'tls://dns.example?sni=a.example&sni=', 'tls://dns.example#x',
+      'tls://dns.example?%73ni=a.example', 'tls://user@dns.example', 'quic://dns.example?0rtt=true', 'quic://dns.example?0rtt=TRUE', 'quic://dns.example?enable_0rtt=off',
+      'quic://dns.example?ENABLE_0RTT=Yes', 'quic://dns.example?0rtt=%74rue', 'quic://1.1.1.1?sni=a.example&0rtt=no', 'quic://dns.example?0rtt=1&0rtt=0',
     ]
     expect(ok.filter((u) => upstreamFault(u) !== null)).toEqual([])
     const refused: [string, UpstreamFault][] = [
@@ -125,6 +153,16 @@ describe('内核的读法', () => {
       ['tcp://2001:db8::1', 'host'], ['https://', 'url'], ['https://dns example/q', 'url'], ['http://dns.example/dns-query', 'prefix'], ['tls://dns.example/path', 'path'],
       ['tls://1.1.1.1?sni=-bad', 'server-name'], ['quic://223.5.5.5', 'sni'], ['foo://x', 'prefix'], ['tls://a..b', 'server-name'], ['tls://中文.example', 'server-name'],
       ['tcp://中文.example:53', 'host'],
+      // 前缀后面又写了一个前缀：去掉前缀以后哪儿还有「://」都算，路径和参数里的也算 / A second prefix after the first: a 「://」 anywhere once
+      // the prefix is gone counts, in the path or the parameters too
+      ['doh://https://dns.example/dns-query', 'second-prefix'], ['https://https://dns.example', 'second-prefix'], ['https://http://dns.example', 'second-prefix'],
+      ['doh://dns.example/q?x=https://a', 'second-prefix'], ['https://dns.example/a://b', 'second-prefix'], ['tls://tcp://dns.example', 'second-prefix'],
+      ['quic://doq://dns.example', 'second-prefix'], ['tls://a://b', 'second-prefix'],
+      // DoT 只认 sni、servername；DoQ 另外认 0rtt、enable_0rtt，值只认 true、false、1、0、yes、no、on、off / DoT takes sni and servername only; DoQ
+      // 0rtt and enable_0rtt too, valued true, false, 1, 0, yes, no, on or off only
+      ['tls://dns.example?0rtt=true', 'param'], ['tls://dns.example?foo=1', 'param'], ['tls://dns.example?sin=a.example', 'param'], ['tls://dns.example?=x', 'param'],
+      ['quic://dns.example?foo=1', 'param'], ['tls://dns.example?sni=-bad&foo=1', 'param'], ['quic://dns.example?0rtt=2', '0rtt'], ['quic://dns.example?0rtt=', '0rtt'],
+      ['quic://dns.example?0rtt', '0rtt'], ['quic://dns.example?0rtt=on&0rtt=bad', '0rtt'], ['quic://1.1.1.1?0rtt=1', 'sni'],
     ]
     expect(refused.map(([u]) => [u, upstreamFault(u)])).toEqual(refused)
   })

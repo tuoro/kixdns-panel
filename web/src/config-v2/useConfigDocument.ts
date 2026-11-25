@@ -5,6 +5,7 @@ import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { normalUrl } from '../config-model/blocklist'
 import { exportConfig, readConfig } from '../config-model/document'
+import { setKernelCapabilities } from '../config-model/grammar'
 import { blocklistKey, compileNamed, draftPipelineClashes, mappingPipelineId, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
@@ -84,6 +85,8 @@ function effectToast(text: string, withTail = Boolean(restartTail())): number {
   return withTail ? useToast().info(text) : useToast().success(text)
 }
 export const runtimeCapabilities = ref<string[]>([])
+// 编辑器照运行中内核的能力读记录类型（grammar.ts） / The editor reads record types by the running kernel's capabilities (grammar.ts)
+watch(runtimeCapabilities, setKernelCapabilities)
 // 从页头「现在应用」「校验并应用」发起、又没走到服务端记录失败的那一步时的原因 / The reason when an apply from the header failed before the server could record it
 export const applyError = ref('')
 // 「KixDNS 已停止」那条提示在它又跑起来以后就过时了 / The 「KixDNS 已停止」 notice is stale once it runs again
