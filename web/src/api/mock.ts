@@ -44,6 +44,9 @@ import { clearDemoQueryLog, demoQueryLogPage, demoQueryLogSettings, demoQueryLog
 import { demoBlocklists, demoBuildBlocklists, setDemoBlocklistSchedule } from './mock-blocklists'
 
 const now = Math.floor(Date.now() / 1000)
+// 演示里在跑的内核报的配置能力：最新的 fork 内核都有的那几项 / The config capabilities the demo's running kernel reports: all those
+// the latest fork kernel has
+const demoConfigCapabilities = ['config_bootstrap_v1', 'config_panel_block_v1', 'config_qtype_names_v1', 'config_query_stats_v1', 'config_serve_stale_ttl_reset_v2', 'config_static_cname_response_v1']
 // 演示里已经「到来」的新日志行数，只在 kixdns:demo-log-growing 下增长。
 // New log lines that have "arrived" in the demo; grows only under kixdns:demo-log-growing.
 let demoLogArrivals = 0
@@ -91,7 +94,7 @@ let config: ConfigDocument = {
     generation: 18,
     apply_state: 'active',
     pending_error: null,
-    declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+    declared_capabilities: demoConfigCapabilities,
   },
 }
 
@@ -221,7 +224,7 @@ const overview: Overview = {
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,
-    capabilities: ['stats_top_v1', 'config_static_cname_response_v1', 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1', ...(demoQueryLogSupported() ? ['querylog_v1'] : [])],
+    capabilities: ['stats_top_v1', ...demoConfigCapabilities, 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1', ...(demoQueryLogSupported() ? ['querylog_v1'] : [])],
   },
   active_config: activeConfig,
   metrics: {
@@ -361,7 +364,7 @@ function activateCopy(sourceId: number, content: Record<string, unknown>, messag
       generation: activeConfig.generation + 1,
       apply_state: 'active',
       pending_error: null,
-      declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+      declared_capabilities: demoConfigCapabilities,
     },
   }
   activeConfig.sha256 = config.sha256
@@ -1419,7 +1422,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
           generation: config.runtime.generation,
           apply_state: 'pending',
           pending_error: null,
-          declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+          declared_capabilities: demoConfigCapabilities,
         },
       }
       versions.versions.unshift({
@@ -1447,7 +1450,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
         generation: activeConfig.generation + 1,
         apply_state: 'active',
         pending_error: null,
-        declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+        declared_capabilities: demoConfigCapabilities,
       },
     }
     activeConfig.sha256 = nextSha
