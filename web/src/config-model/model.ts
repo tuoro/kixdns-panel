@@ -1,7 +1,7 @@
 import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, ownMatcher, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { toTree, treeText } from './condTree'
 import {
-  byteLength, cidrOf, isCidr, isCnameTarget, isDomain, isIp, isPrefix, isQclass, isQtype, isRcode, isTtl, kernelDomain, kernelRegexOk, QCLASSES, QTYPES, RCODES, TTL_PROBLEM,
+  byteLength, cidrOf, isCidr, isCnameTarget, isDomain, isIp, isPrefix, isQclass, isQtype, isRcode, isTtl, kernelDomain, kernelRegexOk, QCLASSES, qtypeRule, RCODES, TTL_PROBLEM,
   TXT_REGEX_BYTES, TXT_SEGMENT_BYTES, upstreamFault, upstreamTransport, type UpstreamFault,
 } from './grammar'
 export { isCidr, isDomain, isIp, kernelDomain } from './grammar'
@@ -190,13 +190,14 @@ const DOMAIN_OPS: OpDef[] = [
 const domainValid = (v: string, c: { regex?: boolean; exact?: boolean }) => (c.regex ? kernelRegexOk('domain', v) : isDomain(v) && !(c.exact && v.startsWith('*.')))
 // 内核按写的原样查分类，「geosite:cn」找不到 cn 这个分类，永远不命中 / The kernel looks the category up as written, so 「geosite:cn」 never finds cn and never matches
 const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
-// 记录类型、类别、响应码内核只认那几个：标红的同时说出能用哪些（HTTPS 这样的真类型标红了不说，看着像面板错了）
-// Record types, classes and rcodes are a fixed few for the kernel: a value marked red comes with the ones that can be used (HTTPS marked red
-// without a word looks like the panel's mistake)
-const onlyThese = (label: string, ok: (v: string) => boolean, these: string) => (c: { values: string[] }): string | null =>
-  (c.values.every(ok) ? null : `「${label}」里标红的 KixDNS 不认，能用的是 ${these}`)
-const TYPES_TEXT = QTYPES.join('、')
-const CLASSES_TEXT = QCLASSES.join('、')
+// 记录类型、类别、响应码内核只认那些写法：标红的同时说出能用哪些（HTTPS 这样的真类型在旧内核上标红了不说，看着像面板错了）。记录类型能写
+// 哪些看运行中的内核（grammar.ts qtypeRule），所以用到时才问
+// Record types, classes and rcodes take only certain spellings: a value marked red comes with what can be used (a real type such as HTTPS
+// marked red on an older kernel without a word looks like the panel's mistake). Which record types can be written depends on the running
+// kernel (grammar.ts qtypeRule), so it is asked when used
+const onlyThese = (label: string, ok: (v: string) => boolean, these: () => string) => (c: { values: string[] }): string | null =>
+  (c.values.every(ok) ? null : `「${label}」里标红的 KixDNS 不认，能用的是 ${these()}`)
+const CLASSES_TEXT = () => QCLASSES.join('、')
 export const FIELD: Record<ConditionField, FieldDef> = {
   domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', valid: domainValid, explain: (c) => exactWildcardProblem(c) },
   // 行里叫 GeoSite（正式面板一直这么叫），句子里说「域名属于 GeoSite cn」 / The row says GeoSite (the production panel's name); sentences say 「域名属于 GeoSite cn」
@@ -205,19 +206,19 @@ export const FIELD: Record<ConditionField, FieldDef> = {
   client_country: { label: '客户端地区', ops: IS, values: true, placeholder: 'CN、HK…', upper: true, suggest: 'country', valid: (v) => /^[a-z]{2}$|^[a-z0-9_-]{3,}$/i.test(v), hint: 'GeoIP 国家代码' },
   client_private: { label: '客户端网络', merge: 'client_ip', ops: [{ value: 'is', label: '是内网', phrase: '客户端是内网', negate: false }, { value: 'not', label: '不是内网', phrase: '客户端不是内网', negate: true }], values: false, placeholder: '' },
   // 记录类型是助记词，和响应码一样用正文字体 / Record types are mnemonics, in the body face like response codes
-  qtype: { label: '查询类型', ops: IS, values: true, placeholder: 'A、AAAA、PTR…', upper: true, suggest: 'qtype', valid: isQtype, explain: onlyThese('查询类型', isQtype, TYPES_TEXT) },
+  qtype: { label: '查询类型', ops: IS, values: true, placeholder: 'A、AAAA、PTR…', upper: true, suggest: 'qtype', valid: isQtype, explain: onlyThese('查询类型', isQtype, qtypeRule) },
   qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN、CH、HS', upper: true, suggest: 'qclass', valid: isQclass, explain: onlyThese('查询类别', isQclass, CLASSES_TEXT) },
   edns: { label: 'EDNS', ops: [{ value: 'is', label: '带', phrase: '带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '不带 EDNS', negate: true }], values: false, placeholder: '' },
 }
 export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
   // 响应码是助记词，正文字体（同诊断页、概览） / Response codes are mnemonics in the body face (as on diagnostics and the overview)
-  // 认不出的响应码内核不报错，悄悄当成「这六个以外的任何响应码」：这里只收那六个和明写的 OTHER / The kernel takes an unknown rcode without a word
-  // and quietly reads it as 「any code but the six」: only the six and an explicit OTHER are taken here
-  rcode: { label: '响应码', ops: IS, values: true, placeholder: 'SERVFAIL、NXDOMAIN…', upper: true, suggest: 'rcode', valid: isRcode, explain: onlyThese('响应码', isRcode, `${RCODES.join('、')}，其余的响应码写 OTHER`) },
+  // 内核只认那六个和明写的 OTHER（这六个以外的任何响应码），写别的整份配置都不收 / The kernel takes the six and an explicit OTHER (any code but
+  // the six) only, anything else having the whole config refused
+  rcode: { label: '响应码', ops: IS, values: true, placeholder: 'SERVFAIL、NXDOMAIN…', upper: true, suggest: 'rcode', valid: isRcode, explain: onlyThese('响应码', isRcode, () => `${RCODES.join('、')}，其余的响应码写 OTHER`) },
   answer_ip: { label: '回答的 IP', ops: IN, values: true, placeholder: '0.0.0.0/32、240.0.0.0/4…', valid: (v) => isCidr(v) },
   answer_country: { label: '回答 IP 的地区', ops: IS, values: true, placeholder: 'CN、US…', upper: true, suggest: 'country' },
   answer_private: { label: '回答 IP 的网络', merge: 'answer_ip', ops: [{ value: 'is', label: '是内网', phrase: '回答的是内网地址', negate: false }, { value: 'not', label: '不是内网', phrase: '回答的不是内网地址', negate: true }], values: false, placeholder: '' },
-  answer_type: { label: '回答的记录类型', ops: IS, values: true, placeholder: 'A、AAAA、CNAME…', upper: true, suggest: 'qtype', valid: isQtype, explain: onlyThese('回答的记录类型', isQtype, TYPES_TEXT) },
+  answer_type: { label: '回答的记录类型', ops: IS, values: true, placeholder: 'A、AAAA、CNAME…', upper: true, suggest: 'qtype', valid: isQtype, explain: onlyThese('回答的记录类型', isQtype, qtypeRule) },
   upstream: { label: '回答来自', ops: IS, values: true, placeholder: '10.0.0.53:53' },
   upstream_ip: { label: '上游 IP', ops: IN, values: true, placeholder: '10.0.0.0/8', valid: (v) => isCidr(v) },
   request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', valid: domainValid, explain: (c) => exactWildcardProblem(c) },
@@ -415,6 +416,9 @@ const ADDRESS_FAULT: Record<UpstreamFault, (protocol: string) => string> = {
   host: () => '：主机名只能有字母、数字、点和横线',
   url: (p) => `不是 KixDNS 读得懂的 ${p} 地址`,
   path: (p) => `：${p} 的地址不能带路径`,
+  'second-prefix': (p) => `：前缀后面又写了一个前缀，只留一个${p === 'DoH' ? '（DoH 一律走 https）' : ''}`,
+  param: (p) => (p === 'DoQ' ? '：DoQ 只认 sni、servername、0rtt、enable_0rtt 这几个参数' : `：${p} 只认 sni、servername 这两个参数`),
+  '0rtt': () => '：0rtt 只能写 true、false、1、0、yes、no、on 或 off',
   'server-name': () => '的服务器名写得不对',
   sni: () => '：DoQ 用 IP 时要写 ?sni=服务器名，比如 quic://223.5.5.5?sni=dns.alidns.com',
 }

@@ -7,7 +7,8 @@ import { moveItems, moveTarget, useRowFocus } from './row-list'
 import { isGeoSiteMatcher, matcherFieldErrors, matcherValueChecking } from '../../config-editor/field-validation'
 import { matcherHint as hint } from '../../config-editor/matcher-hints'
 import { createMatcher, resetMatcher } from '../../config-editor/model'
-import { MATCHER_DEFINITIONS, MATCH_OPERATORS, QTYPE_OPTIONS } from '../../config-editor/schema'
+import { qtypeSuggestions } from '../../config-model/grammar'
+import { MATCHER_DEFINITIONS, MATCH_OPERATORS } from '../../config-editor/schema'
 import type { MatcherConfig, MatcherScope } from '../../config-editor/types'
 
 // 条件列表：一行一个条件，四格——运算 · 类型 · 参数 · 操作（规范 3.4）。
@@ -55,9 +56,13 @@ function operatorOptions() {
   return MATCH_OPERATORS.map((operator) => ({ value: operator.value, label: operator.label }))
 }
 
+// 能选的记录类型是运行中的内核认的（grammar.ts）；已经写着别的（TYPE65 这样的）时排在最前面，照原样留着
+// The record types offered are those the running kernel takes (grammar.ts); one already written otherwise (TYPE65, say) leads the list,
+// kept as written
 function qtypeOptions(matcher: MatcherConfig) {
-  const options = QTYPE_OPTIONS.map((qtype) => ({ value: qtype, label: qtype }))
-  return matcher.value && !QTYPE_OPTIONS.includes(matcher.value) ? [{ value: matcher.value, label: matcher.value }, ...options] : options
+  const types = qtypeSuggestions()
+  const options = types.map((qtype) => ({ value: qtype, label: qtype }))
+  return matcher.value && !types.includes(matcher.value) ? [{ value: matcher.value, label: matcher.value }, ...options] : options
 }
 
 function modeOptions(matcher: MatcherConfig) {

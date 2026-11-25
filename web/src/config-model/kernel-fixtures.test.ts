@@ -8,6 +8,7 @@ import {
   addressProblem, compile, emptyBlocklists, FIELD, inheritResponse, newRule, RESPONSE_FIELD, ruleProblems, type Condition, type ConditionField, type Ecs, type KernelConfig, type Model,
   type Outcome, type Protocol, type Remedy, type ResponseCondition, type ResponseField, type Rule,
 } from './model'
+import { CONFIG_QTYPE_NAMES_V1, QTYPE_NAMES, setKernelCapabilities } from './grammar'
 import { generateModel } from './testing/generate'
 import { refuseUnknownTypes, type KConfigLike } from './testing/kernel-sim'
 import { demoModel, sampleModel } from './testing/samples'
@@ -118,6 +119,18 @@ function upstreamKinds(): Model {
   return m
 }
 
+// 有 config_qtype_names_v1 的内核认的每一个记录类型名（OPT、IXFR、ZERO 也在里面，kixdns #563），和 TYPEnnn、小写、* 的写法：查询类型和回答的
+// 记录类型各一遍
+// Every record type name a kernel with config_qtype_names_v1 takes (OPT, IXFR and ZERO among them, kixdns #563), and the TYPEnnn,
+// lower-case and * forms: once as the query type and once as the answer's record type
+const QTYPE_FORMS = [...QTYPE_NAMES, 'https', 'TYPE65', 'type4321', 'TYPE0', 'TYPE65535', '*']
+function qtypeNames(): Model {
+  return base([
+    blockRule('每种查询类型', [[{ id: id(), field: 'qtype', negate: false, values: QTYPE_FORMS }]]),
+    checked('每种回答的记录类型', 'any', [{ id: id(), field: 'answer_type', negate: false, values: QTYPE_FORMS }]),
+  ])
+}
+
 function blocklistKinds(): Model[] {
   return (['NXDOMAIN', 'REFUSED', 'zero'] as const).map((block) => base([], {
     defaults: { block },
@@ -176,7 +189,7 @@ const FORWARDS: [string, Record<string, unknown>][] = [
 function fixtures(): Fixture[] {
   const models: [string, Model][] = [
     ['示例配置', sampleModel()], ['演示配置', demoModel()], ['每种条件', conditionKinds()], ['每种回答条件', responseKinds()], ['每种结果', outcomeKinds()],
-    ['每种上游', upstreamKinds()], ...blocklistKinds().map((m, i): [string, Model] => [`拦截列表 ${i}`, m]), ['其余请求拦截', restBlocks()], ['高级规则', advancedKinds()],
+    ['每种上游', upstreamKinds()], ['每种记录类型', qtypeNames()], ...blocklistKinds().map((m, i): [string, Model] => [`拦截列表 ${i}`, m]), ['其余请求拦截', restBlocks()], ['高级规则', advancedKinds()],
     ...Array.from({ length: SEEDS }, (_, i): [string, Model] => [`种子 ${i + 1}`, generateModel(i + 1)]),
   ]
   return models.map(([name, model]) => ({ name, config: compile(model) }))
@@ -199,12 +212,18 @@ describe('交给真内核校验的配置', () => {
         for (const a of (rule[list] ?? []) as RuleConfig['actions']) expect(actionFieldErrors(a, 'main', [], defaultUpstream), `${name} ${a.type}`).toEqual({})
       }
     }
+    // 记录类型名照新内核（有 config_qtype_names_v1）查：CI 用的就是最新的内核 / Record type names are checked as a new kernel (with
+    // config_qtype_names_v1) reads them: CI uses the latest kernel
+    setKernelCapabilities([CONFIG_QTYPE_NAMES_V1])
+    const names = qtypeNames()
+    expect(names.rules.flatMap((r) => ruleProblems(names, r))).toEqual([])
+    setKernelCapabilities([])
     // 先写出去再查：这里和内核意见不一样时，CI 里照样看得到真内核怎么说 / Written before checking: should this disagree with the kernel, CI still
     // shows what the real kernel says
     const all = fixtures()
     const out = process.env.KERNEL_FIXTURES
     if (out) writeFileSync(out, JSON.stringify(all))
-    expect(all.length).toBe(11 + SEEDS)
+    expect(all.length).toBe(12 + SEEDS)
     for (const f of all) refuseUnknownTypes(f.config as KConfigLike)
   })
 })
