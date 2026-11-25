@@ -26,7 +26,6 @@ const upstreamPlaceholder = '空着问默认上游；192.168.1.1:53, https://dns
 
 const props = withDefaults(defineProps<{
   pipelines: PipelineConfig[]
-  currentPipelineId: string
   capabilities?: string[]
   // 没写上游的转发问的默认上游（写进内核的那样） / The default upstream a forward writing none asks (as written to the kernel)
   defaultUpstream?: string
@@ -44,7 +43,7 @@ const supportedActionTypes = computed(() => ACTION_TYPES.filter((option) => (
   !option.requiresCapability || props.capabilities.includes(option.requiresCapability)
 )))
 const errors = computed(() => actions.value.map((action) => actionFieldErrors(
-  action, props.currentPipelineId, props.pipelines.map((pipeline) => pipeline.id), props.defaultUpstream,
+  action, props.pipelines.map((pipeline) => pipeline.id), props.defaultUpstream,
 )))
 const ordered = computed(() => actions.value.length > 1)
 const instanceId = useId()
@@ -54,7 +53,8 @@ const { focusRow } = useRowFocus(root)
 // 日志级别写页面上的叫法，取值照旧是内核的 / Log levels read in the page's words; the values stay the kernel's
 const LOG_LEVELS = [{ value: 'trace', label: '跟踪' }, { value: 'debug', label: '调试' }, { value: 'info', label: '信息' }, { value: 'warn', label: '警告' }, { value: 'error', label: '错误' }]
 const levelOptions = (current: string | undefined) => [...LOG_LEVELS, ...(current && !LOG_LEVELS.some((level) => level.value === current) ? [{ value: current, label: current }] : [])]
-const responseCodes = ['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED']
+// 固定响应码：parse_rcode 认的六个 / Fixed rcodes: the six parse_rcode takes
+const responseCodes = ['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED', 'FORMERR', 'NOTIMP']
 const existingUpstreams = computed(() => {
   const upstreams = new Map<string, { upstream: string; transport: string }>()
   for (const pipeline of props.pipelines) {
@@ -105,7 +105,7 @@ function transportOptions(action: ActionConfig) {
 }
 
 function pipelineOptions(action: ActionConfig) {
-  const options = [{ value: '', label: '选择要转到的组', disabled: true }, ...props.pipelines.map((pipeline) => ({ value: pipeline.id, label: props.pipelineName?.(pipeline.id) ?? pipeline.id, disabled: pipeline.id === props.currentPipelineId }))]
+  const options = [{ value: '', label: '选择要转到的组', disabled: true }, ...props.pipelines.map((pipeline) => ({ value: pipeline.id, label: props.pipelineName?.(pipeline.id) ?? pipeline.id }))]
   return action.pipeline && !props.pipelines.some((pipeline) => pipeline.id === action.pipeline) ? [...options, { value: action.pipeline, label: `${action.pipeline}（不存在）` }] : options
 }
 
@@ -161,8 +161,10 @@ function textValue(action: ActionConfig): string {
   return Array.isArray(action.text) ? action.text.join(', ') : typeof action.text === 'string' ? action.text : ''
 }
 
+// 框里什么都不填是一段空的 TXT（[""]，内核照收），不是一段也没有 / An empty box is one empty TXT segment ([""], which the kernel takes), not none
 function setText(action: ActionConfig, event: Event): void {
-  action.text = (event.currentTarget as HTMLInputElement).value.split(',').map((item) => item.trim()).filter(Boolean)
+  const text = (event.currentTarget as HTMLInputElement).value.split(',').map((item) => item.trim()).filter(Boolean)
+  action.text = text.length ? text : ['']
 }
 
 function setTtl(action: ActionConfig, event: Event): void {
@@ -207,7 +209,7 @@ function move(index: number, direction: string): void {
           </template>
           <template v-else-if="action.type === 'static_response'">
             <span class="ui-rows__plabel">响应码</span>
-            <UiSelect v-model="action.rcode" class="is-enum" :options="enumOptions(responseCodes, action.rcode)" :label="`动作 ${index + 1} 响应码`" />
+            <UiSelect v-model="action.rcode" class="is-enum" :options="enumOptions(responseCodes, action.rcode)" :label="`动作 ${index + 1} 响应码`" :invalid="Boolean(visibleError(index, 'rcode'))" />
           </template>
           <template v-else-if="action.type === 'static_ip_response'">
             <span class="ui-rows__plabel">IP</span>
@@ -234,12 +236,12 @@ function move(index: number, direction: string): void {
             <label class="ui-input"><input type="text" :value="textValue(action)" :aria-label="`动作 ${index + 1} TXT 内容`" placeholder="多个值用逗号分隔" :aria-invalid="Boolean(visibleError(index, 'text')) || undefined" :aria-describedby="errorId(index, 'text')" @input="setText(action, $event)" @blur="touch(index, 'text')"></label>
             <template v-if="action.type === 'static_txt_response'">
               <span class="ui-rows__plabel">TTL</span>
-              <label class="ui-input is-num"><input type="number" :value="action.ttl" min="1" :aria-label="`动作 ${index + 1} TTL`" placeholder="300" @input="setTtl(action, $event)"><em class="ui-setrow__unit">秒</em></label>
+              <label class="ui-input is-num"><input type="number" :value="action.ttl" min="0" max="4294967295" :aria-label="`动作 ${index + 1} TTL`" placeholder="300" :aria-invalid="Boolean(visibleError(index, 'ttl')) || undefined" :aria-describedby="errorId(index, 'ttl')" @input="setTtl(action, $event)" @blur="touch(index, 'ttl')"><em class="ui-setrow__unit">秒</em></label>
             </template>
           </template>
         </div>
         <span class="ui-rows__act"><button class="ui-icon-btn" type="button" :title="`删除动作 ${index + 1}`" :aria-label="`删除动作 ${index + 1}`" @click="remove(index)"><X :size="16" /></button></span>
-        <template v-for="field in ['ip', 'target', 'ttl', 'pipeline', 'upstream', 'text']" :key="field">
+        <template v-for="field in ['rcode', 'ip', 'target', 'ttl', 'pipeline', 'upstream', 'text']" :key="field">
           <p v-if="visibleError(index, field)" :id="fieldId(index, `${field}-error`)" class="ui-field-error ui-rows__error">{{ visibleError(index, field) }}</p>
         </template>
         <div v-if="action.type === 'forward'" class="ui-rows__sub">

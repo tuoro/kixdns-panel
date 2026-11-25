@@ -35,13 +35,13 @@ export const sameKernel = (a: unknown, b: unknown): boolean => kernelKey(a) === 
 // MatchOperator's aliases: not, and-not and andnot are and_not, or-not and ornot are or_not; anything else stays as written (the kernel
 // cannot even read it)
 const OPERATOR: Record<string, string> = { not: 'and_not', 'and-not': 'and_not', andnot: 'and_not', 'or-not': 'or_not', ornot: 'or_not' }
-const operator = (op: string | undefined): string => (op === undefined ? 'and' : (OPERATOR[op] ?? op))
+export const matchOperator = (op: string | undefined): string => (op === undefined ? 'and' : (OPERATOR[op] ?? op))
 // 加载时：每项都是默认 and 而规则级不是 and，就把规则级运算符抄到每一项；求值时第一项按肯定起头，其余从左往右并入。给出的是去掉别名的写法
 // At load: when every item is the default and and the rule-level operator is not, that operator is copied onto each item;
 // evaluation seeds with the first item as a plain positive and folds the rest left to right. What is given is free of aliases
 export function effectiveOps(matchers: KMatcher[], ruleOp: string | undefined): string[] {
-  const own = matchers.map((m) => operator(m.operator))
-  const rule = operator(ruleOp)
+  const own = matchers.map((m) => matchOperator(m.operator))
+  const rule = matchOperator(ruleOp)
   return own.every((o) => o === 'and') && rule !== 'and' ? own.map(() => rule) : own
 }
 export function foldChain(matchers: KMatcher[], ruleOp: string | undefined, hit: (m: KMatcher) => boolean): boolean {

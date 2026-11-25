@@ -12,11 +12,11 @@ import UiTabs from '../components/ui/UiTabs.vue'
 import UiHelp from '../components/ui/UiHelp.vue'
 import { REQUEST_ORDER, RESPONSE_ORDER } from '../config-model/condKinds'
 import { toDnf, toTree, treeText, type CondTree } from '../config-model/condTree'
-import { actionFieldErrors, matcherFieldErrors } from '../config-editor/field-validation'
+import { actionFieldErrors, matcherFieldErrors, negationProblem } from '../config-editor/field-validation'
 import { kernelRuleOf } from '../config-editor/model'
 import type { ActionConfig, PipelineConfig, RuleConfig } from '../config-editor/types'
 import {
-  checkSentence, compile, conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
+  checkSentence, compile, conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, newRule, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
   ruleProblemPlaces, type Ecs, type Outcome, type ProblemPlace, type Remedy, type ResponseCondition, type Rule,
   ruleTitle,
 } from '../config-model/model'
@@ -146,14 +146,14 @@ const kernelNames = computed(() => traceNames(model))
 const kernelPipelineName = (id: string): string | null => kernelNames.value.pipeline(id)
 // 规则所在（或要放进）的规则组，主列表里的为 null / The rule group the rule sits in (or goes into); null in the main list
 const draftGroupId = computed(() => props.groupId ?? (props.ruleId !== null ? listOf(props.ruleId).group?.id ?? null : null))
-const ownPipelineId = computed(() => (draftGroupId.value ? ruleGroupPipelineId(model, draftGroupId.value) : mainPipelineId(model)))
 const rawFieldProblems = computed(() => {
   if (!draft.raw || rawMode.value !== 'form') return 0
   const ids = kernelPipelines.value.map((p) => p.id)
   return rawRules.reduce((n, r) => n
     + r.matchers.filter((m) => Object.keys(matcherFieldErrors(m, 'request')).length).length
     + r.response_matchers.filter((m) => Object.keys(matcherFieldErrors(m, 'response')).length).length
-    + [...r.actions, ...r.response_actions_on_match, ...r.response_actions_on_miss].filter((a) => Object.keys(actionFieldErrors(a, ownPipelineId.value, ids, defaultUpstream.value)).length).length
+    + [...r.actions, ...r.response_actions_on_match, ...r.response_actions_on_miss].filter((a) => Object.keys(actionFieldErrors(a, ids, defaultUpstream.value)).length).length
+    + [negationProblem(r.matchers, r.matcher_operator, 'request'), negationProblem(r.response_matchers, r.response_matcher_operator, 'response')].filter(Boolean).length
     + (r.name.trim() ? 0 : 1), 0)
 })
 const position = ref(original ? list.value.indexOf(original) : list.value.length)
@@ -442,7 +442,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
           <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进面板的写法，原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
-            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="kernelPipelineName" />
+            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :capabilities="runtimeCapabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="kernelPipelineName" />
             <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error" aria-live="polite">{{ rawError }}</p></template>
           </div>
         </section>
