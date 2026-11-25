@@ -48,7 +48,10 @@ router.beforeEach(async (to) => {
   return true
 })
 
-router.afterEach((to) => {
+// 换页成了才换标题：离开被拦下（选了「继续编辑」）时人还在原来那页 / The title changes only once the page change happens: a leave held back
+// (继续编辑 chosen) leaves the user on the page they were on
+router.afterEach((to, _from, failure) => {
+  if (failure) return
   document.title = to.meta.title ? `${to.meta.title} · KixDNS 面板` : 'KixDNS 面板'
 })
 
