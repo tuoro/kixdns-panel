@@ -14,7 +14,7 @@ All JSON responses contain `protocol_version: 1`. Clients must ignore unknown fi
 
 Returns the process status, the upstream commit, the release version (`release_version`, `release_commit`; only kernels released by the fork have them, all others report `null`), the patchset (only old patchset kernels have it; fork kernels report `unknown`), the start time, the current config generation and the capability list `capabilities`. A client may use an endpoint or write a controlled field only when the matching capability is present. Kernels released by the fork declare all the capabilities listed below. p28 lacks those starting with `querylog_`:
 
-- Config capabilities: `config_query_stats_v1` (query statistics config fields, see below), `config_static_cname_response_v1` (the `static_cname_response` action, that is, a fixed CNAME answer; the panel's domain mapping uses it)
+- Config capabilities: `config_query_stats_v1` (query statistics config fields, see below), `config_static_cname_response_v1` (the `static_cname_response` action, that is, a fixed CNAME answer; the panel's domain mapping uses it). Newer fork kernels also declare `config_panel_block_v1`, `config_bootstrap_v1`, `config_qtype_names_v1` and `config_serve_stale_ttl_reset_v2`; what each controls is in the [configuration capability contract](config-capabilities.en.md)
 - `stats_top_v1`: the query rankings endpoint
 - `diagnostics_trace_v1`: the diagnostics trace endpoint
 - `diagnostics_trace_client_v1`: since enhanced build p28, diagnostics trace and draft trial runs accept `client_ip`, which pretends the query comes from this client

@@ -374,19 +374,27 @@ async fn a_config_the_release_cannot_run_is_refused_before_downloading() {
     remote.download_url = format!("{server}/{}", remote.artifact);
     remote.config_capabilities = Vec::new();
 
-    let error = manager
-        .install_resolved(
-            &remote,
-            &serde_json::json!({
-                "pipelines": [{"id": "default", "rules": [{"actions": [{"type": "static_cname_response", "target": "origin.example."}]}]}]
-            }),
-        )
-        .await
-        .unwrap_err();
+    // 注册表里挡切换的每一项：面板块、引导 DNS、十种以外的查询类型、CNAME 回答
+    // Every registry entry that blocks a switch: the panel block, bootstrap, query types beyond the ten, CNAME answers
+    for config in [
+        serde_json::json!({"pipelines": [], "panel": {"v": 1}}),
+        serde_json::json!({"settings": {"bootstrap": "223.5.5.5:53"}, "pipelines": []}),
+        serde_json::json!({
+            "pipelines": [{"id": "default", "rules": [{"matchers": [{"type": "qtype", "value": "HTTPS"}]}]}]
+        }),
+        serde_json::json!({
+            "pipelines": [{"id": "default", "rules": [{"actions": [{"type": "static_cname_response", "target": "origin.example."}]}]}]
+        }),
+    ] {
+        let error = manager
+            .install_resolved(&remote, &config)
+            .await
+            .unwrap_err();
 
-    assert!(
-        matches!(error, UpdateError::IncompatibleConfig(_)),
-        "{error:?}"
-    );
+        assert!(
+            matches!(error, UpdateError::IncompatibleConfig(_)),
+            "{config}: {error:?}"
+        );
+    }
     assert!(requests.lock().unwrap().is_empty(), "nothing is downloaded");
 }
