@@ -36,6 +36,8 @@ export const saysPanelBlock = (text: string): boolean => text.includes(PANEL_BLO
 /** 系统页上更新内核的那一行：跳过去时它滚到眼前，「更新」按钮拿到焦点 / The kernel's update row on the system page: going there scrolls it into view and gives its 更新 button the focus */
 export const KERNEL_UPDATE = { path: '/system', hash: '#kernel-update' } as const
 export const KERNEL_UPDATE_LABEL = '去更新内核'
+/** 这次换页去的是不是 KERNEL_UPDATE（「去更新内核」的链接都去那里） / Whether a page change goes to KERNEL_UPDATE (where every 去更新内核 link leads) */
+export const goesToKernelUpdate = (to: { path: string; hash: string }): boolean => to.path === KERNEL_UPDATE.path && to.hash === KERNEL_UPDATE.hash
 
 /**
  * 路径里的各处在页面上怎么叫；认不出时给 null，那一条照原样说

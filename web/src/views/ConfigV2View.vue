@@ -22,13 +22,13 @@ import RuleEditor, { type EditorResume } from '../config-v2/RuleEditor.vue'
 import RulesTab from '../config-v2/RulesTab.vue'
 import RuleText from '../config-v2/RuleText.vue'
 import KernelNotes from '../components/KernelNotes.vue'
-import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, saysPanelBlock } from '../kernel-problems'
+import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, goesToKernelUpdate, saysPanelBlock } from '../kernel-problems'
 import SaveBar from '../config-v2/SaveBar.vue'
 import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, leaveMark, saveBarShown, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse, runningWarningsNote, startupNote } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, keepDraftForUpdate, leaveMark, saveBarShown, promiseDraftKept, recheckKernelRefusal, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse, runningWarningsNote, startupNote } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -511,12 +511,17 @@ async function reload(ask = true): Promise<void> {
 }
 
 // ---------- 进出页面 / entering and leaving ----------
+// 草稿留着离开时，还没收进草稿、留不住的修改是哪一样：JSON 里的、右栏没点完成的、对话框里的；都没有时是 undefined
+// Leaving with the draft kept, which edit not yet in the draft cannot be kept: the JSON view's, an unfinished side panel's, a dialog's;
+// undefined when there is none
+const notInDraft = (): string | undefined => (jsonDirty.value ? ' JSON 里' : editorEdited.value ? '这条规则' : [...dialogEdits.values()][0])
 // JSON 文本只活在这一页里：回到配置页总是从表单开始，免得 JSON 视图空着又切不回表单
 // The JSON text lives only on this page: coming back always starts in the form, so the JSON view never reopens empty and stuck
 // 只有规则编辑里没点「完成」的、或开着的抽屉里的修改时，问的是那一样；草稿或 JSON 有修改时问整份草稿
 // With only a rule edit not yet 完成, or an open drawer's edits, the question names that one thing; with draft or JSON edits it is about the whole draft
 // purpose 是 signout 时按钮写「放弃并退出 / 先不退出」，和在别处退出登录时一样 / With purpose signout the buttons read 放弃并退出 / 先不退出, as when signing out from elsewhere
-const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
+// purpose 是 update：沿「去更新内核」离开，草稿留到回来 / With purpose update: leaving by 去更新内核, the draft is kept for the return
+const askLeave = async (purpose?: 'signout' | 'update'): Promise<boolean> => {
   // 每问一次重新算：上一次退出登录没成功时留下的不算数 / Each ask starts afresh: what a failed sign-out left behind no longer counts
   signoutDrop = false
   const labels = purpose === 'signout' ? { confirmLabel: '放弃并退出', cancelLabel: '先不退出' } : { confirmLabel: '放弃修改', cancelLabel: '继续编辑' }
@@ -548,13 +553,22 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
   // 只有还没收进草稿的修改（JSON 里的、右栏没点完成的、对话框里的）会丢：问那一样 / Only edits not yet in the draft (in the JSON view, an
   // unfinished side panel, a dialog) would be lost: ask about those
   if (heldLostSave()) {
-    if (!jsonDirty.value && !editorEdited.value && dialogEdits.size === 0) return true
-    const what = jsonDirty.value ? ' JSON 里' : editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'
+    const what = notInDraft()
+    if (what === undefined) return true
     const mark = leaveMark()
     const agreed = await confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容不会写进草稿。草稿留着，核对完会说结果。', ...labels, destructive: true })
     // 问着的时候核对可能说完了：照说过的「草稿留着」，离开时把草稿留到回来（见 promiseDraftKept） / The check may finish while this is
     // asked: as promised, the draft is kept for the return on leaving (see promiseDraftKept)
     if (agreed) promiseDraftKept(mark)
+    return agreed
+  }
+  // 沿「去更新内核」离开：更新内核正是为了让这份草稿存得上，草稿留到回来，不问要不要丢（见 keepDraftForUpdate）；只问还没收进草稿、留不住的那一样
+  // Leaving by 去更新内核: the kernel is updated precisely so this draft can be saved, so it is kept for the return and nothing asks to drop
+  // it (see keepDraftForUpdate); only an edit not yet in the draft, which cannot be kept, is asked about
+  if (purpose === 'update') {
+    const what = notInDraft()
+    const agreed = what === undefined || await confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容不会写进草稿。草稿留着，更新内核后回来保存。', ...labels, destructive: true })
+    if (agreed) keepDraftForUpdate()
     return agreed
   }
   const agreed = await confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
@@ -720,9 +734,12 @@ onMounted(() => {
   // 回应丢了的那次写入还没核对：先核对，核对出存上了或核对不了，这次读交给它（见 checkFirst）；有没有冲突照核对以后的说
   // A lost write still unchecked: check it first, and when it was found landed or could not be checked, leave this read to it (see
   // checkFirst); whether there is a conflict is judged after the check
+  // 留着的草稿读完，保存条还说着内核不认面板的配置块（多半是去更新内核再回来）：照现在的内核再校验一次（见 recheckKernelRefusal）
+  // Once a kept draft is read, a save bar still saying the kernel does not take the panel's block (most likely back from 去更新内核) is
+  // checked again against the kernel as it is now (see recheckKernelRefusal)
   const read = (): Promise<unknown> | undefined => {
     if (keep && conflict.value) { returnedToPage(); return refreshRuntime().catch(() => undefined) }
-    return load(keep ? { quiet: true, keepDraft: true } : { returning: true })
+    return keep ? load({ quiet: true, keepDraft: true }).then(recheckKernelRefusal) : load({ returning: true })
   }
   if ((keep && conflict.value) || !busy.value) void checkFirst().then((checked) => (checked ? undefined : read())).then(readOver, readOver)
   window.addEventListener('beforeunload', beforeUnload)
@@ -730,7 +747,7 @@ onMounted(() => {
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
 // 带「撤销」的提示只对这一页的草稿有用：离开时一起收起（会话过期跳到登录页时也不会留着） / Undo toasts only make sense for this page's draft: they go when it unmounts (including a jump to the login page on session expiry)
 onBeforeUnmount(() => { setViewing(false); window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); stopAfterEach(); stopOnError(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
-onBeforeRouteLeave(async () => takeAgreement() || askLeave())
+onBeforeRouteLeave(async (to) => takeAgreement() || askLeave(goesToKernelUpdate(to) ? 'update' : undefined))
 // 换分区、或者从整页编辑按返回：规则编辑里没点「完成」的修改先问一句；同意了就关掉编辑
 // Switching section, or pressing back out of the full-page editor: first ask about rule edits not yet 完成; once agreed the editor closes
 onBeforeRouteUpdate(async (to, from) => {

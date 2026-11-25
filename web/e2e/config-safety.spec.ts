@@ -2698,3 +2698,50 @@ test('重连后的重读还在路上时保存落地，刚存的规则不会被�
   await expect(page.locator('[data-rule]', { hasText: 'during-reread.example' }).getByLabel('改过，还没保存')).toHaveCount(0)
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
 })
+
+// 内核不认面板的配置块、保存被拒：更新内核正是为了让这份草稿存得上。沿「去更新内核」去系统页不问放弃，草稿留到回来，回来时照现在的内核再校验
+// A save refused by a kernel that does not take the panel's block: the kernel is updated precisely so this draft can be saved. Following
+// 去更新内核 to the system page asks nothing, the draft is kept for the return, and the return checks it again against the kernel as it is then
+const KEPT_FOR_UPDATE = '草稿留在配置页，更新内核后回去保存'
+async function refusedByOldKernel(page: Page, domain: string): Promise<void> {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-old-kernel', 'true'))
+  await page.goto('/config')
+  await addRule(page, domain)
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('没有通过校验')
+  await expect(bar).toContainText('当前内核版本不认面板的配置块')
+}
+
+test('保存被内核拒收后沿「去更新内核」离开：不问放弃，更新完回来草稿还在、校验通过，直接保存', async ({ page }) => {
+  await refusedByOldKernel(page, 'kernel-update.example')
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('link', { name: '去更新内核' }).click()
+  await expect(page).toHaveURL(/\/system/)
+  await expect(page.locator('dialog.confirm[open]')).toHaveCount(0)
+  await expect.poll(() => toastTexts(page)).toContain(KEPT_FOR_UPDATE)
+  // 演内核已经更新：新内核收下面板的配置块（只换了存储里的开关，页面不重载，初始化脚本不会再把它设回去） / Play the kernel updated: the new
+  // kernel takes the panel's block (only the stored switch changes; the page does not reload, so the init script does not set it again)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-old-kernel'))
+  await page.getByRole('link', { name: '规则', exact: true }).click()
+  await expect(page.locator('[data-rule]', { hasText: 'kernel-update.example' })).toBeVisible()
+  await expect(bar).toContainText('校验通过')
+  await expect.poll(() => toastTexts(page)).not.toContain(KEPT_FOR_UPDATE)
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText(/已生效/, { timeout: 8000 })
+})
+
+test('沿「去更新内核」离开、内核没更新就回来：草稿还在，保存条照旧说不认；别的离开照旧问', async ({ page }) => {
+  await refusedByOldKernel(page, 'not-updated.example')
+  // 页面上方提示条里的「去更新内核」也一样 / The 去更新内核 in the notice at the top does the same
+  await page.locator('.cfg__kernel').getByRole('link', { name: '去更新内核' }).click()
+  await expect(page).toHaveURL(/\/system/)
+  await expect(page.locator('dialog.confirm[open]')).toHaveCount(0)
+  await page.getByRole('link', { name: '规则', exact: true }).click()
+  await expect(page.locator('[data-rule]', { hasText: 'not-updated.example' })).toBeVisible()
+  const bar = page.locator('.cfg__savebar')
+  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('没有通过校验')
+  await expect(bar.getByRole('link', { name: '去更新内核' })).toBeVisible()
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.getByRole('alertdialog', { name: '放弃未保存的修改' })).toBeVisible()
+})

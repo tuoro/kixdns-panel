@@ -9,7 +9,7 @@ import { setKernelCapabilities } from '../config-model/grammar'
 import { blocklistKey, compile, compileNamed, draftPipelineClashes, mappingPipelineId, type Model, type Rule } from '../config-model/model'
 import { placeNames, traceNames } from '../config-model/trace-names'
 import { settingName } from '../config-editor/schema'
-import { PANEL_BLOCK_HINT, dataNote, describeProblem, describeProblems, dohNote, problemsNote, refusesPanelBlock, warningsNote } from '../kernel-problems'
+import { PANEL_BLOCK_HINT, dataNote, describeProblem, describeProblems, dohNote, problemsNote, refusesPanelBlock, saysPanelBlock, warningsNote } from '../kernel-problems'
 import { useConnection } from '../composables/useConnection'
 import { ROLLBACK_LABELS, configPageOpen, nameWith, noteRead, restartingKixdns, startingKixdns, versionName, type RollbackOrigin } from '../composables/useServiceStart'
 import { dashboardRuntimeState } from '../dashboard-state'
@@ -1004,6 +1004,16 @@ export function setViewing(open: boolean): boolean {
     const { pending, origin: rollback } = unanswered
     awayToast = sayNotKnown(() => notKnownApplied(pending, rollback))
   }
+  // 沿「去更新内核」离开（见 keepDraftForUpdate）：草稿里有修改就留到回来，提示说一句，免得以为修改丢了、更新完忘了回去保存；回到配置页时收起
+  // Leaving by 去更新内核 (see keepDraftForUpdate): a draft with edits is kept for the return and a toast says so, lest the edits seem lost or
+  // the save be forgotten after the update; it goes on return to the config page
+  if (!open && leftForUpdate) {
+    leftForUpdate = false
+    if (dirty.value) {
+      keepDraftForReturn()
+      if (awayToast === null || awayResults.has(awayToast)) awayToast = useToast().info('草稿留在配\u2060置\u2060页，更新内核后回去保存')
+    }
+  }
   const keep = open && keepOnReturn
   if (open) {
     leftDuringSave = false
@@ -1023,7 +1033,7 @@ let leftDuringSave = false
 export function leavingDuringSave(): void { leftDuringSave = true }
 // 换页没成（被取消、被别的换页顶掉）：人还在配置页上，记号清掉 / The page change did not happen (cancelled, or overtaken by another): the user is still on
 // the config page and the mark goes
-export function stayedDuringSave(): void { leftDuringSave = false; keptByAsk = null }
+export function stayedDuringSave(): void { leftDuringSave = false; keptByAsk = null; leftForUpdate = false }
 // 锁着时离开那一问同意了：问的时候是哪一次写入（写入前的版本号、替人保存时的说法），见 setViewing / The locked leave question was agreed
 // to: which write it was asked about (the version before it, and the wording of a save made on the user's behalf), see setViewing
 type LeaveMark = { version: number | null; words?: SaveWords }
@@ -1031,6 +1041,23 @@ let keptByAsk: LeaveMark | null = null
 /** 问之前记下：问着的时候核对可能说完、记录作废 / Noted before asking: the check may finish and void the record meanwhile */
 export const leaveMark = (): LeaveMark | null => (unanswered ? { version: unanswered.version, words: unanswered.words } : null)
 export function promiseDraftKept(mark: LeaveMark | null): void { keptByAsk = mark }
+// 沿「去更新内核」离开：换页成了，页面卸下时由 setViewing 把草稿留到回来；没成就作罢（stayedDuringSave）
+// Leaving by 去更新内核: once the page change happens, setViewing keeps the draft for the return as the page unmounts; if it does not, the
+// mark goes (stayedDuringSave)
+let leftForUpdate = false
+/** 沿「去更新内核」离开：更新内核正是为了让这份草稿存得上，不丢它，留到回来 / Leaving by 去更新内核: the kernel is updated precisely so this
+ * draft can be saved, so it is not dropped but kept for the return */
+export function keepDraftForUpdate(): void { leftForUpdate = true }
+/** 回到留着的草稿时：保存条还说着内核不认面板的配置块，就照现在的内核再校验一次（去更新内核再回来，内核可能换了），结果替掉那句
+ * On return to a kept draft: with the save bar still saying the kernel does not take the panel's block, check again against the kernel as
+ * it is now (back from 去更新内核, the kernel may have changed), and the result replaces that sentence */
+export function recheckKernelRefusal(): void {
+  if (origin.value !== 'draft' || stage.value !== 'failed' || !saysPanelBlock(note.value)) return
+  // 校验做不了时（KixDNS 停着、连不上）那句也不留着：内核换没换已经说不准，按保存时再看 / When no check can run (KixDNS stopped or
+  // unreachable) the sentence goes all the same: whether the kernel changed is no longer known, and a save will tell
+  finishStage('idle')
+  void validate()
+}
 const away = (): boolean => !viewing || leftDuringSave
 /** 人已经不在配置页上（或者正要离开）：保存的结果由提示说 / The user is off the config page (or on the way out): a save's outcome is told by a toast */
 export const pageAway = (): boolean => away()
