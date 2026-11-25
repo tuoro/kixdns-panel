@@ -72,12 +72,26 @@ pub struct ActiveConfig {
     /// kernel's setting names); `None` from a kernel that does not report it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_pending: Option<Vec<String>>,
+    /// 启动时读的配置里、重载和保存会拒绝的写法：照样在用，下次保存前要改掉；重载成功就清空。不报告它的内核
+    /// （2026.11.23.39 以前）为 `None`
+    ///
+    /// What the configuration read at startup writes that a reload or a save refuses: in use all the same, to be fixed
+    /// before the next save; cleared by a successful reload. `None` from a kernel that does not report it (before
+    /// 2026.11.23.39)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problems: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReloadResult {
     pub success: bool,
     pub error: Option<String>,
+    /// 重载拒掉配置的原因，逐条（`error` 是它们连成的一句）；成功、因为别的原因失败时为空，不报告它的内核为 `None`
+    ///
+    /// The reasons the reload refused the configuration for, one by one (`error` is them joined into one sentence);
+    /// empty when it succeeded or failed for another reason, `None` from a kernel that does not report them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problems: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -620,10 +634,32 @@ pub enum ControlError {
     #[cfg_attr(not(unix), allow(dead_code))]
     TooLarge(String),
     #[error("KixDNS 没有接受这份配置：{0}")]
-    Rejected(String),
+    Rejected(Refusal),
     #[error("KixDNS 不支持：{0}")]
     #[cfg_attr(not(unix), allow(dead_code))]
     Unsupported(String),
+}
+
+/// 内核为什么不接受一份配置：它的原话，和逐条列出的原因
+/// Why the kernel did not accept a configuration: its own words, and the reasons listed one by one
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Refusal {
+    /// 内核的原话：校验被拒时是错误连同原因链（全部原因连成一句，截到 2048 字），重载被拒时是 `last_reload.error`
+    /// The kernel's words: for a refused validation the error with its cause chain (every reason joined into one
+    /// sentence, cut at 2048 characters), for a refused reload `last_reload.error`
+    pub message: String,
+    /// 逐条的原因，一条不落：422 的 `error.problems`、重载的 `last_reload.problems`。早于 2026.11.24.17 的内核不报告，
+    /// 别的错误（读不了配置、编译之外的原因）时也为空，这时只有原话
+    /// The reasons one by one, none left out: a 422's `error.problems`, a reload's `last_reload.problems`. Kernels before
+    /// 2026.11.24.17 do not report them, and they are empty for other errors (a config that cannot be read, causes besides
+    /// compiling), leaving the words alone
+    pub problems: Vec<String>,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
 }
 
 impl ControlClient {
@@ -762,12 +798,13 @@ impl ControlClient {
                 return Ok(active);
             }
             if active.reload_sequence > after_sequence && !active.last_reload.success {
-                return Err(ControlError::Rejected(
-                    active
+                return Err(ControlError::Rejected(Refusal {
+                    message: active
                         .last_reload
                         .error
                         .unwrap_or_else(|| "没有给出原因".to_owned()),
-                ));
+                    problems: active.last_reload.problems.unwrap_or_default(),
+                }));
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(ControlError::Unavailable(
@@ -1003,16 +1040,35 @@ async fn read_reply(
         .to_bytes()
         .to_vec();
     if !status.is_success() {
-        let message = serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|value| value.pointer("/error/message")?.as_str().map(str::to_owned))
-            .unwrap_or_else(|| format!("HTTP {status}"));
+        let error = serde_json::from_slice::<KernelErrorEnvelope>(&bytes)
+            .map(|envelope| envelope.error)
+            .unwrap_or_default();
+        let message = error.message.unwrap_or_else(|| format!("HTTP {status}"));
         if status == hyper::StatusCode::NOT_FOUND {
             return Err(ControlError::Unsupported(message));
         }
-        return Err(ControlError::Rejected(message));
+        return Err(ControlError::Rejected(Refusal {
+            message,
+            problems: error.problems,
+        }));
     }
     Ok((status.as_u16(), bytes))
+}
+
+/// 内核回的错误：`{"error":{"code","message","problems"}}`，`problems` 只在配置被拒（422）时有
+/// A kernel's error reply: `{"error":{"code","message","problems"}}`, with `problems` only for a refused config (422)
+#[cfg(unix)]
+#[derive(Deserialize)]
+struct KernelErrorEnvelope {
+    error: KernelError,
+}
+
+#[cfg(unix)]
+#[derive(Default, Deserialize)]
+struct KernelError {
+    message: Option<String>,
+    #[serde(default)]
+    problems: Vec<String>,
 }
 
 /// 普通控制请求的应答时限 / The reply limit for ordinary control requests
@@ -1995,6 +2051,37 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
         )
         .expect("an older snapshot's tally reads");
         assert_eq!((tally.attempts, tally.aborted, tally.throttled), (12, 2, 0));
+    }
+
+    /// 在用配置的状态照内核报的读：启动时读的配置里要改的写法、重载被拒的逐条原因；更早的内核不报，读成 `None`，转给页面时也不写，
+    /// 面板存下的旧快照照样读得出来
+    /// The active config's state is read as the kernel reports it: what the config read at startup writes that must change, and the
+    /// reasons a reload was refused for one by one; an earlier kernel reports neither, read as `None` and left out when passed on to the
+    /// page, and an old snapshot the panel stored still reads
+    #[test]
+    fn the_active_config_carries_the_problems_the_kernel_reports() {
+        let kernel = serde_json::json!({
+            "protocol_version": 1, "generation": 2, "sha256": "s", "loaded_at_unix": 0, "reload_sequence": 3,
+            "last_reload": { "success": false, "error": "a; b", "problems": ["a", "b"] },
+            "restart_pending": [], "problems": ["panel: the kernel does not read this key"],
+        });
+        let active: super::ActiveConfig = serde_json::from_value(kernel).unwrap();
+        assert_eq!(
+            active.problems.as_deref(),
+            Some(&["panel: the kernel does not read this key".to_owned()][..])
+        );
+        assert_eq!(
+            active.last_reload.problems.as_deref(),
+            Some(&["a".to_owned(), "b".to_owned()][..])
+        );
+
+        let older = serde_json::json!({
+            "protocol_version": 1, "generation": 2, "sha256": "s", "loaded_at_unix": 0, "reload_sequence": 3,
+            "last_reload": { "success": true, "error": null },
+        });
+        let active: super::ActiveConfig = serde_json::from_value(older.clone()).unwrap();
+        assert!(active.problems.is_none() && active.last_reload.problems.is_none());
+        assert_eq!(serde_json::to_value(&active).unwrap(), older);
     }
 
     #[test]

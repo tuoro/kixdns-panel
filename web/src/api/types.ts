@@ -34,9 +34,17 @@ export interface ActiveConfig {
   last_reload: {
     success: boolean
     error: string | null
+    /** 重载拒掉配置的原因，逐条（error 是它们连成的一句）；内核 2026.11.24.17 起报告 / The reasons the reload refused the config for, one by one (error is them joined); reported from kernel 2026.11.24.17 */
+    problems?: string[]
   }
   /** 配置里改过、要重启 KixDNS 才生效的设置（内核的设置名）；旧内核不报告 */
   restart_pending?: string[]
+  /**
+   * 启动时读的配置里、重载和保存会拒绝的写法：照样在用，下次保存前要改掉；重载成功就清空。内核 2026.11.23.39 起报告
+   * What the config read at startup writes that a reload or a save refuses: in use all the same, to be fixed before the next save;
+   * cleared by a successful reload. Reported from kernel 2026.11.23.39
+   */
+  problems?: string[]
 }
 
 export interface NamedCount {

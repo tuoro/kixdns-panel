@@ -21,6 +21,11 @@ pub enum AppError {
     TooManyRequests,
     #[error("{1}")]
     Unprocessable(&'static str, String),
+    /// `KixDNS` 不接受一份配置：422，另带它逐条列出的原因（见 `control::Refusal::problems`），页面一条条列出来
+    /// `KixDNS` does not accept a configuration: a 422 carrying the reasons it lists one by one as well (see
+    /// `control::Refusal::problems`), which the page lists item by item
+    #[error("{1}")]
+    Refused(&'static str, String, Vec<String>),
     #[error("{1}")]
     ServiceUnavailable(&'static str, String),
     #[error(transparent)]
@@ -36,10 +41,15 @@ struct ErrorEnvelope {
 struct ErrorBody {
     code: &'static str,
     message: String,
+    /// 逐条的细节（见 [`AppError::Refused`]），没有时省略 / The details one by one (see [`AppError::Refused`]), left out
+    /// when there are none
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    details: Vec<String>,
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        let mut details = Vec::new();
         let (status, code, message) = match self {
             Self::BadRequest(code, message) => (StatusCode::BAD_REQUEST, code, message),
             Self::Unauthorized => (
@@ -65,6 +75,10 @@ impl IntoResponse for AppError {
                 "操作太频繁，过一会儿再试".to_owned(),
             ),
             Self::Unprocessable(code, message) => (StatusCode::UNPROCESSABLE_ENTITY, code, message),
+            Self::Refused(code, message, reasons) => {
+                details = reasons;
+                (StatusCode::UNPROCESSABLE_ENTITY, code, message)
+            }
             Self::ServiceUnavailable(code, message) => {
                 (StatusCode::SERVICE_UNAVAILABLE, code, message)
             }
@@ -81,7 +95,11 @@ impl IntoResponse for AppError {
         (
             status,
             Json(ErrorEnvelope {
-                error: ErrorBody { code, message },
+                error: ErrorBody {
+                    code,
+                    message,
+                    details,
+                },
             }),
         )
             .into_response()

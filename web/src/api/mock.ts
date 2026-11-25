@@ -95,6 +95,11 @@ let config: ConfigDocument = {
   },
 }
 
+// 不认面板配置块的内核说的那一条（kixdns:demo-old-kernel），和内核 config::problems 一字不差 / What a kernel not taking the panel's block says
+// (kixdns:demo-old-kernel), word for word as the kernel's config::problems
+const PANEL_BLOCK_REFUSAL = 'panel: the kernel does not read this key, so what it says has no effect; check its spelling and where it is written'
+const demoOldKernel = () => typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-old-kernel') === 'true'
+
 const activeConfig: ActiveConfig = {
   protocol_version: 1,
   generation: 18,
@@ -1007,7 +1012,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     // snapshot, with the service retrying; the way out is in the service state
     if (restartNoAnswer) return { ...overview, live: false, service_active: false } as T
     const restartPending = restartPendingNow()
-    return (restartPending.length ? { ...overview, active_config: { ...overview.active_config, restart_pending: restartPending } } : overview) as T
+    return { ...overview, active_config: { ...overview.active_config, ...(restartPending.length ? { restart_pending: restartPending } : {}), ...(demoOldKernel() ? { problems: [PANEL_BLOCK_REFUSAL] } : {}) } } as T
   }
   // 查询日志：按当前演示配置生成（kixdns:demo-querylog-unsupported 演示内核太旧） / The query log, generated from the current demo config (kixdns:demo-querylog-unsupported plays a kernel too old)
   if (pathname === '/api/v1/querylog' && method === 'GET') return demoQueryLogPage(config.content as Record<string, unknown>, Date.now(), url.searchParams) as T
@@ -1266,6 +1271,16 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-stopped') === 'true') {
       localStorage.removeItem('kixdns:demo-validate-stopped')
       throw new ApiError('KixDNS 已停止', 503, 'kixdns_unavailable')
+    }
+    // kixdns:demo-old-kernel：演一个不认面板配置块的内核（2026.11.23.11 到 2026.11.25.27），校验次次被拒
+    // kixdns:demo-old-kernel: plays a kernel that does not take the panel's block (2026.11.23.11 to 2026.11.25.27), refusing every validation
+    if (demoOldKernel()) throw new ApiError(PANEL_BLOCK_REFUSAL, 422, 'kixdns_rejected', [PANEL_BLOCK_REFUSAL])
+    // kixdns:demo-validate-reject-list：下一次校验被拒，内核逐条列出了原因（2026.11.24.17 起的内核这样回）
+    // kixdns:demo-validate-reject-list: the next validation is refused with the kernel's reasons listed one by one (as kernels from 2026.11.24.17 answer)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-reject-list') === 'true') {
+      localStorage.removeItem('kixdns:demo-validate-reject-list')
+      const reasons = ['pipelines[0].rules[0].matchers[0]: domain_suffix "." matches every name', 'pipelines[0].rules[1]: jumping to "domestic" comes back round to "default"', 'settings.cache_capacity: must be at least 1']
+      throw new ApiError(reasons.join('; '), 422, 'kixdns_rejected', reasons)
     }
     // kixdns:demo-validate-reject：下一次校验被内核拒绝（真内核对它不接受的配置回 422 kixdns_rejected）
     // kixdns:demo-validate-reject: the next validation is rejected by the kernel (a real kernel answers 422 kixdns_rejected for a config it refuses)
