@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { CONFIG_QTYPE_NAMES_V1, setKernelCapabilities } from '../config-model/grammar'
 import { actionFieldErrors, GEOSITE_PREFIX_ERROR, isRequiredFieldError, matcherFieldErrors, validDnsName } from './field-validation'
 import { matcherHint } from './matcher-hints'
 import { MATCHER_DEFINITIONS } from './schema'
@@ -121,6 +122,9 @@ describe('高级规则的字段照内核的读法查', () => {
     ['UDP 上游没写端口', { type: 'forward', upstream: 'https://dns.example/dns-query, 223.5.5.5' }, 'upstream'],
     ['TCP 转发的上游没写端口', { type: 'forward', upstream: 'dns.example', transport: 'tcp' }, 'upstream'],
     ['DoQ 用 IP 没写 sni', { type: 'forward', upstream: 'quic://223.5.5.5' }, 'upstream'],
+    ['DoH 前缀后面又写了一个前缀', { type: 'forward', upstream: 'doh://https://dns.example/dns-query' }, 'upstream'],
+    ['DoT 写了 0rtt', { type: 'forward', upstream: 'tls://dns.example?0rtt=true' }, 'upstream'],
+    ['DoQ 的 0rtt 写成 2', { type: 'forward', upstream: 'quic://dns.example?0rtt=2' }, 'upstream'],
   ] as [string, ActionConfig, string][])('动作：%s', (_, action, field) => {
     expect(Object.keys(actionFieldErrors({ ...action }, 'default'))).toEqual([field])
   })
@@ -141,5 +145,29 @@ describe('高级规则的字段照内核的读法查', () => {
       { type: 'forward', upstream: 'dns.example:53', transport: 'tcp' }, { type: 'forward', upstream: 'quic://223.5.5.5?sni=dns.alidns.com' },
     ]) expect(actionFieldErrors({ ...action }, 'default')).toEqual({})
     expect(actionFieldErrors({ type: 'forward', upstream: '223.5.5.5' }, 'default').upstream).toBe('上游 223.5.5.5：UDP 只能写 IP 和端口，比如 223.5.5.5:53；域名要用 TCP、DoH、DoT 或 DoQ')
+    // 照内核的话说清哪儿不对 / Says what is wrong as the kernel does
+    const said = (upstream: string) => actionFieldErrors({ type: 'forward', upstream }, 'default').upstream
+    expect(said('doh://https://dns.example')).toBe('上游 doh://https://dns.example：前缀后面又写了一个前缀，只留一个（DoH 一律走 https）')
+    expect(said('tls://tcp://dns.example')).toBe('上游 tls://tcp://dns.example：前缀后面又写了一个前缀，只留一个')
+    expect(said('tls://dns.example?sin=a.example')).toBe('上游 tls://dns.example?sin=a.example：DoT 只认 sni、servername 这两个参数')
+    expect(said('quic://dns.example?foo=1')).toBe('上游 quic://dns.example?foo=1：DoQ 只认 sni、servername、0rtt、enable_0rtt 这几个参数')
+    expect(said('quic://dns.example?0rtt=maybe')).toBe('上游 quic://dns.example?0rtt=maybe：0rtt 只能写 true、false、1、0、yes、no、on 或 off')
+  })
+
+  // 有 config_qtype_names_v1 的内核认全部类型名和 TYPEnnn；没有的只认十种，说的也是那十种 / A kernel with config_qtype_names_v1 takes every type
+  // name and TYPEnnn; one without takes ten, and those ten are what is said
+  describe('记录类型照运行中的内核读', () => {
+    afterEach(() => setKernelCapabilities([]))
+    const qtype = (value: string) => matcherFieldErrors({ type: 'qtype', operator: 'and', value }, 'request').value
+    const answer = (value: string) => matcherFieldErrors({ type: 'response_type', operator: 'and', value }, 'response').value
+    it('旧内核', () => {
+      expect([qtype('HTTPS'), answer('TYPE65')]).toEqual(['KixDNS 只认 A、AAAA、CNAME、MX、TXT、NS、PTR、SRV、SOA、OPT', 'KixDNS 只认 A、AAAA、CNAME、MX、TXT、NS、PTR、SRV、SOA、OPT'])
+      expect(qtype('opt')).toBeUndefined()
+    })
+    it('新内核', () => {
+      setKernelCapabilities([CONFIG_QTYPE_NAMES_V1])
+      expect([qtype('HTTPS'), qtype('svcb'), qtype('OPT'), answer('TYPE65'), answer('*')]).toEqual([undefined, undefined, undefined, undefined, undefined])
+      expect([qtype('HTTPSS'), answer(' A')]).toEqual(['KixDNS 只认 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法', 'KixDNS 只认 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法'])
+    })
   })
 })
