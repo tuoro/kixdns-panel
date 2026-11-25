@@ -534,6 +534,11 @@ assert_equals "$(conflict_of "${RESOLVED_LISTENERS}")" "none   " "其他端口�
 rm -f -- "${config_fixture}"
 assert_equals "$( (KIXDNS_CONFIG_PATH=${config_fixture}; kixdns_listen_addresses) | tr '\n' ' ')" \
   "udp 0.0.0.0:53 tcp 0.0.0.0:53 " "没有配置时按安装包默认配置检查端口"
+# 配置里没写监听地址时按内核的默认值查，不是 53 / A config without listen addresses is checked at the kernel's default, not 53
+printf '{\n  "settings": {\n    "bind_tcp": "127.0.0.1:5300"\n  }\n}\n' > "${config_fixture}"
+assert_equals "$( (KIXDNS_CONFIG_PATH=${config_fixture}; kixdns_listen_addresses) | tr '\n' ' ')" \
+  "udp 0.0.0.0:5533 tcp 127.0.0.1:5300 " "配置里没写的监听地址按内核默认的 0.0.0.0:5533 检查端口"
+assert_equals "$(conflict_of "${RESOLVED_LISTENERS}")" "none   " "没写监听地址时不和 resolved 的 53 冲突"
 write_config 0.0.0.0:53
 
 resolv_fixture="${WORK}/resolv"
