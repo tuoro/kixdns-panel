@@ -1,3 +1,4 @@
+import { splitAddrs } from '../config-model/kernel'
 import { MATCHER_DEFINITIONS, SETTING_SECTIONS } from './schema'
 import type {
   ActionConfig,
@@ -285,6 +286,23 @@ export function resetAction(action: ActionConfig, type: string): ActionConfig {
     action.transport = ''
   }
   return action
+}
+
+/**
+ * 表单里的一条内核规则写进内核的样子：转发的上游空着、协议选「自动识别协议」都是没写，这两个键不写——不写上游问默认上游，写成空的内核不收（一个
+ * 上游也没有）；transport 写成空的整份配置都读不进
+ * One kernel rule of the form as written to the kernel: a forward's empty upstream and 自动识别协议 both write nothing, so neither key is
+ * written — with no upstream the default upstream is asked, while an empty one is refused by the kernel (no upstream at all); an empty
+ * transport keeps the whole config from being read
+ */
+export function kernelRuleOf(rule: RuleConfig): RuleConfig {
+  const written = cloneObject(rule) as RuleConfig
+  for (const action of [...written.actions, ...written.response_actions_on_match, ...written.response_actions_on_miss]) {
+    if (action.type !== 'forward') continue
+    if (typeof action.upstream === 'string' && !splitAddrs(action.upstream).length) delete action.upstream
+    if (action.transport === '') delete action.transport
+  }
+  return written
 }
 
 export function createEcs(mode: string): EcsConfig | undefined {

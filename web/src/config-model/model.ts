@@ -659,8 +659,12 @@ function kernelEcs(ecs: Ecs): Record<string, unknown> | null {
   const [ip, prefix] = ecs.subnet.split('/')
   return { mode: 'static', ip, prefix: Number(prefix ?? 24) }
 }
-// 转发只放在自己的 Pipeline 里：Pipeline 级的 ECS 决定缓存按什么隔开，跳过去时内核按目标 Pipeline 重算，所以每个转发的 ECS 都写在它的 Pipeline 上
-// A forward lives only in its own pipeline: the pipeline-level ECS sets how the cache is split, and a jump recomputes it from the target, so each forward's ECS goes on its pipeline
+// 转发只放在自己的 Pipeline 里，ECS 写在转发动作上：内核照它改写发给上游的查询，缓存的应答按 ECS 的作用范围分开。Pipeline 级的 ecs 也照写
+// 一份：现在的内核不再拿它分缓存（改动它时热加载后这个 Pipeline 的缓存重新开始），以前的内核按它把缓存隔开、跳过去时按目标 Pipeline 重算
+// A forward lives only in its own pipeline, its ECS written on the forward action: the kernel rewrites the query sent upstream by it, and
+// cached answers are kept apart by the ECS scope. The pipeline-level ecs is written too: today's kernel no longer splits the cache by it
+// (changing it restarts this pipeline's cache after a hot reload), while earlier kernels split the cache by it, recomputed from the
+// target on a jump
 function forwardPipeline(model: Model, id: string, groupId: string, ecs: Ecs, response: Partial<KRule>): KPipeline {
   const g = model.groups.find((x) => x.id === groupId)
   const kecs = kernelEcs(ecs)
@@ -942,12 +946,13 @@ export function blocklistPipelineId(model: Model): string {
 }
 
 /**
- * 写出的配置里重名的 Pipeline id。内核的校验和热重载不收；启动时只记警告照样加载，入口和跳转只认后一个，前一个的规则悄悄没了（以前的内核校验时
- * 也照收）。所以面板一个都不该写出来：测试里 compile 直接报错，页面上保存条说保存不了，不写出去（useConfigDocument pipelineClash）
- * The pipeline ids a written config repeats. The kernel's validation and reload refuse them; startup only warns and loads them, entries and
- * jumps reach the later one and the earlier one's rules silently vanish (earlier kernels took them at validation too). So the panel must
- * write none: in tests compile throws outright, and on the page the save bar says the save cannot happen and nothing is written
- * (useConfigDocument pipelineClash)
+ * 写出的配置里重名的 Pipeline id。内核的校验和热重载不收；启动时只记一条问题照样加载，只有第一个生效，后面的规则从不执行（kixdns #546；
+ * 以前的内核校验时也照收，入口和跳转找到的是后一个）。所以面板一个都不该写出来：测试里 compile 直接报错，页面上保存条说保存不了，不写出去
+ * （useConfigDocument pipelineClash）
+ * The pipeline ids a written config repeats. The kernel's validation and reload refuse them; startup only notes a problem and loads them,
+ * the first alone taking effect and the rules of the others never running (kixdns #546; earlier kernels took them at validation too,
+ * entries and jumps reaching the later one). So the panel must write none: in tests compile throws outright, and on the page the save bar
+ * says the save cannot happen and nothing is written (useConfigDocument pipelineClash)
  */
 export function repeatedPipelineIds(config: Pick<KernelConfig, 'pipelines'>): string[] {
   const ids = config.pipelines.map((p) => p.id)

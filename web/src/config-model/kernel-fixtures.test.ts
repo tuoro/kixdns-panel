@@ -1,6 +1,9 @@
 import { writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { actionFieldErrors } from '../config-editor/field-validation'
+import { createAction, kernelRuleOf } from '../config-editor/model'
 import { ACTION_TYPES, MATCHER_DEFINITIONS } from '../config-editor/schema'
+import type { RuleConfig } from '../config-editor/types'
 import {
   addressProblem, compile, emptyBlocklists, FIELD, inheritResponse, newRule, RESPONSE_FIELD, ruleProblems, type Condition, type ConditionField, type Ecs, type KernelConfig, type Model,
   type Outcome, type Protocol, type Remedy, type ResponseCondition, type ResponseField, type Rule,
@@ -145,11 +148,30 @@ function advancedKinds(): Model {
       response_matchers: [{ ...matcher(d.value, d.fields), ...(d.value === 'request_domain_regex' ? { value: '^ads\\.' } : d.value.startsWith('request_domain') ? { value: 'example.com' } : d.value === 'response_type' ? { value: 'A' } : d.value === 'response_rcode' ? { value: 'SERVFAIL' } : d.value === 'response_qclass' ? { value: 'IN' } : d.value === 'upstream_equals' ? { value: '1.1.1.1:53' } : d.value === 'response_txt_content' ? { value: 'v=spf1' } : {}) }],
     })),
     ...ACTION_TYPES.map((d) => raw(`动作 ${d.value}`, { matchers: [{ type: 'domain_suffix', value: `${d.value.replace(/_/g, '-')}.example` }], actions: [{ type: d.value, ...actions[d.value] }] })),
+    ...FORWARDS.map(([name, rule]) => raw(name, { matchers: [{ type: 'domain_suffix', value: `${name}.example` }], ...rule })),
   ]
   const m = base(rules)
   m.entries = MATCHER_DEFINITIONS.selector.map((d) => ({ pipeline: 'group-lan', matchers: [{ ...matcher(d.value, d.fields), ...(d.value === 'listener_label' ? { value: 'lan' } : d.value === 'domain_regex' ? { value: '^ads\\.' } : d.value.startsWith('domain') ? { value: 'example.com' } : d.value === 'qtype' ? { value: 'A' } : d.value === 'qclass' ? { value: 'IN' } : {}) }] }))
   return m
 }
+
+// 高级规则里的转发：不写上游（问默认上游，经它自己的 transport）、几个转发合并（没写上游的也在里面）、回答后不写上游的，和表单新加一个转发、
+// 上游和协议都空着时写出去的样子（kernelRuleOf）
+// Forwards in advanced rules: writing no upstream (the default upstream asked over its own transport), several merged (one writing none
+// among them), one in the answer phase writing none, and what the form writes for a new forward with upstream and transport left empty
+// (kernelRuleOf)
+function formForward(): Record<string, unknown> {
+  const rule: RuleConfig = { name: 'form', matchers: [], matcher_operator: 'and', actions: [createAction('forward'), createAction('forward')], response_matchers: [], response_matcher_operator: 'and', response_actions_on_match: [], response_actions_on_miss: [] }
+  rule.actions[1]!.upstream = '9.9.9.9:53'
+  return { actions: kernelRuleOf(rule).actions }
+}
+const FORWARDS: [string, Record<string, unknown>][] = [
+  ['forward-none', { actions: [{ type: 'forward' }] }],
+  ['forward-none-tcp', { actions: [{ type: 'forward', upstream: null, transport: 'tcp' }] }],
+  ['forward-merged', { actions: [{ type: 'log', level: 'info' }, { type: 'replace_txt_response', text: ['x'] }, { type: 'forward', upstream: [] }, { type: 'forward', upstream: 'tcp://9.9.9.9:53, https://dns.example/dns-query' }] }],
+  ['forward-answer-none', { actions: [{ type: 'forward', upstream: '1.1.1.1:53' }], response_matchers: [{ type: 'response_rcode', value: 'SERVFAIL' }], response_actions_on_match: [{ type: 'forward', transport: 'tcp' }] }],
+  ['forward-form', formForward()],
+]
 
 function fixtures(): Fixture[] {
   const models: [string, Model][] = [
@@ -168,6 +190,14 @@ describe('交给真内核校验的配置', () => {
       const bad = [...m.rules, ...m.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => ruleProblems(m, r).map((p) => `${r.name}：${p}`))
       for (const g of m.groups) for (const a of g.addresses) { const p = addressProblem(a); if (p) bad.push(`${g.name} 的 ${a.address}：${p}`) }
       expect(bad).toEqual([])
+    }
+    // 高级规则里的转发编辑器都认（没写上游的问编出来的默认上游，没编出来时内核用 1.1.1.1:53） / The forwards of advanced rules are all
+    // editor-valid (one writing none asking the compiled default upstream, 1.1.1.1:53 from the kernel when none is compiled)
+    const defaultUpstream = String(compile(advancedKinds()).settings.default_upstream ?? '1.1.1.1:53')
+    for (const [name, rule] of FORWARDS) {
+      for (const list of ['actions', 'response_actions_on_match']) {
+        for (const a of (rule[list] ?? []) as RuleConfig['actions']) expect(actionFieldErrors(a, 'main', [], defaultUpstream), `${name} ${a.type}`).toEqual({})
+      }
     }
     // 先写出去再查：这里和内核意见不一样时，CI 里照样看得到真内核怎么说 / Written before checking: should this disagree with the kernel, CI still
     // shows what the real kernel says

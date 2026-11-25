@@ -96,6 +96,25 @@ describe('规则语义摘要', () => {
     expect(analyzeRuleFlow(makeRule([{ type: 'future_action' }])).kind).toBe('unknown')
   })
 
+  // 看请求阶段作决定的那个动作（kernel.ts requestDecision）：几个 forward 前面写了跳转、静态应答的，是那个动作的结果；请求时的
+  // replace_txt_response 什么都不做，后面的照常执行；回答后作决定的是 continue 才可能接着往下
+  // The action deciding the request phase tells (kernel.ts requestDecision): forwards after a jump or a static answer give that action's
+  // outcome; replace_txt_response does nothing in the request phase and what follows runs; only continue deciding an answer list may carry on
+  it('照内核作决定的那个动作说', () => {
+    const makeRule = (actions: RuleConfig['actions']): RuleConfig => ({ name: 'rule', matchers: [], matcher_operator: 'and', actions, response_matchers: [], response_matcher_operator: 'and', response_actions_on_match: [], response_actions_on_miss: [] })
+    const forwards = [{ type: 'forward', upstream: '1.1.1.1:53' }, { type: 'forward' }]
+    expect(analyzeRuleFlow(makeRule([{ type: 'jump_to_pipeline', pipeline: 'next' }, ...forwards])).kind).toBe('jump')
+    expect(analyzeRuleFlow(makeRule([{ type: 'log' }, ...forwards])).kind).toBe('terminate')
+    expect(analyzeRuleFlow(makeRule([{ type: 'replace_txt_response', text: ['x'] }, { type: 'forward' }])).kind).toBe('terminate')
+    expect(analyzeRuleFlow(makeRule([{ type: 'replace_txt_response', text: ['x'] }, { type: 'jump_to_pipeline', pipeline: 'next' }])).kind).toBe('jump')
+    expect(analyzeRuleFlow(makeRule([{ type: 'replace_txt_response', text: ['x'] }])).kind).toBe('continue')
+    const merged = makeRule(forwards)
+    merged.response_actions_on_miss = [{ type: 'log' }, { type: 'forward' }, { type: 'continue' }]
+    expect(analyzeRuleFlow(merged).kind).toBe('conditional')
+    merged.response_actions_on_miss = [{ type: 'deny' }, { type: 'continue' }]
+    expect(analyzeRuleFlow(merged).kind).toBe('terminate')
+  })
+
   it('只对能够静态确定的全匹配规则报告后续遮挡', () => {
     const pipeline: PipelineConfig = {
       id: 'default',

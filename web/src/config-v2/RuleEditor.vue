@@ -13,6 +13,7 @@ import UiHelp from '../components/ui/UiHelp.vue'
 import { REQUEST_ORDER, RESPONSE_ORDER } from '../config-model/condKinds'
 import { toDnf, toTree, treeText, type CondTree } from '../config-model/condTree'
 import { actionFieldErrors, matcherFieldErrors } from '../config-editor/field-validation'
+import { kernelRuleOf } from '../config-editor/model'
 import type { ActionConfig, PipelineConfig, RuleConfig } from '../config-editor/types'
 import {
   checkSentence, compile, conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
@@ -109,13 +110,14 @@ const rawError = computed(() => {
 })
 function setRawMode(next: string): void {
   if (next === rawMode.value) return
-  if (next === 'json') { rawText.value = JSON.stringify(rawRules, null, 2); rawMode.value = 'json'; return }
+  if (next === 'json') { rawText.value = JSON.stringify(rawRules.map(kernelRuleOf), null, 2); rawMode.value = 'json'; return }
   if (rawError.value) return
   rawRules.splice(0, rawRules.length, ...(JSON.parse(rawText.value) as Record<string, unknown>[]).map(asRuleConfig))
   rawMode.value = 'form'
 }
-// 当前这一种写法里的内核规则 / The kernel rules as the active view holds them
-const currentRaw = (): Record<string, unknown>[] => (rawMode.value === 'form' ? JSON.parse(JSON.stringify(rawRules)) as Record<string, unknown>[] : JSON.parse(rawText.value) as Record<string, unknown>[])
+// 当前这一种写法里的内核规则；表单里空着的转发上游和协议不写（kernelRuleOf） / The kernel rules as the active view holds them; a forward's
+// upstream and transport left empty in the form are not written (kernelRuleOf)
+const currentRaw = (): Record<string, unknown>[] => (rawMode.value === 'form' ? rawRules.map(kernelRuleOf) : JSON.parse(rawText.value) as Record<string, unknown>[])
 // 和保存条同一把尺子：看不见的字段（关着的日志的级别等）改了不算没完成的修改 / The save bar's yardstick: hidden fields (the level of a log that is off and so on) do not make an unfinished edit
 function snapshot(): string {
   if (!draft.raw) return ruleShape(draft)
@@ -134,7 +136,11 @@ watch(editedNow, (now) => {
 }, { immediate: true })
 onBeforeUnmount(() => { if (editorEditedBy.value === me) editorEditedBy.value = null })
 // 表单里写错的字段由条件表 / 动作表自己标红，这里只数出来给底栏 / The lists mark bad fields themselves; this only counts them for the footer
-const kernelPipelines = computed<PipelineConfig[]>(() => compile(model).pipelines.map((p) => ({ id: p.id, rules: [] })))
+const compiled = computed(() => compile(model))
+const kernelPipelines = computed<PipelineConfig[]>(() => compiled.value.pipelines.map((p) => ({ id: p.id, rules: [] })))
+// 没写上游的转发问的默认上游，写进内核的那样（没写时内核用 1.1.1.1:53） / The default upstream a forward writing none asks, as written to the
+// kernel (1.1.1.1:53 when none is written)
+const defaultUpstream = computed(() => String(compiled.value.settings.default_upstream ?? '1.1.1.1:53'))
 // 转到哪一组用配置页的叫法（主列表、规则组「X」、上游组「X」），和执行路径一样 / Jump targets use the config page's names (主列表, 规则组「X」, 上游组「X」), as the trace does
 const kernelNames = computed(() => traceNames(model))
 const kernelPipelineName = (id: string): string | null => kernelNames.value.pipeline(id)
@@ -147,7 +153,7 @@ const rawFieldProblems = computed(() => {
   return rawRules.reduce((n, r) => n
     + r.matchers.filter((m) => Object.keys(matcherFieldErrors(m, 'request')).length).length
     + r.response_matchers.filter((m) => Object.keys(matcherFieldErrors(m, 'response')).length).length
-    + [...r.actions, ...r.response_actions_on_match, ...r.response_actions_on_miss].filter((a) => Object.keys(actionFieldErrors(a, ownPipelineId.value, ids)).length).length
+    + [...r.actions, ...r.response_actions_on_match, ...r.response_actions_on_miss].filter((a) => Object.keys(actionFieldErrors(a, ownPipelineId.value, ids, defaultUpstream.value)).length).length
     + (r.name.trim() ? 0 : 1), 0)
 })
 const position = ref(original ? list.value.indexOf(original) : list.value.length)
@@ -436,7 +442,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
           <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进面板的写法，原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
-            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" :pipeline-name="kernelPipelineName" />
+            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :default-upstream="defaultUpstream" :show-errors="showErrors" :pipeline-name="kernelPipelineName" />
             <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error" aria-live="polite">{{ rawError }}</p></template>
           </div>
         </section>

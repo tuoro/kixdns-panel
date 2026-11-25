@@ -1,3 +1,4 @@
+import { requestDecision, responseDecision } from '../config-model/kernel'
 import type { ActionConfig, MatcherConfig, MatcherScope, PipelineConfig, RuleConfig } from './types'
 
 export type RuleFlowKind = 'continue' | 'terminate' | 'jump' | 'conditional' | 'unknown'
@@ -170,41 +171,26 @@ export function summarizeRule(rule: RuleConfig): { condition: string; action: st
   }
 }
 
+// 回答后的动作里作决定的是 continue 时，这条规则可能接着往下：作决定的是第一个不是 log、forward 的（kernel.ts responseDecision）
+// A rule may carry on when continue decides an answer-phase list: the deciding action is the first that is neither log nor forward (kernel.ts
+// responseDecision)
 function hasResponseContinue(rule: RuleConfig): boolean {
-  return [...rule.response_actions_on_match, ...rule.response_actions_on_miss]
-    .some((action) => action.type === 'continue')
+  return [rule.response_actions_on_match, rule.response_actions_on_miss].some((actions) => responseDecision(actions)?.type === 'continue')
 }
 
+// 规则命中以后怎样：看请求阶段作决定的那个动作，第一个不是 log、replace_txt_response 的（kernel.ts requestDecision）。几个 forward 只在作决定的
+// 是 forward 时才合并，结果和一个 forward 一样；前面写了静态应答、跳转的就是那个动作的结果
+// What a matched rule does: the action deciding the request phase, the first that is neither log nor replace_txt_response (kernel.ts
+// requestDecision), tells. Several forwards merge only when a forward decides, with the outcome of one forward; with a static answer or a
+// jump written first, that action's outcome is the rule's
 export function analyzeRuleFlow(rule: RuleConfig): RuleFlowSummary {
-  if (rule.actions.filter((action) => action.type === 'forward').length > 1) {
-    return hasResponseContinue(rule)
-      ? { kind: 'conditional', label: '响应后可能继续' }
-      : { kind: 'terminate', label: '在此终止' }
-  }
-
-  for (const action of rule.actions) {
-    if (action.type === 'log') continue
-    if (action.type === 'continue' || action.type === 'replace_txt_response') {
-      return { kind: 'continue', label: '继续后续规则' }
-    }
-    if (action.type === 'jump_to_pipeline') return { kind: 'jump', label: '跳转流程' }
-    if (action.type === 'forward') {
-      return hasResponseContinue(rule)
-        ? { kind: 'conditional', label: '响应后可能继续' }
-        : { kind: 'terminate', label: '在此终止' }
-    }
-    if ([
-      'static_response',
-      'static_ip_response',
-      'static_cname_response',
-      'static_txt_response',
-      'allow',
-      'deny',
-    ].includes(action.type)) return { kind: 'terminate', label: '在此终止' }
-    return { kind: 'unknown', label: '控制流未知' }
-  }
-
-  return { kind: 'continue', label: '继续后续规则' }
+  const decision = requestDecision(rule.actions)
+  if (!decision || decision.type === 'continue') return { kind: 'continue', label: '继续后续规则' }
+  if (decision.type === 'jump_to_pipeline') return { kind: 'jump', label: '跳转流程' }
+  if (decision.type === 'forward' && hasResponseContinue(rule)) return { kind: 'conditional', label: '响应后可能继续' }
+  return ['forward', 'static_response', 'static_ip_response', 'static_cname_response', 'static_txt_response', 'allow', 'deny'].includes(decision.type)
+    ? { kind: 'terminate', label: '在此终止' }
+    : { kind: 'unknown', label: '控制流未知' }
 }
 
 export function ruleMatchesEveryRequest(rule: RuleConfig): boolean {
