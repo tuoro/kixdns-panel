@@ -5,6 +5,7 @@ import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { normalUrl } from '../config-model/blocklist'
 import { exportConfig, kernelPart, readConfig } from '../config-model/document'
+import { setKernelCapabilities } from '../config-model/grammar'
 import { blocklistKey, compile, compileNamed, draftPipelineClashes, mappingPipelineId, type Model, type Rule } from '../config-model/model'
 import { placeNames, traceNames } from '../config-model/trace-names'
 import { settingName } from '../config-editor/schema'
@@ -86,6 +87,8 @@ function effectToast(text: string, withTail = Boolean(restartTail())): number {
   return withTail ? useToast().info(text) : useToast().success(text)
 }
 export const runtimeCapabilities = ref<string[]>([])
+// 编辑器照运行中内核的能力读记录类型（grammar.ts） / The editor reads record types by the running kernel's capabilities (grammar.ts)
+watch(runtimeCapabilities, setKernelCapabilities)
 // 在用的配置里、下次保存时 KixDNS 会拒收的写法（见 ActiveConfig.problems）：只认活着的 KixDNS 报的，停着、连不上时快照里那份不算
 // What the config in use writes that KixDNS will refuse at the next save (see ActiveConfig.problems): only a live KixDNS's report counts, never
 // the snapshot's while it is stopped or unreachable
