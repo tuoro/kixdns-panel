@@ -374,10 +374,9 @@ async fn a_config_the_release_cannot_run_is_refused_before_downloading() {
     remote.download_url = format!("{server}/{}", remote.artifact);
     remote.config_capabilities = Vec::new();
 
-    // 注册表里挡切换的每一项：面板块、引导 DNS、十种以外的查询类型、CNAME 回答
-    // Every registry entry that blocks a switch: the panel block, bootstrap, query types beyond the ten, CNAME answers
+    // 注册表里挡切换的每一项：引导 DNS、十种以外的查询类型、CNAME 回答
+    // Every registry entry that blocks a switch: bootstrap, query types beyond the ten, CNAME answers
     for config in [
-        serde_json::json!({"pipelines": [], "panel": {"v": 1}}),
         serde_json::json!({"settings": {"bootstrap": "223.5.5.5:53"}, "pipelines": []}),
         serde_json::json!({
             "pipelines": [{"id": "default", "rules": [{"matchers": [{"type": "qtype", "value": "HTTPS"}]}]}]
@@ -397,4 +396,38 @@ async fn a_config_the_release_cannot_run_is_refused_before_downloading() {
         );
     }
     assert!(requests.lock().unwrap().is_empty(), "nothing is downloaded");
+}
+
+// 面板块不按能力挡：目标版本没声明 config_panel_block_v1，带着面板块的配置照样过预检、去下载（这里的包是假的，到校验才失败）。
+// 2026.11.23.11 以前的内核忽略它；切到 .23.11 到 .25.27 的以后，保存时内核的校验拒收，面板按那次拒收提示更新内核
+// The panel block is not blocked by capability: with a target that does not declare config_panel_block_v1, a config carrying it
+// still passes the preflight and goes on to download (the package here is fake and fails only at verification). Kernels before
+// 2026.11.23.11 ignore it; after a switch to one from .23.11 to .25.27 the kernel's validation refuses the next save, and the
+// panel prompts a kernel update from that refusal
+#[tokio::test]
+async fn a_config_with_the_panel_block_passes_the_preflight_of_any_release() {
+    let directory = tempdir().unwrap();
+    let manager = install_manager(directory.path()).await;
+    let (server, requests) = recording_server(vec![response("200 OK", "", b"package")]).await;
+    let mut remote = fork_remote(77, TEST_VERSION);
+    remote.download_url = format!("{server}/{}", remote.artifact);
+    remote.config_capabilities = Vec::new();
+
+    let error = manager
+        .install_resolved(
+            &remote,
+            &serde_json::json!({"pipelines": [], "panel": {"v": 1, "hash": "0", "model": {}}}),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        !matches!(error, UpdateError::IncompatibleConfig(_)),
+        "{error:?}"
+    );
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "the package is downloaded"
+    );
 }

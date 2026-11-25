@@ -32,7 +32,7 @@
 | --- | --- | --- |
 | `config_query_stats_v1` | 不再受控：`settings.statistics_enabled`、`settings.statistics_anonymize_client_ip` 只对旧内核起作用，面板不再提供这两个开关，也不因它们挡住保存（见控制协议的「查询统计配置」） | `stats_top_v1` |
 | `config_static_cname_response_v1` | 任一规则动作列表（`actions`、`response_actions_on_match`、`response_actions_on_miss`，含 `background_refresh_rule`）中的 `static_cname_response` | 无 |
-| `config_panel_block_v1` | 顶层的 `panel`：面板放整份模型的那一块，面板保存的配置都带着它。2026.11.23.11 到 2026.11.25.27 的内核把它当不认的键拒收，更早的悄悄忽略 | 无 |
+| `config_panel_block_v1` | 不受控，只作说明：顶层的 `panel` 是面板放整份模型的那一块，面板保存的配置都带着它，不挡保存和切换。2026.11.23.11 以前的内核按忽略处理；2026.11.23.11 到 2026.11.25.27 的把它当不认的键拒收，保存时内核的 `/v1/config/validate` 拒绝，面板照这次拒收提示把内核更新到最新；有这项能力的内核接受它 | 无 |
 | `config_bootstrap_v1` | `settings.bootstrap`（引导 DNS），写了就算，空字符串也算。2026.11.23.11 以前的内核悄悄忽略它，到 2026.11.23.49 当不认的键拒收 | 无 |
 | `config_qtype_names_v1` | `qtype`、`response_type` 匹配器的值不在 A、AAAA、CNAME、MX、TXT、NS、PTR、SRV、SOA、OPT 这十种里（不分大小写；`pipeline_select`、每条规则和 `background_refresh_rule` 里的都算），比如 HTTPS、SVCB、`TYPE65`。以前的内核编译不过这样的配置 | 无 |
 | `config_serve_stale_ttl_reset_v2` | 不受控：新旧内核都认 `settings.serve_stale_ttl_reset`，不挡保存和切换。有这项能力的内核默认关，开了是「过期应答的后台刷新失败以后，从失败时起重新计时」；没有的默认开，开了是「每交出一次过期应答就重新计时」。设置表单按它决定默认值和说法 | 无 |

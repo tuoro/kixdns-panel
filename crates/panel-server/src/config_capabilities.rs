@@ -4,7 +4,6 @@ use serde_json::Value;
 
 pub const CONFIG_QUERY_STATS_V1: &str = "config_query_stats_v1";
 pub const CONFIG_STATIC_CNAME_RESPONSE_V1: &str = "config_static_cname_response_v1";
-pub const CONFIG_PANEL_BLOCK_V1: &str = "config_panel_block_v1";
 pub const CONFIG_BOOTSTRAP_V1: &str = "config_bootstrap_v1";
 pub const CONFIG_QTYPE_NAMES_V1: &str = "config_qtype_names_v1";
 const LEGACY_STATS_TOP_V1: &str = "stats_top_v1";
@@ -31,24 +30,19 @@ struct Requirement {
 
 // 挡保存、恢复和版本切换的能力，每项写一次。不在表里的：
 // - config_query_stats_v1：排行一直开着，那两个设置写成什么都不挡，内核不认识时直接忽略；
-// - config_serve_stale_ttl_reset_v2：新旧内核都认 serve_stale_ttl_reset，只是默认值和含义不同，配置照样能跑，只由表单按它决定默认值和说法
+// - config_serve_stale_ttl_reset_v2：新旧内核都认 serve_stale_ttl_reset，只是默认值和含义不同，配置照样能跑，只由表单按它决定默认值和说法；
+// - config_panel_block_v1：顶层的 panel 是面板自己的存储，每份保存的配置都带着它。2026.11.23.11 以前的内核忽略它（现有的安装大多是这批），
+//   只有 2026.11.23.11 到 2026.11.25.27 的拒收；按能力挡会连那批照常能存的也挡住。拒不拒收由内核自己的校验说了算，被拒时提示更新内核
 // The capabilities that block a save, a restore and a version switch, each written once. Not in the table:
 // - config_query_stats_v1: rankings are always on, so the two settings block nothing whatever they say, and a kernel that does
 //   not know them ignores them;
 // - config_serve_stale_ttl_reset_v2: old and new kernels both read serve_stale_ttl_reset, with a different default and meaning,
-//   so the config runs either way; only the form goes by it for the default and the wording
-const REQUIREMENTS: [Requirement; 4] = [
-    // 2026.11.23.11 到 2026.11.25.27 的内核把顶层 panel 当不认的键拒收，更早的悄悄忽略；面板保存的配置都带着它，配置里改不掉，只能换内核
-    // Kernels from 2026.11.23.11 to 2026.11.25.27 refuse a top-level panel as a key they do not read, earlier ones ignore it;
-    // every config the panel saves carries it, so nothing in the config can change that, only the kernel
-    Requirement {
-        capability: CONFIG_PANEL_BLOCK_V1,
-        uses: |content| {
-            content.get("panel").map(|_| {
-                "这个内核不接受配置里面板自己的那一块（顶层的 panel），面板保存的配置都带着它：换用支持它的内核，最新版就支持".to_owned()
-            })
-        },
-    },
+//   so the config runs either way; only the form goes by it for the default and the wording;
+// - config_panel_block_v1: the top-level panel is the panel's own storage, carried by every config it saves. Kernels before
+//   2026.11.23.11 ignore it (most installs run one of those), and only those from 2026.11.23.11 to 2026.11.25.27 refuse it;
+//   blocking by capability would block the ones that save fine too. Whether it is refused is the kernel's own validation to
+//   say, and a refusal prompts a kernel update
+const REQUIREMENTS: [Requirement; 3] = [
     // 2026.11.23.11 以前的内核悄悄忽略 bootstrap，写成主机名的上游照旧问系统的解析器；到 2026.11.23.49 当不认的键拒收。写了就算，空的也算
     // Kernels before 2026.11.23.11 ignore bootstrap, and upstreams written with a host name still go to the system resolver; up
     // to 2026.11.23.49 they refuse it as a key they do not read. Written at all counts, empty included
@@ -220,7 +214,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        CONFIG_BOOTSTRAP_V1, CONFIG_PANEL_BLOCK_V1, CONFIG_QTYPE_NAMES_V1, CONFIG_QUERY_STATS_V1,
+        CONFIG_BOOTSTRAP_V1, CONFIG_QTYPE_NAMES_V1, CONFIG_QUERY_STATS_V1,
         CONFIG_STATIC_CNAME_RESPONSE_V1, canonical_runtime_capabilities, ensure_config_supported,
         validate_declared_capabilities,
     };
@@ -260,17 +254,21 @@ mod tests {
         }
     }
 
+    // 面板块是面板自己的存储，不按能力挡：没有 config_panel_block_v1 的内核照样能保存、能切换过去，拒不拒收由内核的校验说
+    // The panel block is the panel's own storage and is not blocked by capability: a kernel without config_panel_block_v1
+    // still saves and can be switched to, and whether it refuses is the kernel's validation to say
+    #[test]
+    fn the_panel_block_never_blocks() {
+        let content = json!({"pipelines": [], "panel": {"v": 1, "hash": "0", "model": {}}});
+        assert_eq!(refusal(&content, &[]), None);
+    }
+
     // 每项能力：配置用到它管的写法，没有这项能力就挡、说出那一句出路，有了就放行；没用到时什么能力都不要
     // Each capability: a config using the writing it controls is blocked without it, naming that remedy, and let through with
     // it; a config not using it needs no capability at all
     #[test]
     fn every_registered_capability_blocks_only_what_it_controls() {
         let cases = [
-            (
-                CONFIG_PANEL_BLOCK_V1,
-                json!({"pipelines": [], "panel": {"v": 1, "hash": "0", "model": {}}}),
-                "顶层的 panel",
-            ),
             (
                 CONFIG_BOOTSTRAP_V1,
                 json!({"settings": {"bootstrap": "223.5.5.5:53"}}),
@@ -410,20 +408,16 @@ mod tests {
             "pipelines": [{"id": "default", "rules": [{
                 "matchers": [{"type": "qtype", "value": "HTTPS"}],
                 "actions": [{"type": "static_cname_response", "target": "origin.example."}]
-            }]}],
-            "panel": {}
+            }]}]
         });
         let refused = refusal(&content, &[]).unwrap();
         let parts = refused.split('；').collect::<Vec<_>>();
-        assert_eq!(parts.len(), 4, "{refused}");
-        for (part, remedy) in parts
-            .iter()
-            .zip(["顶层的 panel", "引导 DNS", "HTTPS", "CNAME 回答"])
-        {
+        assert_eq!(parts.len(), 3, "{refused}");
+        for (part, remedy) in parts.iter().zip(["引导 DNS", "HTTPS", "CNAME 回答"]) {
             assert!(part.contains(remedy), "{part}");
         }
         assert_eq!(
-            refusal(&content, &[CONFIG_PANEL_BLOCK_V1, CONFIG_QTYPE_NAMES_V1])
+            refusal(&content, &[CONFIG_QTYPE_NAMES_V1])
                 .unwrap()
                 .split('；')
                 .count(),
