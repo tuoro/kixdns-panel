@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { CONFIG_BOOTSTRAP_V1 } from './schema'
+import { CONFIG_BOOTSTRAP_V1, RETIRED_SETTINGS } from './schema'
 import { hostNamedUpstream, settingProblems } from './settings-checks'
 import type { KernelConfig } from '../config-model/model'
 
@@ -101,12 +101,16 @@ describe('设置的检查和内核一一对上', () => {
   it.each(NAMED)('上游 %s：没写引导 DNS 时内核警告 %s', (upstream, warned) => {
     expect(hostNamedUpstream(forwarding(upstream)) !== null).toBe(warned)
   })
+  // 退役的旧设置：内核照常收下，每一项警告一次，正好是面板一键清掉的那几项 / Retired settings: the kernel accepts them with one
+  // warning each, exactly the ones the panel clears in one go
+  const retired = Object.fromEntries(RETIRED_SETTINGS.map((key) => [key, 1]))
   it('交给真内核校验', () => {
     const out = process.env.KERNEL_SETTINGS_FIXTURES
     if (!out) return
     const fixtures = [
       ...ROWS.map(([name, settings, refused]) => ({ name, config: { settings }, ...(refused.length ? { refuses: refused.map((key) => `settings.${key}`) } : {}) })),
       ...NAMED.map(([upstream, warned]) => ({ name: `上游 ${upstream}`, config: forwarding(upstream), warns: warned ? ['settings.bootstrap'] : [] })),
+      { name: '退役的旧设置', config: { settings: retired }, warns: RETIRED_SETTINGS.map((key) => `settings.${key}`) },
     ]
     writeFileSync(out, JSON.stringify(fixtures))
   })

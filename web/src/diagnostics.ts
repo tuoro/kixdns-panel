@@ -41,11 +41,11 @@ export function isDnsSuccess(code: string): boolean {
   return code.replace(/\s/g, '').toUpperCase() === 'NOERROR'
 }
 
-// 内核用 hickory 的 Display 写响应码（「No Error」「Server Failure」）；面板其余地方
-// 都用 DNS 的写法（NOERROR、SERVFAIL），这里统一过来。不认识的原样交还。
-// The kernel writes response codes with hickory's Display ("No Error", "Server
-// Failure"); the rest of the panel uses the DNS mnemonics (NOERROR, SERVFAIL),
-// so this aligns them. Anything unknown is returned as it came.
+// 内核 2026.11.24.14 起照 DNS 的写法写响应码（NOERROR、SERVFAIL），更早的用 hickory 的 Display（「No Error」「Server Failure」）；
+// 面板其余地方都用 DNS 的写法，这里两种都统一过来。不认识的原样交还。
+// Kernels from 2026.11.24.14 write response codes as the DNS mnemonics (NOERROR, SERVFAIL), earlier ones with hickory's Display
+// ("No Error", "Server Failure"); the rest of the panel uses the DNS mnemonics, so this aligns both. Anything unknown is returned as it
+// came.
 const RESPONSE_CODE_NAMES: Record<string, string> = {
   noerror: 'NOERROR', formerror: 'FORMERR', formerr: 'FORMERR',
   serverfailure: 'SERVFAIL', servfail: 'SERVFAIL',
@@ -112,7 +112,7 @@ const ASCII_ONLY = /^[\x20-\x7e\u00a0]+$/
 // 量和协议名不是字面值：「12 ms」「1」「DoH」是读数，和结果栏、时间列一样；地址、名字、键才是
 // Quantities and protocol names are not literals: 「12 ms」, 「1」 and 「DoH」 are readings like the result bar and time column; addresses, names and keys are
 const MEASURE = /^\d+(\.\d+)?(\s*(ms|s|秒|个|条|次))?$/
-const PROTOCOL = /^(UDP|TCP|DoT|DoH|DoQ|DoH3|TLS|HTTPS)(\+(UDP|TCP))?$|^(NOERROR|NXDOMAIN|SERVFAIL|REFUSED|FORMERR|NOTIMP|NOTAUTH|NOTZONE|YXDOMAIN|YXRRSET|NXRRSET)$/i
+const PROTOCOL = /^(UDP|TCP|DoT|DoH|DoQ|DoH3|TLS|HTTPS)(\+(UDP|TCP))?$|^(NOERROR|NXDOMAIN|SERVFAIL|REFUSED|FORMERR|NOTIMP|NOTAUTH|NOTZONE|YXDOMAIN|YXRRSET|NXRRSET|BADVERS|BADCOOKIE)$/i
 const isLiteral = (value: string) => ASCII_ONLY.test(value) && !MEASURE.test(value) && !PROTOCOL.test(value)
 
 /**

@@ -130,6 +130,8 @@ describe('细节里的一对键值不拆开', () => {
     // 耗时、计数和协议名是量和名称，不是要照抄的字面值 / Durations, counts and protocol names are quantities and names, not literals to copy
     expect(literals(detailParts('耗时：12 ms；匹配器数：1；传输：DoH；协议：TCP+UDP'))).toEqual([])
     expect(literals(detailParts('响应码：NXDOMAIN；回退：SERVFAIL'))).toEqual([])
+    // 头部加上 OPT 能写出的两个扩展码也是响应码，不是字面值 / The two extended codes a header and an OPT can carry are response codes too, not literals
+    expect(literals(detailParts('响应码：BADCOOKIE；回退：BADVERS'))).toEqual([])
     expect(literals(detailParts('规则：geosite-global；目标：1.1.1.1:53'))).toEqual(['geosite-global', '1.1.1.1:53'])
   })
 })

@@ -384,16 +384,19 @@ fn write_step<'a>(
     Ok(())
 }
 
-/// 响应码的助记名（NOERROR、NXDOMAIN……），和内核写的一样 / The response code mnemonic (NOERROR, NXDOMAIN, …),
-/// as the kernel writes it
+/// 响应码的助记名（NOERROR、NXDOMAIN……），和内核写的一样（内核 `observe::rcode_name`）：RFC 6895 里到 NOTZONE 为止的每一个，
+/// 头部加上 OPT 能写出的两个扩展码 16 BADVERS、23 BADCOOKIE，其余写成 RCODE 加数字
+/// The response code mnemonic (NOERROR, NXDOMAIN, …), as the kernel writes it (the kernel's
+/// `observe::rcode_name`): each of RFC 6895's up to NOTZONE, the two extended codes a header and an
+/// OPT together can carry, 16 BADVERS and 23 BADCOOKIE, and RCODE with the number for any other
 fn rcode_name(code: u16) -> Cow<'static, str> {
     const NAMES: [&str; 11] = [
         "NOERROR", "FORMERR", "SERVFAIL", "NXDOMAIN", "NOTIMP", "REFUSED", "YXDOMAIN", "YXRRSET",
         "NXRRSET", "NOTAUTH", "NOTZONE",
     ];
     match code {
-        // 扩展 RCODE 16，和内核的写法一致 / Extended RCODE 16, spelt as the kernel spells it
         16 => Cow::Borrowed("BADVERS"),
+        23 => Cow::Borrowed("BADCOOKIE"),
         _ => NAMES.get(usize::from(code)).map_or_else(
             || Cow::Owned(format!("RCODE{code}")),
             |name| Cow::Borrowed(*name),
@@ -567,15 +570,16 @@ impl Json<'_> {
 mod tests {
     use super::*;
 
-    /// 响应码按配置和内核的写法起名：0–10 是 RFC 的助记名，扩展 RCODE 16 是 BADVERS，其余写成 RCODE 加数字
+    /// 响应码按配置和内核的写法起名：0–10 是 RFC 的助记名，扩展 RCODE 16 是 BADVERS、23 是 BADCOOKIE，其余写成 RCODE 加数字
     /// Response codes are named as the configuration and the kernel name them: the RFC mnemonics
-    /// for 0–10, BADVERS for extended RCODE 16, RCODE and the number for the rest
+    /// for 0–10, BADVERS for extended RCODE 16 and BADCOOKIE for 23, RCODE and the number for the rest
     #[test]
     fn rcodes_are_named_as_the_kernel_names_them() {
         assert_eq!(rcode_name(0), "NOERROR");
         assert_eq!(rcode_name(5), "REFUSED");
         assert_eq!(rcode_name(16), "BADVERS");
-        assert_eq!(rcode_name(23), "RCODE23");
+        assert_eq!(rcode_name(17), "RCODE17");
+        assert_eq!(rcode_name(23), "BADCOOKIE");
     }
 
     /// 内核生成的样本：一页 150 条随机的记录（每种步骤、要转义的文字、截断的报错、IPv6 客户端、各种应答），二进制
@@ -649,6 +653,12 @@ mod tests {
                 let needle = format!("{key}{label}\"");
                 assert!(SAMPLE_JSON.contains(&needle), "{needle}");
             }
+        }
+        // 响应码有名字的两个扩展码和一个没名字的，上面那个测试按名字比对 / The response codes include the two named extended
+        // codes and one without a name, which the test above compares by name
+        for rcode in ["BADVERS", "BADCOOKIE", "RCODE3841"] {
+            let needle = format!("\"rcode\":\"{rcode}\"");
+            assert!(SAMPLE_JSON.contains(&needle), "{needle}");
         }
     }
 

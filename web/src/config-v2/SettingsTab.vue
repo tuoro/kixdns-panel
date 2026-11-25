@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { Info } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { QueryLogSettings } from '../api/types'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
-import { CONFIG_BOOTSTRAP_V1 } from '../config-editor/schema'
+import { CONFIG_BOOTSTRAP_V1, retiredIn, settingName } from '../config-editor/schema'
 import { hasBootstrap, hostNamedUpstream, settingProblems } from '../config-editor/settings-checks'
 import QueryLogSettingsForm from '../components/logs/QueryLogSettingsForm.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
@@ -101,6 +102,18 @@ const tail = computed(() => {
     summary: s ? [`保存 ${retentionText(s.retention_hours)}`, `最多 ${Math.round(s.max_bytes / 1048576)} MB`, ...(s.storage ? [s.storage.memory ? '存在内存里' : '存在磁盘上'] : [])] : ['保存多久、最多占用'],
   }
 })
+// 配置里留着的、内核不再读的旧设置：照常加载、不起作用，配置每生效一次内核都提醒一次。一键清掉，提示里能撤销（只放回清掉的这几项）
+// Old settings left in the config that the kernel no longer reads: they load as usual to no effect, and the kernel reminds of them every
+// time the config takes effect. Cleared in one go, with an undo in the toast that puts back just these
+const retired = computed(() => retiredIn(model.settings))
+// 智能流控的几个旧数字离开分组就看不懂，合成一项 / The old flow-control numbers mean nothing out of their group, so they merge into one
+const retiredNames = computed(() => [...new Set(retired.value.map((key) => (key.startsWith('flow_control_') ? '智能流控的旧数值' : settingName(key))))].join('、'))
+function clearRetired(): void {
+  const removed = Object.fromEntries(retired.value.map((key) => [key, model.settings[key]]))
+  model.settings = Object.fromEntries(Object.entries(model.settings).filter(([key]) => !Object.hasOwn(removed, key)))
+  toast.undoable(`已清掉 ${Object.keys(removed).length} 项旧设置`, () => { model.settings = { ...model.settings, ...removed } })
+}
+
 async function saveQueryLog(): Promise<void> {
   const outcome = await querylogForm.value?.save()
   if (outcome?.status === 'saved') toast.success('查询日志设置已保存')
@@ -109,35 +122,38 @@ async function saveQueryLog(): Promise<void> {
 </script>
 
 <template>
-  <section class="ui-card sets__card" aria-label="基础设置">
-    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :tail="tail" :problems="problems" :warnings="warnings" :commit="commit" :capabilities="runtimeCapabilities">
-      <template #lead>
-        <div class="ui-setrow">
-          <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}。</small></span>
-          <div class="ui-setrow__control sets__stack">
-            <UiTabs :model-value="model.defaults.block" :items="blockItems" label="拦截时怎么回应" variant="segment" @update:model-value="model.defaults.block = $event as typeof model.defaults.block" />
+  <div class="sets">
+    <div v-if="retired.length" class="ui-notice ui-notice--off" role="status"><Info :size="16" aria-hidden="true" /><span>配置里还留着不再起作用的旧设置：{{ retiredNames }}</span><small>KixDNS 照常加载，只是配置每生效一次都提醒一次；清掉再保存就不提醒了。</small><button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" @click="clearRetired">清掉</button></div>
+    <section class="ui-card sets__card" aria-label="基础设置">
+      <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :tail="tail" :problems="problems" :warnings="warnings" :commit="commit" :capabilities="runtimeCapabilities">
+        <template #lead>
+          <div class="ui-setrow">
+            <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}。</small></span>
+            <div class="ui-setrow__control sets__stack">
+              <UiTabs :model-value="model.defaults.block" :items="blockItems" label="拦截时怎么回应" variant="segment" @update:model-value="model.defaults.block = $event as typeof model.defaults.block" />
+            </div>
           </div>
-        </div>
-        <div class="ui-setrow">
-          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟\u2060着它，和规则列表最\u2060下\u2060面那行是同一个设置。' : `一条规则都没命中的请求交给哪里，和规则列表最\u2060下\u2060面那行是同一个设置。${hasRaw ? '有高级规则时' : model.rest.type === 'block' ? '选拦截时' : '交给的组没有地址时'}，KixDNS 的默认上游在「基础与监听」里单独设。` }}</small></span>
-          <div class="ui-setrow__control sets__stack">
-            <UiSelect :model-value="restValue" :options="restOptions" label="其余请求" :invalid="restBroken" @update:model-value="setRest" />
-            <p v-if="restBroken" class="ui-field-error">这个组已经删掉了，选一个现有的组</p>
+          <div class="ui-setrow">
+            <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟\u2060着它，和规则列表最\u2060下\u2060面那行是同一个设置。' : `一条规则都没命中的请求交给哪里，和规则列表最\u2060下\u2060面那行是同一个设置。${hasRaw ? '有高级规则时' : model.rest.type === 'block' ? '选拦截时' : '交给的组没有地址时'}，KixDNS 的默认上游在「基础与监听」里单独设。` }}</small></span>
+            <div class="ui-setrow__control sets__stack">
+              <UiSelect :model-value="restValue" :options="restOptions" label="其余请求" :invalid="restBroken" @update:model-value="setRest" />
+              <p v-if="restBroken" class="ui-field-error">这个组已经删掉了，选一个现有的组</p>
+            </div>
           </div>
-        </div>
-      </template>
-      <template #tail>
-        <p v-if="querylogError" class="ui-field-error" role="alert">{{ querylogError }} <button class="ui-btn ui-btn--text ui-btn--sm" type="button" @click="loadQueryLog">重试</button></p>
-        <template v-else>
-          <QueryLogSettingsForm ref="querylogForm" v-model:settings="querylog" id-prefix="sets-ql" @cleared="toast.success('查询日志已清空')" />
         </template>
-      </template>
-      <!-- 入站 DoH 没起来：挨着 DoH 的几项设置说，改好以后要重启才会变 / Inbound DoH did not start: said beside the DoH settings, which change
-           only after a restart once fixed -->
-      <template #note="{ section }"><KernelNotes v-if="section === 'network' && runtimeDohNote" class="sets__kernel" :note="runtimeDohNote" /></template>
-      <template #tail-actions>
-        <button v-if="!querylogError" class="ui-btn ui-btn--primary" type="button" :disabled="!querylog || querylogForm?.busy" :aria-busy="querylogForm?.busy || undefined" @click="saveQueryLog">保存查询日志设置</button>
-      </template>
-    </SettingsEditor>
-  </section>
+        <template #tail>
+          <p v-if="querylogError" class="ui-field-error" role="alert">{{ querylogError }} <button class="ui-btn ui-btn--text ui-btn--sm" type="button" @click="loadQueryLog">重试</button></p>
+          <template v-else>
+            <QueryLogSettingsForm ref="querylogForm" v-model:settings="querylog" id-prefix="sets-ql" @cleared="toast.success('查询日志已清空')" />
+          </template>
+        </template>
+        <!-- 入站 DoH 没起来：挨着 DoH 的几项设置说，改好以后要重启才会变 / Inbound DoH did not start: said beside the DoH settings, which change
+             only after a restart once fixed -->
+        <template #note="{ section }"><KernelNotes v-if="section === 'network' && runtimeDohNote" class="sets__kernel" :note="runtimeDohNote" /></template>
+        <template #tail-actions>
+          <button v-if="!querylogError" class="ui-btn ui-btn--primary" type="button" :disabled="!querylog || querylogForm?.busy" :aria-busy="querylogForm?.busy || undefined" @click="saveQueryLog">保存查询日志设置</button>
+        </template>
+      </SettingsEditor>
+    </section>
+  </div>
 </template>

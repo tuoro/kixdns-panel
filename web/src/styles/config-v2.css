@@ -1715,6 +1715,8 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 }
 
 /* ---------- 基础设置 / settings ---------- */
+/* 旧设置的提示在卡片上面，隔一段 / The old-settings notice sits above the card, a gap apart */
+.sets { display: grid; gap: var(--s-3); }
 .sets__card { overflow: clip; }
 .sets__note { color: var(--l-ink-3); font-size: var(--t-1); }
 /* 一组设置眼下的运行情况：在标题和设置行之间 / How a group of settings is faring right now: between the heading and the rows */
