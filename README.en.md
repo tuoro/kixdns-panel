@@ -19,7 +19,8 @@ A web panel for your own DNS server. Set up routing rules and blocklists with fo
 - **Kernel updates**: update KixDNS from within the panel to the latest dated release of the fork, or go back to the previous one; a failed activation restores automatically
 - **Panel self-update**: one click on the system page updates to the latest stable release, with the digest checked twice and KixDNS left alone
 - **OpenWrt**: one command installs it on the router; starting KixDNS takes over port 53 automatically, while dnsmasq keeps DHCP and local host names
-- **Security**: Argon2id authentication, HttpOnly sessions, CSRF protection and login rate limiting; with systemd the panel process does not run as root
+- **Docker**: one container, one data directory; the panel and the kernel still update online from the panel, and DNS keeps answering while the panel updates
+- **Security**: Argon2id authentication, HttpOnly sessions, CSRF protection and login rate limiting; with systemd and in Docker neither the panel nor the kernel runs as root
 - Works on desktop and phone
 
 ## Kernel
@@ -54,6 +55,18 @@ Then open `http://<router LAN address>:5738`. Starting KixDNS from the 系统 (S
 
 > [!IMPORTANT]
 > **On a router, keep flow control on.** Packages newer than v4.3.7 install with it on. An install made with v4.3.7 or earlier has it off, and upgrading leaves that as it is: turn it on at 配置 → 基础设置 → 智能流控 (Config → Basic settings → Flow control), save, and restart KixDNS when the panel asks. A router has little memory: without it, when a device floods queries while the upstream answers slowly, the system may kill the kernel for running out of memory and DNS goes down. With it on, the device sending too much gets SERVFAIL and the other devices resolve as usual. [Details (Chinese)](deploy/openwrt/README.md#启用-dns)
+
+### Docker
+
+x86_64 and arm64. The panel and the kernel share one container, and all data lives in `./data`:
+
+```bash
+mkdir kixdns-panel && cd kixdns-panel
+curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/docker/compose.yaml
+docker compose up -d
+```
+
+Then open `http://<host address>:5738` to create the administrator. Host networking is the default (only then does the kernel see the real client IPs); KixDNS starts with the container and listens on the host's port 53. On hosts where systemd-resolved holds port 53, such as Ubuntu, read the [Docker section of the deployment guide](docs/deployment.en.md#docker) first. The panel and the kernel both update online from the 系统 (System) page; only `./data/config` needs a backup.
 
 What changed in each version is in [Releases](https://github.com/tuoro/kixdns-panel/releases).
 

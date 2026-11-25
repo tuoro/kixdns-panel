@@ -8,8 +8,9 @@
 - GLIBC 2.35 及以上：Ubuntu 22.04、Debian 12 或更新发行版
 - 需要 `systemctl`、`sha256sum`、`getent`；一键安装和下载示例另需 `curl`、`jq`、`unzip`
 - OpenWrt（procd，没有 systemd）见下面的[「OpenWrt / procd」](#openwrt--procd没有-systemd)：不依赖 GLIBC，正式 Release 带 musl 静态链接的 OpenWrt 安装包 `kixdns-panel-openwrt-<架构>.tar.gz`
+- Docker（amd64、arm64）见下面的[「Docker」](#docker)：镜像 `ghcr.io/tuoro/kixdns-panel`
 
-以下是 systemd 发行版的安装方式；OpenWrt 直接看[「OpenWrt / procd」](#openwrt--procd没有-systemd)那一节。
+以下是 systemd 发行版的安装方式；OpenWrt 和 Docker 直接看[「OpenWrt / procd」](#openwrt--procd没有-systemd)、[「Docker」](#docker)那两节。
 
 完整安装包在面板的 [GitHub Releases](https://github.com/tuoro/kixdns-panel/releases) 发布，包含 KixDNS Enhanced、Panel Server、前端静态资源、服务单元和安装脚本。
 
@@ -150,6 +151,86 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 **路由器上要开着智能流控**：比 v4.3.7 新的安装包装好就开着；用 v4.3.7 及更早版本装的是关的，升级也不会改，要在「配置 → 基础设置 → 智能流控」打开，保存后重启一次 KixDNS。不开的话有设备猛发查询、上游又回得慢时，内核可能因为内存不足被系统杀掉。
 
 和 systemd 版不同的地方：面板默认只听 LAN 口的地址，查询日志默认放内存，进程以 root 运行。启用 DNS、更新、卸载和常用设置见 [`deploy/openwrt/README.md`](../deploy/openwrt/README.md)，实现细节和自己编译打包见 [`deploy/openwrt/DEVELOPMENT.md`](../deploy/openwrt/DEVELOPMENT.md)。
+
+### Docker
+
+镜像是 `ghcr.io/tuoro/kixdns-panel`，amd64 和 arm64，随每个正式版发布，标签有 `latest`、主次版本（如 `4.4`）和完整版本（如 `4.4.0`）。面板和内核在一个容器里，只映射一个数据目录 `/data`：配置、数据库、在线装的内核和面板都在里面。
+
+1. 新建一个目录，取 compose 示例并启动：
+
+   ```bash
+   mkdir kixdns-panel && cd kixdns-panel
+   curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/docker/compose.yaml
+   docker compose up -d
+   ```
+
+   不用 compose 时：
+
+   ```bash
+   docker run -d --name kixdns-panel --network host --restart unless-stopped \
+     -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
+   ```
+
+2. 打开 `http://<主机地址>:5738` 创建管理员。KixDNS 随容器启动，默认配置听 `0.0.0.0:53`、转给 `1.1.1.1`。在「系统」页停止以后，重启、重建容器都还停着，点「启动」才再起来。
+
+**从现有安装搬过来**：第一次启动之前把原来的 `pipeline.json` 放到 `./data/config/pipeline.json`，面板首次启动时把它导入成第一个版本（文件会改给容器里的面板用户，内容不动）。面板的账号和版本历史不跟着搬。
+
+**主机的 53 端口被 systemd-resolved 占着**（Ubuntu 默认，它听 `127.0.0.53:53`）：host 网络下内核听不上 `0.0.0.0:53`，「系统」页显示启动失败，运行日志里是 `Address in use`。关掉它的本机监听，再到「系统」页启动：
+
+```bash
+sudo mkdir -p /etc/systemd/resolved.conf.d
+printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/kixdns.conf
+sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+sudo systemctl restart systemd-resolved
+```
+
+不想动 systemd-resolved 的，在「配置 → 基础设置」把监听地址改成主机的局域网地址（如 `192.168.1.20:53`），它和 `127.0.0.53` 不冲突；保存以后再到「系统」页启动。
+
+**网络**：推荐 host 网络，内核才看得到真实的客户端 IP，按客户端分流、查询日志和智能流控才按设备算。面板默认听所有网卡的 `5738`，**不要把它暴露到公网**；只给本机反向代理用时设 `KIXDNS_PANEL_BIND=127.0.0.1:5738`。桥接网络也能用：去掉 `network_mode: host`，按 compose 里的注释映射 `53/udp`、`53/tcp` 和 `5738`。这样可能看不到真实的客户端 IP，取决于 Docker 的网络设置（Docker Desktop、rootless、userland-proxy 时都是网关的地址）；映射主机的 53 一样会碰上 systemd-resolved，处理同上，或者只映射到局域网地址（`192.168.1.20:53:53/udp`）。
+
+**面板的运行参数**写在 compose 的 `environment` 里，名字和 systemd 版 `panel.env` 的一样：
+
+| 变量 | 默认 | 用途 |
+| --- | --- | --- |
+| `KIXDNS_PANEL_BIND` | `0.0.0.0:5738` | 面板的监听地址 |
+| `KIXDNS_PANEL_SECURE_COOKIE` | `false` | 在 HTTPS 反向代理后面时设成 `true` |
+| `KIXDNS_TRUSTED_PROXIES` | 空 | 可以提供 `X-Forwarded-For` 的反向代理 CIDR |
+| `KIXDNS_GITHUB_TOKEN_FILE` | `/data/config/github-token` | GitHub Token 文件（容器里的路径）；在「系统」页填的也存在这里 |
+| `KIXDNS_QUERYLOG_DIR` | `/data/logs/querylog` | 查询日志目录；要放内存就挂一个 tmpfs 指过去（compose 里有注释） |
+| `RUST_LOG` | 面板 `info`，内核 `info,kixdns::engine::phases=warn` | 日志级别，设了面板和内核都用 |
+| `TZ` | UTC | 时区 |
+
+别的路径都由容器的布局定，设了也不算。
+
+**数据目录**：
+
+| 路径 | 内容 |
+| --- | --- |
+| `/data/config/` | `pipeline.json`（内核配置）、`panel.db`（账号、版本历史、审计）、`github-token`。**要备份的就是这个目录** |
+| `/data/geo/` | GeoIP/GeoSite 数据和拦截列表 |
+| `/data/kernels/` | 正在用的内核 `kixdns` 和本机的版本库存 `versions/` |
+| `/data/panel/` | 在线装的面板（每个版本一个目录）和在线更新的状态 |
+| `/data/logs/` | 内核日志 `kixdns.log`（超过 8 MiB 滚到 `.1`）、查询日志 `querylog/` |
+| `/data/supervisor/` | 容器主进程的记录：内核是不是被停了，哪些在线装的面板起不来 |
+
+**更新**：
+
+- 面板：在「系统」页点「在线更新」。面板下载这一版的 OpenWrt 安装包（同一批 musl 程序），核对 SHA-256，把面板、网页和 GeoSite 装进 `/data/panel/<版本>/` 再换上；内核一直跑着，DNS 不断。新版起来以后 60 秒内连着退出 3 次，就退回上一份，「系统」页说为什么。也可以拉新镜像：`docker compose pull && docker compose up -d`；镜像里的和在线装的哪个新就跑哪个，一样新时接着跑在线装的那份
+- 内核：和 systemd 版一样在「系统」页更新、回退。拉了带更新内核的镜像时，面板启动后自动换成镜像带的那个（同样先查配置兼容、失败换回，记进操作审计）；在线装上的更新的内核不会被换成旧的
+
+**日志和排查**：`docker logs kixdns-panel` 是容器主进程和面板的输出，内核的起停、面板换版本、退回的原因都在这里；内核自己的日志在「日志」页，也在 `./data/logs/kixdns.log`。`docker ps` 里的健康状态：面板答得上、内核没有连着崩到不再拉起，就是 healthy；自己停了内核不算不健康。
+
+**忘记管理员密码**：
+
+```bash
+docker exec -u kixdns-panel kixdns-panel /opt/kixdns-panel/bin/kixdns-panel-server --database /data/config/panel.db reset-admin
+```
+
+在线更新过面板的，把 `/opt/kixdns-panel/bin` 换成 `/data/panel/<版本>/bin`（版本见「系统」页）。
+
+**权限**：容器的主进程（服务助手的看管模式 `kixdns-panel-helper supervise`）以 root 运行，只管起停；内核以 `kixdns`（5533）运行，只带 `CAP_NET_BIND_SERVICE`，描述符上限 65536；面板以 `kixdns-panel`（5738）运行；两者共用组 5533，和 systemd 版一样。root 从不执行 `/data` 里的文件。
+
+**卸载**：`docker compose down`，数据还在 `./data`；连数据一起删就再删掉这个目录。
 
 ## 首次访问
 
