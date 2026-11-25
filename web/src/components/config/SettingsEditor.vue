@@ -259,6 +259,9 @@ function removeListItem(field: SettingField, index: number): void {
         <!-- 搜索结果里每组的标题也是区块标题，和平时一组的标题一样：和下面的设置名差了字号，不只差字重（规范 1.7，审计 T10）
              Each group heading in search results is a section title, as for a single group: it differs from the setting names in size, not only weight (spec 1.7, audit T10) -->
         <header class="settings-group__head settings-group__head--lead"><h2 tabindex="-1" data-focus-landing>{{ section.title }}</h2><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
+        <!-- 这一组设置眼下的运行情况（入站 DoH 没起来这类），由用它的页面给 / How this group's settings are faring right now (inbound DoH not
+             started and the like), given by the page using it -->
+        <slot name="note" :section="section.id" />
         <div class="settings-rows">
           <!-- 一个设置一行：左边名字和一句说明，右边控件。数字的单位写在输入框里，占位写默认值。
                One setting per row: name and a one-line note on the left, the control on the right; a number's unit sits in the input and the placeholder states the default. -->

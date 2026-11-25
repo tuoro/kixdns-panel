@@ -41,7 +41,7 @@ import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
 import { switchConfirmBody, switchedMessage } from '../version-switch'
 import { settingName, settingNames } from '../config-editor/schema'
-import { KERNEL_UPDATE, problemsNote } from '../kernel-problems'
+import { KERNEL_UPDATE, dohNote, problemsNote, watchNote } from '../kernel-problems'
 import { serviceLabel as labelOfService, serviceTone as toneOfService } from '../service-state'
 
 type KernelAction = 'update' | 'rollback'
@@ -516,9 +516,10 @@ function loadKernel(silent = false): Promise<void> {
   })
 }
 
-// KixDNS 报来的在用配置的状态（下次保存前要改掉的写法这类）：只认活着的 KixDNS 报的，停着、连不上时概览给的快照不算；读不到就不说，
-// 别的卡片照常 / The state KixDNS reports of the config in use (what must change before the next save, and the like): only a live KixDNS's
-// report counts, never the overview's snapshot while stopped or unreachable; when it cannot be read nothing is said and the other cards go on
+// KixDNS 报来的在用配置的状态（下次保存前要改掉的写法、监视不了配置文件、入站 DoH 没起来）：只认活着的 KixDNS 报的，停着、连不上时概览
+// 给的快照不算；读不到就不说，别的卡片照常 / The state KixDNS reports of the config in use (what must change before the next save, the
+// config file not watched, inbound DoH not started): only a live KixDNS's report counts, never the overview's snapshot while stopped or
+// unreachable; when it cannot be read nothing is said and the other cards go on
 const active = ref<ActiveConfig | null>(null)
 async function loadActive(): Promise<void> {
   const overview = await apiRequest<Overview>('/api/v1/overview').catch(() => null)
@@ -528,6 +529,11 @@ async function loadActive(): Promise<void> {
 // This page has none of the config page's rule names, so paths stay as they are; the one about the panel's block says to update the kernel
 // first, its button going to the kernel's row under 可用更新 below
 const problems = computed(() => problemsNote(active.value?.problems ?? [], null, settingName))
+// 监视不了配置文件、入站 DoH 没起来：都要到系统这一层处理（重启 KixDNS、看系统的监视上限），常驻在这里，好了才收起
+// The config file not watched and inbound DoH not started: both are dealt with at the system level (a restart of KixDNS, the system's
+// watch limits), so they stay here until fixed
+const watching = computed(() => watchNote(active.value?.watch_error))
+const doh = computed(() => dohNote(active.value?.doh_error))
 
 async function refreshAll(): Promise<void> {
   await Promise.all([loadService(true), loadKernel(true), loadActive()])
@@ -753,6 +759,8 @@ onBeforeUnmount(() => {
     <!-- 在用的配置里下次保存前要改掉的写法，和配置页同一块；不认面板配置块时它就挨着下面的内核更新 / What the config in use writes that must
          change before the next save, the config page's block; when the panel's block is not taken it sits right by the kernel update below -->
     <KernelNotes v-if="problems && !panelDown" :note="problems" />
+    <KernelNotes v-if="watching && !panelDown" :note="watching" />
+    <KernelNotes v-if="doh && !panelDown" :note="doh" />
     <!-- 卡片都是概览那套：小标签一行，右端一个标签或按钮；内容是细线隔开的行 / Every card follows the overview: a small label line with a tag or button at its end; rows between hairlines -->
     <section class="ui-card system-card update-panel" aria-labelledby="system-updates-label">
       <div class="system-card__head">

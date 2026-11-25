@@ -80,6 +80,38 @@ pub struct ActiveConfig {
     /// 2026.11.23.39)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problems: Option<Vec<String>>,
+    /// 在用的配置照样生效、却值得知道的写法（跳转绕圈、Geo 标签没有数据、整体超时太短这些），每次生效换成那份配置的。不报告
+    /// 它的内核（2026.11.23.49 以前）为 `None`
+    ///
+    /// What the configuration in use writes that takes effect all the same yet is worth knowing (jumps going round, Geo
+    /// tags without data, an overall timeout too short and the like), replaced by each configuration as it takes effect.
+    /// `None` from a kernel that does not report it (before 2026.11.23.49)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
+    /// 配置文件为什么监视不了，监视着（或者内核早于 2026.11.23.49、不报告）时为 `None`：监视线程起不来时改了文件不重载，保存的配置
+    /// 不生效；有位置监视不上时，改在那里的由内核每 10 秒一次的核对察觉再重载（见 [`ControlClient::wait_for_config`]）
+    ///
+    /// Why the configuration file cannot be watched, `None` while it is (or from a kernel before 2026.11.23.49, which does
+    /// not report it): without the watch thread a change to the file is not reloaded and a save does not take; with places
+    /// that cannot be watched, a change there is noticed by the kernel's check every 10 s and then reloaded (see
+    /// [`ControlClient::wait_for_config`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_error: Option<String>,
+    /// 配了的入站 `DoH` 为什么没起来，起来了、没配（或者内核早于 2026.11.24.14）时为 `None`。`DoH` 的设置只在启动时读，这一项到下次
+    /// 启动才会变
+    ///
+    /// Why the inbound `DoH` configured did not start, `None` when it started, is not configured (or the kernel is before
+    /// 2026.11.24.14). The `DoH` settings are read at startup alone, so this changes at the next start only
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doh_error: Option<String>,
+    /// Geo 数据眼下的问题，一样一句话（文件不在或读不了、标签没有数据、监视不了），随文件监视实时更新。不报告它的内核
+    /// （2026.11.24.15 以前）为 `None`
+    ///
+    /// What is wrong with the Geo data right now, a sentence each (files missing or unreadable, tags without data, watches
+    /// that fail), kept current as the watched files change. `None` from a kernel that does not report it (before
+    /// 2026.11.24.15)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_warnings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +132,12 @@ pub struct ValidationResult {
     pub valid: bool,
     pub pipeline_count: usize,
     pub rule_count: usize,
+    /// 这份配置照样能用、却值得知道的写法（和 [`ActiveConfig::warnings`] 同一类）；不报告它的内核（2026.11.23.49 以前）为 `None`
+    ///
+    /// What this configuration writes that works all the same yet is worth knowing (the kind of
+    /// [`ActiveConfig::warnings`]); `None` from a kernel that does not report it (before 2026.11.23.49)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -638,6 +676,11 @@ pub enum ControlError {
     #[error("KixDNS 不支持：{0}")]
     #[cfg_attr(not(unix), allow(dead_code))]
     Unsupported(String),
+    /// 新配置写进了文件，等到时限 `KixDNS` 也没重载它（见 [`ControlClient::wait_for_config`]）；这句话照原样说，不当成连不上
+    /// The new configuration is in the file and `KixDNS` did not reload it within the time limit (see
+    /// [`ControlClient::wait_for_config`]); the sentence is said as it is, never read as being unreachable
+    #[error("{0}")]
+    NotReloaded(String),
 }
 
 /// 内核为什么不接受一份配置：它的原话，和逐条列出的原因
@@ -782,13 +825,17 @@ impl ControlClient {
         .await
     }
 
+    /// 等 `KixDNS` 重载摘要是 `sha256` 的配置（重载序号过了 `after_sequence`）。等多久看它监视得了配置文件不（见
+    /// [`reload_wait`]），每次读到都重新看；没等到时说为什么（见 [`not_reloaded`]）
+    /// Waits for `KixDNS` to reload the configuration whose digest is `sha256` (its reload sequence past
+    /// `after_sequence`). How long depends on whether it can watch the configuration file (see [`reload_wait`]), looked at
+    /// again with every read; when the wait runs out it says why (see [`not_reloaded`])
     pub async fn wait_for_config(
         &self,
         sha256: &str,
         after_sequence: u64,
-        timeout: Duration,
     ) -> Result<ActiveConfig, ControlError> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let started = tokio::time::Instant::now();
         loop {
             let active = self.active_config().await?;
             if active.reload_sequence > after_sequence
@@ -806,10 +853,8 @@ impl ControlClient {
                     problems: active.last_reload.problems.unwrap_or_default(),
                 }));
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(ControlError::Unavailable(
-                    "KixDNS 没有及时确认新配置".to_owned(),
-                ));
+            if started.elapsed() >= reload_wait(&active) {
+                return Err(not_reloaded(&active));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -1073,6 +1118,30 @@ struct KernelError {
 
 /// 普通控制请求的应答时限 / The reply limit for ordinary control requests
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 等 `KixDNS` 重载新配置多久。它靠文件监视察觉改动：一阵改动从第一个事件起最多等 2 秒（内核 `watcher::AT_MOST`），再加编译，5 秒
+/// 有余。报了 `watch_error` 时，监视不上的地方由每 10 秒一次的核对察觉（`watcher::CHECK_EVERY`），写完再等 0.3 秒（`watcher::QUIET`），
+/// 再加编译，等 12 秒
+/// How long to wait for `KixDNS` to reload a new configuration. It notices changes through the file watch: a burst is
+/// waited for at most 2 seconds from its first event (the kernel's `watcher::AT_MOST`), plus compiling, well within 5
+/// seconds. With a `watch_error`, a change where the watch cannot see is noticed by the check every 10 seconds
+/// (`watcher::CHECK_EVERY`), the write then given 0.3 seconds (`watcher::QUIET`), plus compiling: 12 seconds
+fn reload_wait(active: &ActiveConfig) -> Duration {
+    if active.watch_error.is_some() {
+        Duration::from_secs(12)
+    } else {
+        Duration::from_secs(5)
+    }
+}
+
+/// 等到时限也没重载：监视不了配置文件时说出内核给的原因，那就是为什么 / No reload within the limit: when the configuration
+/// file cannot be watched the kernel's reason is given, since that is why
+fn not_reloaded(active: &ActiveConfig) -> ControlError {
+    ControlError::NotReloaded(match &active.watch_error {
+        Some(reason) => format!("KixDNS 没有重载新配置：它监视不了配置文件（{reason}）"),
+        None => "KixDNS 没有及时确认新配置".to_owned(),
+    })
+}
 
 /// 诊断与试跑的请求体：客户端 IP 和草稿配置只在有的时候才带上，旧内核收到的还是原来的两个字段。
 /// The diagnostic and trial body: the client IP and the draft config ride along only when present, so an older kernel still gets just the two original fields.
@@ -2064,8 +2133,24 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
             "protocol_version": 1, "generation": 2, "sha256": "s", "loaded_at_unix": 0, "reload_sequence": 3,
             "last_reload": { "success": false, "error": "a; b", "problems": ["a", "b"] },
             "restart_pending": [], "problems": ["panel: the kernel does not read this key"],
+            "warnings": ["w"], "watch_error": "OS file watch limit reached.", "doh_error": null,
+            "data_warnings": ["d"],
         });
         let active: super::ActiveConfig = serde_json::from_value(kernel).unwrap();
+        assert_eq!(
+            (
+                active.warnings.as_deref(),
+                active.watch_error.as_deref(),
+                active.doh_error.as_deref(),
+                active.data_warnings.as_deref(),
+            ),
+            (
+                Some(&["w".to_owned()][..]),
+                Some("OS file watch limit reached."),
+                None,
+                Some(&["d".to_owned()][..]),
+            )
+        );
         assert_eq!(
             active.problems.as_deref(),
             Some(&["panel: the kernel does not read this key".to_owned()][..])
@@ -2081,7 +2166,72 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
         });
         let active: super::ActiveConfig = serde_json::from_value(older.clone()).unwrap();
         assert!(active.problems.is_none() && active.last_reload.problems.is_none());
+        assert!(active.warnings.is_none() && active.data_warnings.is_none());
         assert_eq!(serde_json::to_value(&active).unwrap(), older);
+        // 校验的回答：照样能用、值得知道的写法 / A validation's answer: what works all the same yet is worth knowing
+        let validation: super::ValidationResult = serde_json::from_value(serde_json::json!({
+            "protocol_version": 1, "valid": true, "pipeline_count": 1, "rule_count": 2, "warnings": ["w"],
+        }))
+        .unwrap();
+        assert_eq!(validation.warnings.as_deref(), Some(&["w".to_owned()][..]));
+    }
+
+    fn active_watching(watch_error: Option<&str>) -> super::ActiveConfig {
+        serde_json::from_value(serde_json::json!({
+            "protocol_version": 1, "generation": 1, "sha256": "old", "loaded_at_unix": 0, "reload_sequence": 0,
+            "last_reload": { "success": true, "error": null }, "watch_error": watch_error,
+        }))
+        .unwrap()
+    }
+
+    /// 等重载多久：监视得了配置文件时 5 秒；内核说有地方监视不上时，那里的改动要等它每 10 秒一次的核对，等 12 秒。没等到时，监视不了的
+    /// 那句原因就是为什么
+    /// How long a reload is waited for: 5 seconds while the file is watched; when the kernel says some place cannot be, a
+    /// change there waits for its check every 10 seconds, so 12 seconds. When none comes, the reason it cannot watch is why
+    #[test]
+    fn the_wait_for_a_reload_follows_whether_the_file_is_watched() {
+        let watched = active_watching(None);
+        let unwatched = active_watching(Some("OS file watch limit reached."));
+        assert_eq!(super::reload_wait(&watched), Duration::from_secs(5));
+        assert!(super::reload_wait(&unwatched) > Duration::from_millis(10_300));
+        assert_eq!(
+            super::not_reloaded(&unwatched).to_string(),
+            "KixDNS 没有重载新配置：它监视不了配置文件（OS file watch limit reached.）"
+        );
+        assert_eq!(
+            super::not_reloaded(&watched).to_string(),
+            "KixDNS 没有及时确认新配置"
+        );
+    }
+
+    /// 内核说监视不了配置文件、新配置过了 5 秒才重载（它的核对察觉的）：照样等到，不当成没重载
+    /// The kernel says it cannot watch the file and reloads the new configuration only after 5 seconds (its check noticed):
+    /// the wait still sees it, rather than calling it not reloaded
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reload_the_kernels_check_notices_late_is_still_waited_for() {
+        use axum::routing::get;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("admin.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let started = tokio::time::Instant::now();
+        let router = axum::Router::new().route(
+            "/v1/config/active",
+            get(move || async move {
+                let reloaded = started.elapsed() >= Duration::from_millis(5_500);
+                axum::Json(serde_json::json!({
+                    "protocol_version": 1, "generation": 1, "loaded_at_unix": 0,
+                    "sha256": if reloaded { "new" } else { "old" }, "reload_sequence": u64::from(reloaded),
+                    "last_reload": { "success": true, "error": null }, "watch_error": "OS file watch limit reached.",
+                }))
+            }),
+        );
+        let kixdns = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let active = ControlClient::new(socket).wait_for_config("new", 0).await;
+
+        assert_eq!(active.unwrap().sha256, "new");
+        kixdns.abort();
     }
 
     #[test]

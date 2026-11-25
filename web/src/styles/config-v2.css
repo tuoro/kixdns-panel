@@ -38,10 +38,10 @@ body { background: var(--l-canvas); }
 /* 页头里传送过来的按钮（新建规则、测试域名）跟着调淡：它们的容器是 display: contents，自己挂不上透明度 / The buttons teleported into the header (新建规则, 测试域名) dim too: their container is display: contents and cannot carry opacity */
 .cfg__page-acts[inert] > * { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
-/* 内核报来的那一块和提示条一样贴着页头；跟在提示条后面时两块只隔 8，读作同一处的两件事 / The kernel's report sits against the header as the
-   notice does; following the notice the two are 8 apart, read as two things in one place */
+/* 内核报来的那几块和提示条一样贴着页头；跟在提示条或另一块后面时只隔 8，读作同一处的几件事 / The kernel's reports sit against the header as
+   the notice does; following the notice or another report they are 8 apart, read as things in one place */
 .cfg__kernel { margin-top: calc(var(--s-1) * -1); }
-.cfg__notice + .cfg__kernel { margin-top: calc(var(--s-2) - var(--s-5)); }
+.cfg__notice + .cfg__kernel, .cfg__kernel + .cfg__kernel { margin-top: calc(var(--s-2) - var(--s-5)); }
 /* 锁着时提示条吸顶，贴在顶栏和断线横幅下面：内容点不动的原因一直看得到，滚到下面按的保存、回去看改的那一项时都在。--stick-gap 是它和
    顶栏（横幅）之间的距离 / While locked the notice sticks below the header and the outage banner, so why the content does not respond
    stays in sight, for a save pressed far down and when going back to the edited row. --stick-gap is its distance from the header (banner) */
@@ -97,6 +97,12 @@ body { background: var(--l-canvas); }
 /* 逐条的原因占满一行，一条一行；多了不把保存条撑到半屏以上，在里面滚 / The reasons take a full line, one each; many never push the bar past a
    third of the screen but scroll inside it */
 .savebar__reasons { display: grid; flex: 1 1 100%; gap: var(--s-1); max-height: 33vh; overflow-y: auto; color: var(--l-ink-2); font-size: var(--t-2); overflow-wrap: anywhere; }
+/* 列着原因或提醒时和出错时一样：状态那一格占满一行、可以折行，按钮换到下一行靠右（平常宽屏上状态不折行，和按钮挤一行）。比各宽度下平常的
+   那几条多一层，不管写在前后都压得住 / With reasons or warnings listed it is as on an error: the status cell takes a full row and may wrap, and the
+   buttons move to the next row on the right (on wide screens the status usually keeps to one line beside the buttons). One level more specific
+   than the usual rules at each width, so it holds wherever they are written */
+.cfg__savebar.ui-savebar:has(> .ui-savebar__status > .savebar__reasons) { flex-wrap: wrap; justify-content: flex-end; }
+.cfg__savebar.ui-savebar .ui-savebar__status:has(> .savebar__reasons) { flex: 1 1 100%; flex-wrap: wrap; min-width: 0; margin-right: 0; }
 /* 「下载草稿」「重新读取」是小号文字按钮：退回它们的内边距和边框，折到下一行时字和上面的标题对齐；和说明同一行时，拉开的距离挪到说明右边，照旧 25
    下载草稿 and 重新读取 are small text buttons: their padding and border are pulled back so, wrapped to the next line, their words line up with the title above;
    on the same line as the sentence the gap moves to the sentence's right, 25 as before */
@@ -1711,6 +1717,8 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 /* ---------- 基础设置 / settings ---------- */
 .sets__card { overflow: clip; }
 .sets__note { color: var(--l-ink-3); font-size: var(--t-1); }
+/* 一组设置眼下的运行情况：在标题和设置行之间 / How a group of settings is faring right now: between the heading and the rows */
+.sets__kernel { margin-bottom: var(--s-3); }
 @media (min-width: 861px) {
   /* 基础设置：名称列 300，控件最宽 320（三段的分段控件拉到 500 多宽时每段都太空） / Basic settings: a 300 label column, controls at most 320 (stretched past 500 a three-option segmented control reads as empty) */
   .sets__card .ui-setrow { grid-template-columns: minmax(0, 300px) minmax(0, 320px); }

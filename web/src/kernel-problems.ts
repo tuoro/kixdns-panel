@@ -105,3 +105,46 @@ export function problemsNote(problems: readonly string[], names: PlaceNames | nu
   }
   return { tone: 'err', title: `在用的配置有\u00a0${items.length}\u00a0处下次保存前要改掉`, detail: 'KixDNS\u00a0启动时照样读进来了，保存时却不会接受这些写法', items }
 }
+
+/**
+ * 照样生效、却值得知道的写法（跳转绕圈、Geo 标签没有数据、整体超时太短这些）：在用的配置的（active 的 warnings），或者刚校验过的这份草稿的
+ * （validate 的 warnings）。不用改也能保存，所以不是红色
+ * What takes effect all the same yet is worth knowing (jumps going round, Geo tags without data, an overall timeout too short and the like):
+ * the config in use's (active's warnings) or the draft just checked (validate's warnings). Saving works without changing them, so it is not red
+ */
+export function warningsNote(warnings: readonly string[], names: PlaceNames | null, settingName: (key: string) => string): KernelNote | null {
+  if (!warnings.length) return null
+  return { tone: 'off', title: `在用的配置有\u00a0${warnings.length}\u00a0条提醒`, detail: '照样生效，但值得知道', items: warnings.map((warning) => describeProblem(warning, names, settingName)) }
+}
+
+/**
+ * KixDNS 监视不了配置文件（active 的 watch_error）：有位置监视不上时，改在那里的要等它每 10 秒一次的核对；监视线程根本没起来时，保存的配置
+ * 要重启 KixDNS 才生效。原因是内核的原话
+ * KixDNS cannot watch the config file (active's watch_error): with places that cannot be watched, a change there waits for its check every
+ * 10 seconds; with no watch thread at all, a save takes effect only after a restart of KixDNS. The reason is the kernel's own words
+ */
+export function watchNote(watchError: string | null | undefined): KernelNote | null {
+  if (!watchError) return null
+  return { tone: 'warn', title: 'KixDNS\u00a0监视不了配置文件', detail: '保存的配置要等它每\u00a010\u00a0秒一次的核对才生效；要是监视根本没起来，得重启\u00a0KixDNS 才生效', items: [watchError] }
+}
+
+/**
+ * 配了的入站 DoH 没起来（active 的 doh_error）。DoH 的设置只在启动时读，校验和重载都不碰证书：改好了也要重启 KixDNS 才会变
+ * The inbound DoH configured did not start (active's doh_error). The DoH settings are read at startup alone, and validation and reloads never
+ * touch the certificate: even once fixed it changes only after a restart of KixDNS
+ */
+export function dohNote(dohError: string | null | undefined): KernelNote | null {
+  if (!dohError) return null
+  return { tone: 'warn', title: '入站\u00a0DoH\u00a0没有起来', detail: 'DoH 的设置只在启动时读：改好监听地址、证书或私钥以后，要重启\u00a0KixDNS 才会变', items: [dohError] }
+}
+
+/**
+ * Geo 数据眼下的问题（active 的 data_warnings）：文件不在或读不了、规则用到的标签没有数据、监视不了。用到它们的条件可能不照想的命中；
+ * 文件改好了 KixDNS 自己会读进来
+ * What is wrong with the Geo data right now (active's data_warnings): files missing or unreadable, tags rules use without data, watches that
+ * fail. Conditions using them may not match as meant; once the files are fixed KixDNS reads them in by itself
+ */
+export function dataNote(dataWarnings: readonly string[] | undefined): KernelNote | null {
+  if (!dataWarnings?.length) return null
+  return { tone: 'warn', title: `Geo\u00a0数据有\u00a0${dataWarnings.length}\u00a0个问题`, detail: '用到它们的 GeoSite、GeoIP 条件可能不会照想的命中；文件改好以后 KixDNS 会自己读进来', items: [...dataWarnings] }
+}

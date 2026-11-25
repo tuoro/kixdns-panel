@@ -1418,11 +1418,7 @@ async fn apply_system_config(
         .await?;
     if let Err(error) = state
         .control
-        .wait_for_config(
-            &result.sha256,
-            before_reload.reload_sequence,
-            std::time::Duration::from_secs(5),
-        )
+        .wait_for_config(&result.sha256, before_reload.reload_sequence)
         .await
     {
         rollback_config(state, previous.content, &result.sha256, "system").await?;
@@ -1461,11 +1457,7 @@ async fn rollback_config(
         .map_err(map_config_error)?;
     state
         .control
-        .wait_for_config(
-            &rollback.sha256,
-            current_sequence,
-            std::time::Duration::from_secs(5),
-        )
+        .wait_for_config(&rollback.sha256, current_sequence)
         .await
         .map_err(|error| {
             AppError::Internal(anyhow::anyhow!("自动回滚后 KixDNS 未恢复：{error}"))
@@ -1606,11 +1598,7 @@ async fn activate_candidate(
         } else {
             state
                 .control
-                .wait_for_config(
-                    &result.sha256,
-                    before_reload.reload_sequence,
-                    std::time::Duration::from_secs(5),
-                )
+                .wait_for_config(&result.sha256, before_reload.reload_sequence)
                 .await
         };
     let active_config = match active_config {
@@ -2123,6 +2111,9 @@ fn map_control_error(error: ControlError) -> AppError {
         ControlError::Unsupported(message) => {
             AppError::NotFound("kixdns_capability_unsupported", message)
         }
+        ControlError::NotReloaded(message) => {
+            AppError::ServiceUnavailable("kixdns_not_reloaded", message)
+        }
     }
 }
 
@@ -2137,12 +2128,12 @@ fn reload_failure(error: &ControlError) -> String {
     }
 }
 
-// 控制接口的套接字不在就是 KixDNS 停了；已经以 KixDNS 开头的句子照原样；其余说连不上。
-// A missing control socket means KixDNS has stopped; sentences already naming KixDNS stay as
-// they are; anything else says it could not be reached.
+// 控制接口的套接字不在就是 KixDNS 停了（错误号正好是 2，不是 24、28 这样开头是 2 的）；已经以 KixDNS 开头的句子照原样；其余说连不上。
+// A missing control socket means KixDNS has stopped (error number exactly 2, not 24, 28 or another starting with 2);
+// sentences already naming KixDNS stay as they are; anything else says it could not be reached.
 fn normalize_control_unavailable_message(message: &str) -> String {
     if message.contains("No such file")
-        || message.contains("os error 2")
+        || message.contains("(os error 2)")
         || message.contains("找不到指定的文件")
     {
         "KixDNS 已停止".to_owned()
