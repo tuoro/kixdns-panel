@@ -6,6 +6,7 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
+use crate::container::ContainerInfo;
 use crate::error::{AppError, AppResult};
 use crate::panel_update::{PanelUpdateStatus, read_status as read_panel_update_status};
 use crate::updates::{GithubTokenStatus, KixdnsKernel, LiveServiceHost, UpdateNotifications};
@@ -66,6 +67,7 @@ pub(super) fn routes() -> Router<AppState> {
             "/panel-update",
             get(panel_update_status).post(start_panel_update),
         )
+        .route("/container", get(container_info))
         .route("/kixdns/kernel", get(kixdns_kernel))
         .route("/kixdns/kernel/update", post(update_kixdns_kernel))
         .route("/kixdns/kernel/rollback", post(rollback_kixdns_kernel))
@@ -80,12 +82,55 @@ pub(super) fn routes() -> Router<AppState> {
 /// compatibility check, switch and rollback as the update button; when any step fails
 /// nothing changes, the audit log says so, and the next start tries again while the user
 /// can still update from the System page.
-pub(super) fn spawn_legacy_kernel_replacement(state: AppState) {
+/// 容器里还先看一眼镜像带的内核，见 [`install_image_kernel`]
+/// In a container the image's kernel is looked at first, see [`install_image_kernel`]
+pub(super) fn spawn_kernel_replacement(state: AppState) {
     tokio::spawn(async move {
+        if let Err(error) = install_image_kernel(&state).await {
+            tracing::warn!(error = ?error, "换成镜像带的内核没有完成");
+        }
         if let Err(error) = replace_legacy_kernel(&state).await {
             tracing::warn!(error = ?error, "自动替换旧内核没有完成");
         }
     });
+}
+
+/// 容器里镜像带的内核比正在用的新（换了镜像）：启动后换成它，走和「更新」按钮同一套切换；哪一步失败都保持原样、记进审计
+/// In a container whose image carries a newer kernel than the one in use (a new image): switched to after start-up
+/// through the same switch as the update button; when any step fails nothing changes and the audit log says so
+async fn install_image_kernel(state: &AppState) -> anyhow::Result<()> {
+    let Some(container) = &state.container else {
+        return Ok(());
+    };
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let config = state.config.current().await?;
+    let (action, detail) = match state
+        .updates
+        .install_image_kernel(
+            &container.image_kernel(),
+            &config.content,
+            &live_host(state),
+        )
+        .await
+    {
+        Ok(None) => return Ok(()),
+        Ok(Some((replaced, installed))) => (
+            "kixdns.kernel.replace_image",
+            format!(
+                "镜像带的内核比正在用的新，自动{} {}",
+                after_verb("从", &replaced.label()),
+                after_verb("换成", &installed.label())
+            ),
+        ),
+        Err(error) => (
+            "kixdns.kernel.replace_image_failed",
+            format!("没能换成镜像带的内核：{error}。下次启动面板时再试，也可以在系统页手动更新"),
+        ),
+    };
+    state
+        .database
+        .audit(None, action.to_owned(), detail, unix_timestamp())
+        .await
 }
 
 async fn replace_legacy_kernel(state: &AppState) -> anyhow::Result<()> {
@@ -193,10 +238,28 @@ async fn panel_update_status(
     jar: CookieJar,
 ) -> AppResult<Json<PanelUpdateStatus>> {
     authenticate(&state.database, &jar).await?;
-    read_panel_update_status()
-        .await
-        .map(Json)
-        .map_err(AppError::Internal)
+    read_update_status(&state).await.map(Json)
+}
+
+/// 面板在线更新的状态：容器里是面板自己记的，别处是 root 的在线更新器记的 / The panel online update's state: recorded by
+/// the panel itself in a container, by root's online updater elsewhere
+async fn read_update_status(state: &AppState) -> AppResult<PanelUpdateStatus> {
+    match &state.container {
+        Some(container) => container.status().await,
+        None => read_panel_update_status().await,
+    }
+    .map_err(AppError::Internal)
+}
+
+/// 在容器里时系统页要的信息；不在容器里是 `null` / What the system page needs in a container; `null` elsewhere
+async fn container_info(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<Option<ContainerInfo>>> {
+    authenticate(&state.database, &jar).await?;
+    Ok(Json(
+        state.container.as_ref().map(|container| container.info()),
+    ))
 }
 
 async fn start_panel_update(
@@ -206,11 +269,7 @@ async fn start_panel_update(
 ) -> AppResult<Json<PanelUpdateStartResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
-    if read_panel_update_status()
-        .await
-        .map_err(AppError::Internal)?
-        .is_running()
-    {
+    if read_update_status(&state).await?.is_running() {
         return Err(AppError::Conflict(
             "panel_update_running",
             "面板在线更新正在进行".to_owned(),
@@ -229,15 +288,37 @@ async fn start_panel_update(
     }
     let target_version = format!(
         "v{}",
-        notice.latest_version.ok_or_else(|| {
+        notice.latest_version.as_deref().ok_or_else(|| {
             AppError::Internal(anyhow::anyhow!("可用面板更新缺少目标版本"))
         })?
     );
-    state
-        .operations
-        .start_panel_update()
-        .await
-        .map_err(map_operation_error)?;
+    // 容器里面板自己下载、装好，再请看管进程换上；别处由 helper 起 root 的在线更新器
+    // In a container the panel downloads and installs it itself, then asks the supervisor to switch; elsewhere the helper
+    // starts root's online updater
+    match &state.container {
+        Some(container) => {
+            let started = container
+                .start_update(
+                    notice,
+                    target_version.clone(),
+                    state.updates.clone(),
+                    state.operations.clone(),
+                )
+                .await
+                .map_err(AppError::Internal)?;
+            if !started {
+                return Err(AppError::Conflict(
+                    "panel_update_running",
+                    "面板在线更新正在进行".to_owned(),
+                ));
+            }
+        }
+        None => state
+            .operations
+            .start_panel_update()
+            .await
+            .map_err(map_operation_error)?,
+    }
     state
         .database
         .audit(

@@ -44,6 +44,7 @@ pub(crate) fn test_settings(directory: &std::path::Path) -> UpdateSettings {
         versions_path: directory.join("versions"),
         bundled_metadata: directory.join("bundle"),
         github_token_path: directory.join("github-token"),
+        panel_release_api: None,
     }
 }
 
@@ -665,18 +666,21 @@ fn test_release(tag: &str, size: u64, digest: Option<String>) -> GithubRelease {
                 name: kernel_asset_name(tag),
                 size,
                 digest,
+                browser_download_url: None,
             },
             ReleaseAsset {
                 id: 78,
                 name: format!("kixdns-{tag}-linux-{other}.zip"),
                 size: 9,
                 digest: None,
+                browser_download_url: None,
             },
             ReleaseAsset {
                 id: 79,
                 name: "manifest.json".to_owned(),
                 size: 700,
                 digest: None,
+                browser_download_url: None,
             },
         ],
     }
@@ -828,6 +832,9 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
             name: asset_name.to_owned(),
             size: 1,
             digest: Some(format!("sha256:{}", "a".repeat(64))),
+            browser_download_url: Some(format!(
+                "https://github.com/tuoro/kixdns-panel/releases/download/{tag}/{asset_name}"
+            )),
         }],
     };
     let current_version = env!("CARGO_PKG_VERSION");
@@ -2400,5 +2407,112 @@ async fn start_up_stores_the_bundled_kernel_only_with_room() {
             stored,
             "room {room}"
         );
+    }
+}
+
+/// 容器里正在用 fork 的 `active` 版（包编号 5），镜像带的是 `TEST_VERSION`（包编号 77，身份在 bundle 里）
+/// In a container the fork release `active` (package 5) is in use and the image carries `TEST_VERSION` (package 77,
+/// identity in the bundle)
+async fn image_kernel_fixture(
+    active: &str,
+) -> (
+    tempfile::TempDir,
+    UpdateManager,
+    std::path::PathBuf,
+    Vec<u8>,
+) {
+    let directory = tempdir().unwrap();
+    let database = Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let versions = directory.path().join("versions");
+    let (remote, binary) = store_fork_build(&versions, 5, active);
+    std::fs::create_dir_all(directory.path().join("bin")).unwrap();
+    std::fs::write(directory.path().join("bin/kixdns"), &binary).unwrap();
+    database
+        .set_setting(
+            super::ACTIVE_VERSION_KEY,
+            VersionKey::remote(&remote).unwrap().encoded(),
+            1,
+        )
+        .await
+        .unwrap();
+    let mut image_binary = test_elf();
+    image_binary[29] = 9;
+    let image = directory.path().join("image/bin/kixdns");
+    std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+    std::fs::write(&image, &image_binary).unwrap();
+    let bundled_metadata = directory.path().join("image/bundle");
+    write_fork_bundle_metadata(&bundled_metadata, &image_binary, TEST_VERSION);
+    let manager = UpdateManager::new(
+        database,
+        UpdateSettings {
+            installed_source: Some("fork".to_owned()),
+            installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
+            installed_source_id: Some(77),
+            bundled_metadata,
+            ..test_settings(directory.path())
+        },
+    )
+    .unwrap();
+    (directory, manager, image, image_binary)
+}
+
+/// 镜像带的内核比正在用的新：照在线更新那样换上（重启一次、等它答），换下的留作上一个；已经是它了就不再动
+/// The image's kernel is newer than the one in use: switched to as an online update does (one restart, waiting for an
+/// answer), with the replaced one kept as the previous; once it runs nothing more happens
+#[tokio::test]
+async fn a_newer_image_kernel_replaces_the_one_in_use() {
+    let (directory, manager, image, image_binary) = image_kernel_fixture("2026.10.12").await;
+    let host = FakeHost::new(true);
+    let (replaced, installed) = manager
+        .install_image_kernel(&image, &empty_config(), &host)
+        .await
+        .unwrap()
+        .expect("镜像带的更新，要换上");
+    assert_eq!(replaced.label(), "2026.10.12");
+    assert_eq!(installed.label(), TEST_VERSION);
+    assert_eq!(
+        std::fs::read(directory.path().join("bin/kixdns")).unwrap(),
+        image_binary
+    );
+    assert_eq!(host.calls(), ["Restart", "Health"]);
+    assert_eq!(
+        manager
+            .previous_key(manager.active_version().await.unwrap().as_ref())
+            .await,
+        Some(VersionKey::tracked(VersionSource::Fork, 5, TEST_BUILD_COMMIT).unwrap())
+    );
+    assert!(
+        manager
+            .install_image_kernel(&image, &empty_config(), &host)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(host.calls(), ["Restart", "Health"]);
+}
+
+/// 正在用的和镜像带的一样新或者更新（在线装上的）：不降级，什么都不动
+/// The one in use is as new as the image's or newer (installed online): no downgrade, nothing changes
+#[tokio::test]
+async fn an_image_kernel_never_downgrades_the_one_in_use() {
+    for active in [TEST_VERSION, "2026.10.14"] {
+        let (directory, manager, image, _) = image_kernel_fixture(active).await;
+        let before = std::fs::read(directory.path().join("bin/kixdns")).unwrap();
+        let host = FakeHost::new(true);
+        assert!(
+            manager
+                .install_image_kernel(&image, &empty_config(), &host)
+                .await
+                .unwrap()
+                .is_none(),
+            "{active}"
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("bin/kixdns")).unwrap(),
+            before
+        );
+        assert!(host.calls().is_empty());
     }
 }

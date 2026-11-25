@@ -169,6 +169,8 @@ pub struct UpdateManager {
     apply_lock: Arc<Mutex<()>>,
     latest_cache: Arc<RwLock<Option<CachedLatest>>>,
     panel_cache: Arc<RwLock<Option<CachedPanelUpdate>>>,
+    /// 面板最新发布从哪里读；`None` 是 GitHub / Where the panel's latest release is read; `None` is GitHub
+    panel_release_api: Option<Arc<str>>,
     github_token_path: Arc<PathBuf>,
     github_token: Arc<RwLock<Option<SecretString>>>,
     github_rate_limit: Arc<RwLock<Option<GithubRateLimit>>>,
@@ -196,6 +198,11 @@ pub struct UpdateSettings {
     pub versions_path: PathBuf,
     pub bundled_metadata: PathBuf,
     pub github_token_path: PathBuf,
+    /// 面板最新发布的接口地址（GitHub `releases/latest` 的格式），不带 GitHub Token；不给就问 GitHub。给 CI 的验收用本地起的假
+    /// Release
+    /// The address of the panel's latest release (in GitHub's `releases/latest` format), asked without the GitHub token;
+    /// GitHub when not given. For CI acceptance against a fake release served locally
+    pub panel_release_api: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -489,6 +496,9 @@ struct ReleaseAsset {
     #[serde(default)]
     size: u64,
     digest: Option<String>,
+    /// 这个文件的下载地址，GitHub 给的就是发布页上的那个 / This file's download address; GitHub gives the release page's
+    #[serde(default)]
+    browser_download_url: Option<String>,
 }
 
 /// 内核发布附带的 `manifest.json`。以后多出的字段不影响读取。
@@ -619,6 +629,7 @@ impl UpdateManager {
             versions_path,
             bundled_metadata,
             github_token_path,
+            panel_release_api,
         } = settings;
         let panel_installed_release =
             panel_installed_release.filter(|release| !release.trim().is_empty());
@@ -697,6 +708,7 @@ impl UpdateManager {
             apply_lock: Arc::new(Mutex::new(())),
             latest_cache: Arc::new(RwLock::new(None)),
             panel_cache: Arc::new(RwLock::new(None)),
+            panel_release_api: panel_release_api.map(Arc::from),
             github_token_path: Arc::new(github_token_path),
             github_token: Arc::new(RwLock::new(github_token)),
             github_rate_limit: Arc::new(RwLock::new(None)),

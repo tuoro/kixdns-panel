@@ -75,10 +75,15 @@ async fn slow_artifact_download_outlives_the_api_timeout() {
     )
     .unwrap();
 
-    let bytes =
-        UpdateManager::fetch_limited(&client, &url, MAX_ARTIFACT_BYTES, Duration::from_secs(5))
-            .await
-            .unwrap();
+    let bytes = UpdateManager::fetch_limited(
+        &client,
+        "KixDNS 内核",
+        &url,
+        MAX_ARTIFACT_BYTES,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(bytes, b"kkkkkkkk");
 }
@@ -97,8 +102,14 @@ async fn stalled_artifact_download_fails_on_the_read_timeout() {
     let started = Instant::now();
 
     let message = timeout_message(
-        UpdateManager::fetch_limited(&client, &url, MAX_ARTIFACT_BYTES, Duration::from_secs(20))
-            .await,
+        UpdateManager::fetch_limited(
+            &client,
+            "KixDNS 内核",
+            &url,
+            MAX_ARTIFACT_BYTES,
+            Duration::from_secs(20),
+        )
+        .await,
     );
 
     assert!(
@@ -125,6 +136,7 @@ async fn endless_artifact_download_fails_on_the_download_timeout() {
     let message = timeout_message(
         UpdateManager::fetch_limited(
             &client,
+            "KixDNS 内核",
             &url,
             MAX_ARTIFACT_BYTES,
             Duration::from_millis(500),
@@ -201,6 +213,7 @@ async fn a_release_file_past_its_limit_is_refused() {
 
     let error = UpdateManager::fetch_limited(
         &test_client(),
+        "内核发布清单",
         &format!("{server}/manifest.json"),
         1024,
         Duration::from_secs(5),
@@ -223,6 +236,7 @@ async fn follows_the_release_redirect_to_storage_without_credentials() {
 
     let bytes = UpdateManager::download_verified(
         &test_client(),
+        "KixDNS 内核",
         &format!("{github}/releases/download/{TEST_VERSION}/package.zip"),
         &digest_of(b"package"),
         Duration::from_secs(5),
@@ -240,6 +254,7 @@ async fn a_package_that_differs_from_the_manifest_is_refused() {
 
     let error = UpdateManager::download_verified(
         &test_client(),
+        "KixDNS 内核",
         &format!("{server}/package.zip"),
         &digest_of(b"package"),
         Duration::from_secs(5),

@@ -222,15 +222,23 @@ impl Layout {
         Ok(file)
     }
 
-    /// 要跑的面板：镜像里的和 /data/panel 里在线装的，取版本最新、没被记成起不来的那个；一样新时用镜像里的
-    /// The panel to run: of the image's and those installed online under /data/panel, the newest one not recorded as failing
-    /// to come up; the image's when they are equally new
-    pub fn choose_panel(&self, failed: &BTreeMap<String, PanelFailure>) -> PanelRoot {
-        let image = PanelRoot {
+    /// 镜像里的面板：就是和看管进程一起编的那份，版本也一样 / The image's panel: built together with the supervisor, of the
+    /// same version
+    fn image_root(&self) -> PanelRoot {
+        PanelRoot {
             dir: self.image.clone(),
             version: parse_version(env!("CARGO_PKG_VERSION")).unwrap_or_default(),
             online: false,
-        };
+        }
+    }
+
+    /// 要跑的面板：镜像里的和 /data/panel 里在线装的，取版本最新、没被记成起不来的那个。一样新时用在线装的：换上的总是更新的
+    /// 版本，拉了同一版本的镜像不会把用户在线装上的那份换下来
+    /// The panel to run: of the image's and those installed online under /data/panel, the newest one not recorded as failing
+    /// to come up. When equally new the online one runs: a switch is only ever to something newer, so pulling an image of
+    /// the same version does not take down the copy the user installed online
+    pub fn choose_panel(&self, failed: &BTreeMap<String, PanelFailure>) -> PanelRoot {
+        let image = self.image_root();
         let Ok(entries) = fs::read_dir(self.data.join("panel")) else {
             return image;
         };
@@ -243,7 +251,7 @@ impl Layout {
                     dir: entry.path(),
                     online: true,
                 };
-                (root.version > image.version && !failed.contains_key(&name) && complete(&root))
+                (root.version >= image.version && !failed.contains_key(&name) && complete(&root))
                     .then_some(root)
             })
             .max_by_key(|root| root.version)
@@ -260,6 +268,11 @@ impl Layout {
         let path = |path: PathBuf| Some(path.into_os_string());
         let mut env = vec![
             ("KIXDNS_CONTAINER_DATA", path(self.data.clone())),
+            ("KIXDNS_CONTAINER_IMAGE", path(self.image.clone())),
+            (
+                "KIXDNS_CONTAINER_IMAGE_VERSION",
+                Some(self.image_root().name().into()),
+            ),
             (
                 "KIXDNS_PANEL_DATABASE",
                 path(self.config().join("panel.db")),
@@ -611,6 +624,13 @@ mod tests {
             "镜像里的面板就是和看管进程一起编的那份"
         );
 
+        let image_version = env!("CARGO_PKG_VERSION");
+        let same = panel(&layout, image_version, &format!("v{image_version}"));
+        assert_eq!(
+            layout.choose_panel(&BTreeMap::new()).dir,
+            same,
+            "一样新时用在线装的"
+        );
         panel(&layout, "0.0.1", "v0.0.1");
         let newer = panel(&layout, "999.0.0", "v999.0.0");
         panel(&layout, "999.1.0", "v999.0.0");
@@ -622,13 +642,16 @@ mod tests {
         assert!(chosen.online);
         assert_eq!(chosen.label(), "在线装的面板 v999.0.0");
 
-        let failed = BTreeMap::from([(
-            "999.0.0".to_owned(),
-            PanelFailure {
-                at: 1,
-                reason: String::new(),
-            },
-        )]);
+        let failure = || PanelFailure {
+            at: 1,
+            reason: String::new(),
+        };
+        let failed = BTreeMap::from([("999.0.0".to_owned(), failure())]);
+        assert_eq!(layout.choose_panel(&failed).dir, same, "退回下一份");
+        let failed = BTreeMap::from([
+            ("999.0.0".to_owned(), failure()),
+            (image_version.to_owned(), failure()),
+        ]);
         assert_eq!(layout.choose_panel(&failed).dir, layout.image);
     }
 
@@ -649,6 +672,11 @@ mod tests {
         let value = |key: &str| env.get(key).cloned().flatten();
         let path = |path: std::path::PathBuf| Some(OsString::from(path));
         assert_eq!(value("KIXDNS_CONTAINER_DATA"), path(layout.data.clone()));
+        assert_eq!(value("KIXDNS_CONTAINER_IMAGE"), path(layout.image.clone()));
+        assert_eq!(
+            value("KIXDNS_CONTAINER_IMAGE_VERSION"),
+            Some(env!("CARGO_PKG_VERSION").into())
+        );
         assert_eq!(
             value("KIXDNS_CONFIG"),
             path(layout.data.join("config/pipeline.json"))

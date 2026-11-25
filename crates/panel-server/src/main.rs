@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use kixdns_panel_server::{AppSettings, TrustedProxies, reset_admins, run};
+use kixdns_panel_server::{AppSettings, ContainerSettings, TrustedProxies, reset_admins, run};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -54,9 +54,21 @@ struct Args {
     #[arg(long, env = "KIXDNS_SERVICE_LOG")]
     service_log: Option<PathBuf>,
 
-    /// 容器里的数据卷；由看管进程（`kixdns-panel-helper supervise`）给出，给出时内核状态问看管进程。
+    /// 容器里的数据卷；由看管进程（`kixdns-panel-helper supervise`）给出，给出时内核状态问看管进程、面板自己在线更新。
     #[arg(long, env = "KIXDNS_CONTAINER_DATA")]
     container_data: Option<PathBuf>,
+
+    /// 容器镜像里的面板目录（看管进程给出）。
+    #[arg(long, env = "KIXDNS_CONTAINER_IMAGE")]
+    container_image: Option<PathBuf>,
+
+    /// 容器镜像里的面板版本（看管进程给出）。
+    #[arg(long, env = "KIXDNS_CONTAINER_IMAGE_VERSION")]
+    container_image_version: Option<String>,
+
+    /// 面板最新发布的接口地址（GitHub `releases/latest` 的格式），不带 GitHub Token；不给就问 GitHub。给 CI 验收用本地的假 Release。
+    #[arg(long, env = "KIXDNS_PANEL_RELEASE_API")]
+    panel_release_api: Option<String>,
 
     /// DNS 诊断服务器地址；本机地址会自动跟随当前配置的 UDP 监听端口。
     #[arg(long, env = "KIXDNS_DIAGNOSTIC_SERVER", default_value = "127.0.0.1:53")]
@@ -176,9 +188,12 @@ impl Args {
             service_helper_socket: args.service_helper_socket,
             service_pidfile: args.service_pidfile,
             service_log: args.service_log,
-            container_data: args
-                .container_data
-                .filter(|path| !path.as_os_str().is_empty()),
+            container: container_settings(
+                args.container_data,
+                args.container_image,
+                args.container_image_version,
+            )?,
+            panel_release_api: present(args.panel_release_api),
             diagnostic_server: args.diagnostic_server,
             kernel_repository: args.kernel_repository,
             installed_source: present(args.installed_source),
@@ -223,6 +238,24 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     run(args.into_settings()?).await.context("面板服务异常退出")
+}
+
+/// 看管进程总是三个一起给；只给了数据卷是装错了，不猜 / The supervisor always gives all three; a data volume alone is a
+/// broken setup, not to be guessed at
+fn container_settings(
+    data: Option<PathBuf>,
+    image: Option<PathBuf>,
+    image_version: Option<String>,
+) -> anyhow::Result<Option<ContainerSettings>> {
+    let Some(data) = data.filter(|path| !path.as_os_str().is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(ContainerSettings {
+        data,
+        image: image.context("容器里缺少 KIXDNS_CONTAINER_IMAGE")?,
+        image_version: present(image_version)
+            .context("容器里缺少 KIXDNS_CONTAINER_IMAGE_VERSION")?,
+    }))
 }
 
 fn present(value: Option<String>) -> Option<String> {

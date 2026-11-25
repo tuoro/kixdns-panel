@@ -20,6 +20,7 @@ import { apiRequest, jsonBody } from '../api/client'
 import type {
   ActiveConfig,
   ConfigDocument,
+  ContainerInfo,
   GithubTokenStatus,
   KixdnsKernel,
   Overview,
@@ -225,7 +226,7 @@ const panelUpdateFailure = computed(() => {
   const status = panelUpdate.value
   if (status?.state !== 'failed') return ''
   if (panelUpdateIdentity(status) === dismissedPanelUpdateFailure.value) return ''
-  return status.message || '面板在线更新失败，详情见 journalctl -u kixdns-panel-update.service'
+  return status.message || `面板在线更新失败，详情见 ${panelLogCommand.value}`
 })
 
 const panelTaskState = computed<UiTaskState>(() => {
@@ -246,6 +247,21 @@ const panelUpdateProgress = computed(() => (
 const panelVersion = computed(() => (
   panelNotice.value ? panelNotice.value.current_release ?? `v${panelNotice.value.current_version}` : ''
 ))
+
+// 在容器里：数据卷在哪、跑的是镜像里的还是在线装的那份；排查命令换成 docker logs（compose 示例里容器叫 kixdns-panel）
+// In a container: where the data volume is and whether the image's or the online copy runs; the command to look is docker logs
+// (the compose example names the container kixdns-panel)
+const container = ref<ContainerInfo | null>(null)
+const panelLogCommand = computed(() => (
+  container.value ? 'docker logs kixdns-panel' : 'journalctl -u kixdns-panel-update.service -n 50 --no-pager'
+))
+async function loadContainer(): Promise<void> {
+  try {
+    container.value = await apiRequest<ContainerInfo | null>('/api/v1/container')
+  } catch {
+    container.value = null
+  }
+}
 
 function dismissPanelUpdateFailure(): void {
   if (!panelUpdate.value) return
@@ -404,7 +420,7 @@ async function pollPanelUpdate(): Promise<void> {
   if (Date.now() < panelUpdateDeadline) {
     schedulePanelUpdatePoll()
   } else {
-    toast.error('没能确认在线更新的结果。查看原因：journalctl -u kixdns-panel-update.service -n 50 --no-pager')
+    toast.error(`没能确认在线更新的结果。查看原因：${panelLogCommand.value}`)
   }
 }
 
@@ -677,6 +693,7 @@ async function rollbackKernel(): Promise<void> {
 function loadPage(): void {
   void Promise.all([refreshAll(), refreshUpdates()]).then(() => loadGithubTokenStatus())
   void loadPanelUpdateStatus()
+  void loadContainer()
 }
 onMounted(loadPage)
 // 连上面板后整页重读一次，不用人去点重试 / Once the panel answers again the whole page re-reads, with nobody pressing 重试
@@ -732,7 +749,9 @@ onBeforeUnmount(() => {
             <b :title="panelDown ? '状态未知' : running && !waitingBack ? '正在运行' : serviceWords"><span v-if="waitingBack && !panelDown" class="ui-spin system-spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="panelDown ? 'ui-dot--off' : serviceTone === 'ok' ? '' : `ui-dot--${serviceTone}`" aria-hidden="true"></span>{{ service.unit }}<small v-if="panelDown">状态未知</small><template v-else><small v-if="!running || waitingBack">{{ serviceWords }}</small><small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></template></b>
           </div>
           <div v-if="service?.main_pid && !panelDown && !waitingBack" class="system-fact-pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
-          <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
+          <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}<small v-if="container">{{ container.online ? '在线装的' : '镜像自带' }}</small></b></div>
+          <!-- 容器里多一项：数据卷和镜像自带的面板版本（在线装过以后两个版本不一样）/ In a container one more: the data volume and the image's panel version (they differ once updated online) -->
+          <div v-if="container"><span class="ui-lbl">容器</span><b>数据卷 <span class="ui-mono">{{ container.data }}</span><small>镜像 v{{ container.image_version }}</small></b></div>
           <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '还没安装' }}</b></div>
         </div>
         <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service && waitingBack && !panelDown" class="ui-spin system-spin" aria-hidden="true"></span><span v-else-if="service" class="ui-dot" :class="panelDown ? 'ui-dot--off' : serviceTone === 'ok' ? '' : `ui-dot--${serviceTone}`" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : serviceWords] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [kernelPhoneLabel] : [])]" /></span>

@@ -35,7 +35,7 @@ impl PanelUpdateStatus {
         ) && unix_timestamp().saturating_sub(self.updated_at) <= RUNNING_TIMEOUT_SECONDS
     }
 
-    fn validate(mut self) -> Result<Self, anyhow::Error> {
+    pub(crate) fn validate(mut self) -> Result<Self, anyhow::Error> {
         if self.message.chars().count() > 300
             || (!self.target_version.is_empty() && !valid_release(&self.target_version))
         {
@@ -61,7 +61,20 @@ impl PanelUpdateStatus {
 }
 
 pub async fn read_status() -> Result<PanelUpdateStatus, anyhow::Error> {
-    let metadata = match tokio::fs::symlink_metadata(STATUS_FILE).await {
+    read_status_at(std::path::Path::new(STATUS_FILE), trusted_metadata)
+        .await?
+        .validate()
+}
+
+/// 读一个状态文件，只看文件本身（是普通文件、不太大、`trusted` 认它），内容留给 [`PanelUpdateStatus::validate`]；没有文件就是
+/// 空闲
+/// Reads a status file, judging the file only (a regular file, not too large, accepted by `trusted`) and leaving the content
+/// to [`PanelUpdateStatus::validate`]; no file means idle
+pub(crate) async fn read_status_at(
+    path: &std::path::Path,
+    trusted: fn(&std::fs::Metadata) -> bool,
+) -> Result<PanelUpdateStatus, anyhow::Error> {
+    let metadata = match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(idle_status()),
         Err(error) => return Err(error.into()),
@@ -69,14 +82,14 @@ pub async fn read_status() -> Result<PanelUpdateStatus, anyhow::Error> {
     if metadata.file_type().is_symlink()
         || !metadata.is_file()
         || metadata.len() > MAX_STATUS_BYTES
-        || !trusted_metadata(&metadata)
+        || !trusted(&metadata)
     {
         anyhow::bail!("面板在线更新状态文件权限无效");
     }
     let capacity = usize::try_from(metadata.len())
         .map_err(|_| anyhow::anyhow!("面板在线更新状态文件大小无效"))?;
     let mut content = Vec::with_capacity(capacity);
-    tokio::fs::File::open(STATUS_FILE)
+    tokio::fs::File::open(path)
         .await?
         .take(MAX_STATUS_BYTES + 1)
         .read_to_end(&mut content)
@@ -84,10 +97,10 @@ pub async fn read_status() -> Result<PanelUpdateStatus, anyhow::Error> {
     if content.len() as u64 > MAX_STATUS_BYTES {
         anyhow::bail!("面板在线更新状态文件过大");
     }
-    serde_json::from_slice::<PanelUpdateStatus>(&content)?.validate()
+    Ok(serde_json::from_slice::<PanelUpdateStatus>(&content)?)
 }
 
-fn idle_status() -> PanelUpdateStatus {
+pub(crate) fn idle_status() -> PanelUpdateStatus {
     PanelUpdateStatus {
         state: PanelUpdateState::Idle,
         message: String::new(),
@@ -118,7 +131,7 @@ fn valid_release(value: &str) -> bool {
             .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-fn unix_timestamp() -> u64 {
+pub(crate) fn unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

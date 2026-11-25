@@ -225,6 +225,33 @@ impl UpdateManager {
             .map_err(|error| UpdateError::Network(error.to_string()))
     }
 
+    /// 不是 GitHub 的发布接口（见 `UpdateSettings::panel_release_api`）：不带 Token，没有就是 `None`
+    /// A release endpoint that is not GitHub's (see `UpdateSettings::panel_release_api`): no token, `None` when absent
+    pub(super) async fn get_json_without_token<T>(
+        &self,
+        url: &str,
+    ) -> Result<Option<T>, UpdateError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| UpdateError::Network(format!("连不上 {url}：{error}")))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        response
+            .error_for_status()
+            .map_err(|error| UpdateError::Network(error.to_string()))?
+            .json()
+            .await
+            .map(Some)
+            .map_err(|error| UpdateError::Network(error.to_string()))
+    }
+
     pub(super) async fn github_response_optional(
         &self,
         url: &str,
