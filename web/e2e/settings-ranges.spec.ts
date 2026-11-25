@@ -74,3 +74,22 @@ test('刷新阈值到 99、可以是 0；分片数要 2 的幂', async ({ page }
   await shards.fill('64')
   await expect(page.locator('.ui-field-error', { hasText: '2 的幂' })).toHaveCount(0)
 })
+
+// 开关关着的设置写错了内核照样不收：列出来、能改，改对了离开这一格才收起
+// A wrong setting is refused even with its switch off: it is listed and editable, and goes once put right and left
+test('后台刷新关着、刷新阈值写错了：照样列出来能改，改对了离开才收起', async ({ page }) => {
+  await page.goto('/config?section=settings')
+  await page.locator('.settings-nav').getByRole('button', { name: /缓存与后台刷新/ }).click()
+  await page.evaluate(async () => {
+    const url = (part: string) => performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes(part)).pop()!
+    const store = await import(url('/src/config-v2/store.ts'))
+    store.model.settings = { ...store.model.settings, cache_background_refresh: false, cache_refresh_threshold_percent: 100 }
+  })
+  const threshold = page.getByLabel('刷新阈值 (%)', { exact: true })
+  await expect(threshold).toBeEnabled()
+  await expect(page.locator('.ui-field-error', { hasText: '填 0 到 99 之间的整数' })).toBeVisible()
+  await threshold.fill('10')
+  await expect(threshold).toBeVisible()
+  await threshold.blur()
+  await expect(threshold).toHaveCount(0)
+})
