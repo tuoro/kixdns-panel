@@ -14,7 +14,8 @@ import { compile, defaultUpstreamFromRest, groupName, outcomeProblem, upstreamLi
 import { retentionText } from '../querylog'
 import { errorMessage } from '../utils'
 import { changedSettingKeys, model } from './store'
-import { capabilityError, runtimeCapabilities } from './useConfigDocument'
+import KernelNotes from '../components/KernelNotes.vue'
+import { capabilityError, runtimeCapabilities, runtimeDohNote } from './useConfigDocument'
 
 // 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、Geo 数据），最前面多一组「规则默认值」。
 // 「默认上游」一般不单独出现：它由「其余请求」决定，生成配置时写成那个组的地址。
@@ -146,6 +147,9 @@ async function saveQueryLog(): Promise<void> {
             <QueryLogSettingsForm ref="querylogForm" v-model:settings="querylog" id-prefix="sets-ql" @cleared="toast.success('查询日志已清空')" />
           </template>
         </template>
+        <!-- 入站 DoH 没起来：挨着 DoH 的几项设置说，改好以后要重启才会变 / Inbound DoH did not start: said beside the DoH settings, which change
+             only after a restart once fixed -->
+        <template #note="{ section }"><KernelNotes v-if="section === 'network' && runtimeDohNote" class="sets__kernel" :note="runtimeDohNote" /></template>
         <template #tail-actions>
           <button v-if="!querylogError" class="ui-btn ui-btn--primary" type="button" :disabled="!querylog || querylogForm?.busy" :aria-busy="querylogForm?.busy || undefined" @click="saveQueryLog">保存查询日志设置</button>
         </template>

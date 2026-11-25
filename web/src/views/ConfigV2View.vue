@@ -28,7 +28,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, leaveMark, saveBarShown, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse, startupNote } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, leaveMark, saveBarShown, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse, runningWarningsNote, startupNote } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -951,6 +951,10 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <!-- 在用的配置里下次保存前要改掉的写法：常驻，改好并生效了 KixDNS 才清掉；规则名能点 / What the config in use writes that must change before
          the next save: it stays until a fix takes effect and KixDNS clears it; rule names are links -->
     <KernelNotes v-if="startupNote && ready" class="cfg__kernel" :note="startupNote">
+      <template #item="{ text }"><RuleText :text="text" breaks @rule="openRule($event, null)" @group="openGroup($event)" /></template>
+    </KernelNotes>
+    <!-- 在用的配置照样生效、却值得知道的写法：灰色，不催着改 / What the config in use writes that takes effect all the same yet is worth knowing: grey, no hurry -->
+    <KernelNotes v-if="runningWarningsNote && ready" class="cfg__kernel" :note="runningWarningsNote">
       <template #item="{ text }"><RuleText :text="text" breaks @rule="openRule($event, null)" @group="openGroup($event)" /></template>
     </KernelNotes>
 

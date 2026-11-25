@@ -2081,6 +2081,7 @@ fn rejected_validation_cannot_reach_config_write() {
         valid: false,
         pipeline_count: 0,
         rule_count: 0,
+        warnings: None,
     };
     assert!(ensure_validation_accepted(&validation).is_err());
 }
@@ -3021,6 +3022,22 @@ fn reload_failures_read_as_one_plain_phrase() {
     assert_eq!(
         super::reload_failure(&ControlError::Unavailable("connection refused".to_owned())),
         "连不上 KixDNS：connection refused"
+    );
+    // 错误号以 2 开头的别的错误（打开的文件太多、设备上没空间）不是 KixDNS 停了 / Other errors whose number starts with 2 (too many
+    // open files, no space left) do not mean KixDNS stopped
+    assert_eq!(
+        super::reload_failure(&ControlError::Unavailable(
+            "Too many open files (os error 24)".to_owned()
+        )),
+        "连不上 KixDNS：Too many open files (os error 24)"
+    );
+    // 没等到重载、内核说监视不了配置文件：原因照说，里面的错误号不会被读成 KixDNS 停了 / No reload and the kernel cannot watch the
+    // file: the reason is said as it is, and the error number inside is never read as KixDNS having stopped
+    let unwatched =
+        "KixDNS 没有重载新配置：它监视不了配置文件（No space left on device (os error 28)）";
+    assert_eq!(
+        super::reload_failure(&ControlError::NotReloaded(unwatched.to_owned())),
+        unwatched
     );
 }
 

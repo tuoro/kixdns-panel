@@ -10,7 +10,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
-import { busy, doc, waitingForBuild, cnameBlocked, clashNote, pipelineClash, sayClash, pendingVersionId, queued, reasons, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, saveBarShown, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, doc, waitingForBuild, cnameBlocked, clashNote, pipelineClash, sayClash, pendingVersionId, queued, reasons, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, saveBarShown, stage, validate, validation, validationWarnings, verdict } from './useConfigDocument'
 import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, saysPanelBlock } from '../kernel-problems'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
@@ -195,7 +195,9 @@ function discard(): void {
         <!-- 两个同名的列表：内核不收，保存不了，说是哪个名字（只有 JSON 里手写才会这样） / Two lists of one name: the kernel refuses them,
              so the save cannot happen and the name is said (only a hand-written JSON gets here) -->
         <template v-else-if="pipelineClash"><span class="ui-savebar__verdict">保存不了</span><small>{{ clashNote(pipelineClash) }}</small></template>
-        <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="tight ? ['校验通过'] : ['校验通过', '可以保存']" /></span></template>
+        <!-- 有提醒时说几条、一条条列出来：照样能保存，但值得先看一眼 / With warnings, say how many and list them: saving still works, but they are
+             worth a look first -->
+        <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="validationWarnings.length ? ['校验通过', `${validationWarnings.length}\u00a0条提醒：照样生效，但值得知道`] : tight ? ['校验通过'] : ['校验通过', '可以保存']" /></span><span v-if="validationWarnings.length" class="savebar__reasons" role="list"><span v-for="(warning, i) in validationWarnings" :key="i" role="listitem"><RuleText :text="warning" @rule="emit('rule', $event)" @group="emit('group', $event)" /></span></span></template>
         <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave && !phone"> · {{ deferNote }}</small></span></template>
         <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave && !phone"> · {{ deferNote }}</small></span></template>
       </p>

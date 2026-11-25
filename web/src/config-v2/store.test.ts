@@ -381,6 +381,36 @@ describe('内核给的英文原因', () => {
   })
 })
 
+// 没等到重载时内核说监视不了配置文件，原话里的错误号（os error 28 这样）不能读成 KixDNS 停了；控制接口的套接字真不在时照旧说停了
+// When no reload came the kernel says it cannot watch the file, and an error number in its words (os error 28 and the like) must not read as
+// KixDNS having stopped; a control socket really gone still says it stopped
+describe('哪些原因说的是 KixDNS 停了', () => {
+  it('只认开头的套接字不在，错误号正好是 2', async () => {
+    const { failureCause } = await import('./useConfigDocument')
+    for (const reason of ['No such file or directory (os error 2)', '连不上 KixDNS：No such file or directory (os error 2)', '系统找不到指定的文件。 (os error 2)', 'KixDNS 已停止，仍在用之前的配置']) {
+      expect(failureCause(reason)).toBe('KixDNS 在确认新配置前停了')
+    }
+    for (const reason of ['KixDNS 没有重载新配置：它监视不了配置文件（No space left on device (os error 28)），仍在用之前的配置', '连不上 KixDNS：Too many open files (os error 24)', 'KixDNS 没有重载新配置：它监视不了配置文件（No such file or directory (os error 2)）']) {
+      expect(failureCause(reason)).not.toBe('KixDNS 在确认新配置前停了')
+    }
+  })
+})
+
+// 校验通过、内核有提醒：保存条列出来，路径换成这份草稿里的叫法 / Validation passed with warnings from the kernel: the save bar lists them, paths
+// in this draft's names
+describe('校验的提醒', () => {
+  beforeEach(() => resetTo(demoModel()))
+
+  it('换成页面上的叫法；没有提醒的校验不列', async () => {
+    const { validation, validationWarnings } = await import('./useConfigDocument')
+    validation.value = { protocol_version: 1, valid: true, pipeline_count: 1, rule_count: 1 }
+    expect(validationWarnings.value).toEqual([])
+    validation.value = { ...validation.value, warnings: ['settings.cache_capacity: 2000000 entries may take much memory'] }
+    expect(validationWarnings.value).toEqual([expect.stringMatching(/^设置\u00a0缓存容量：2000000 entries/)])
+    validation.value = null
+  })
+})
+
 // KixDNS 逐条列出了原因：保存条一条条列出来，路径换成这份草稿里的叫法；一条时就说那一条
 // KixDNS listed its reasons one by one: the save bar lists them, paths in this draft's names; a single one is said as it is
 describe('被拒的原因逐条列出', () => {

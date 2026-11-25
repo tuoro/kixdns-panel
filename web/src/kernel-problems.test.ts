@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PANEL_BLOCK_HINT, describeProblem, describeProblems, panelBlockWords, problemsNote, refusesPanelBlock, type PlaceNames } from './kernel-problems'
+import { PANEL_BLOCK_HINT, dataNote, describeProblem, describeProblems, dohNote, panelBlockWords, problemsNote, refusesPanelBlock, warningsNote, watchNote, type PlaceNames } from './kernel-problems'
 
 // 内核 config::problems 说不读的键的原话 / The kernel's config::problems words for a key it does not read
 const unread = (key: string) => `${key}: the kernel does not read this key, so what it says has no effect; check its spelling and where it is written`
@@ -76,5 +76,26 @@ describe('启动时读的配置里要改掉的写法', () => {
     const note = problemsNote([unread('panel')], names, setting)!
     expect(note).toMatchObject({ tone: 'err', title: PANEL_BLOCK_HINT, items: [], update: true })
     expect(problemsNote([unread('panel'), 'settings.bind_udp: bad'], names, setting)!.detail).toContain('另外还有 1 处下次保存前要改掉')
+  })
+})
+
+// 内核报来的别几样状态：没有就不说；有就说是什么、要怎么办，原话逐条列着 / The kernel's other reports: nothing is said without them; with them,
+// what it is and what to do, the kernel's words listed one by one
+describe('内核报来的状态', () => {
+  it('旧内核不报、内核说没事时都不说', () => {
+    expect([warningsNote([], names, setting), watchNote(null), watchNote(undefined), dohNote(null), dataNote(undefined), dataNote([])]).toEqual([null, null, null, null, null, null])
+  })
+
+  it('提醒照样生效，不催着改，路径换成页面上的叫法', () => {
+    const note = warningsNote(['pipelines[0].rules[2]: jumping to "lan" comes back round'], names, setting)!
+    expect(note).toMatchObject({ tone: 'off', title: '在用的配置有\u00a01\u00a0条提醒', detail: '照样生效，但值得知道' })
+    expect(note.items).toEqual(['规则「广告」：jumping to "lan"（规则组「内网」） comes back round'])
+  })
+
+  it('监视不了配置文件、DoH 没起来、Geo 数据有问题：说出后果和出路', () => {
+    expect(watchNote('OS file watch limit reached.')).toMatchObject({ tone: 'warn', items: ['OS file watch limit reached.'] })
+    expect(watchNote('x')!.detail).toContain('10\u00a0秒')
+    expect(dohNote('settings.doh_tls_cert: cannot read')!.detail).toContain('要重启\u00a0KixDNS 才会变')
+    expect(dataNote(['a', 'b'])).toMatchObject({ title: 'Geo\u00a0数据有\u00a02\u00a0个问题', items: ['a', 'b'] })
   })
 })
