@@ -54,6 +54,10 @@ struct Args {
     #[arg(long, env = "KIXDNS_SERVICE_LOG")]
     service_log: Option<PathBuf>,
 
+    /// 容器里的数据卷；由看管进程（`kixdns-panel-helper supervise`）给出，给出时内核状态问看管进程。
+    #[arg(long, env = "KIXDNS_CONTAINER_DATA")]
+    container_data: Option<PathBuf>,
+
     /// DNS 诊断服务器地址；本机地址会自动跟随当前配置的 UDP 监听端口。
     #[arg(long, env = "KIXDNS_DIAGNOSTIC_SERVER", default_value = "127.0.0.1:53")]
     diagnostic_server: SocketAddr,
@@ -172,6 +176,9 @@ impl Args {
             service_helper_socket: args.service_helper_socket,
             service_pidfile: args.service_pidfile,
             service_log: args.service_log,
+            container_data: args
+                .container_data
+                .filter(|path| !path.as_os_str().is_empty()),
             diagnostic_server: args.diagnostic_server,
             kernel_repository: args.kernel_repository,
             installed_source: present(args.installed_source),

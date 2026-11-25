@@ -78,6 +78,9 @@ pub struct AppSettings {
     pub service_pidfile: Option<PathBuf>,
     /// procd 后端：服务日志文件；Some 时日志页不再问 journalctl
     pub service_log: Option<PathBuf>,
+    /// 容器里的数据卷（看管进程给的）；Some 时内核由看管进程管，状态问它 / The data volume in a container (given by the
+    /// supervisor); when Some the supervisor runs the kernel and is asked for its state
+    pub container_data: Option<PathBuf>,
     pub diagnostic_server: SocketAddr,
     pub kernel_repository: String,
     pub installed_source: Option<String>,
@@ -341,6 +344,7 @@ pub async fn run(settings: AppSettings) -> anyhow::Result<()> {
 ///
 /// 数据库、密码哈希或初始配置历史初始化失败时返回错误。
 pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
+    let operations = operations(&settings)?;
     ensure_database_parent(&settings.database_path)?;
     let database = Database::open(settings.database_path.clone()).await?;
     let querylog = querylog::QueryLog::open(
@@ -384,22 +388,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         database,
         config,
         control: ControlClient::new(settings.control_socket),
-        operations: {
-            let operations = Operations::new(
-                settings.service_unit.clone(),
-                settings.service_helper_socket.clone(),
-                settings.diagnostic_server,
-            )
-            .map_err(|error| anyhow::anyhow!(error))?
-            .with_procd_service(
-                settings.service_pidfile.clone(),
-                settings.service_log.clone(),
-            );
-            match &settings.systemctl {
-                Some(program) => operations.with_systemctl(&program.to_string_lossy()),
-                None => operations,
-            }
-        },
+        operations,
         updates,
         geo_data,
         blocklists,
@@ -444,6 +433,31 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         ))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(security_headers)))
+}
+
+/// 服务后端：systemd（默认）、procd（给了 pid 文件）、看管进程（在容器里）；日志给了日志文件就读它
+/// The service backend: systemd (the default), procd (a pid file given) or the supervisor (in a container); logs come
+/// from the log file when one is given
+fn operations(settings: &AppSettings) -> anyhow::Result<Operations> {
+    let operations = Operations::new(
+        settings.service_unit.clone(),
+        settings.service_helper_socket.clone(),
+        settings.diagnostic_server,
+    )
+    .map_err(|error| anyhow::anyhow!(error))?
+    .with_procd_service(
+        settings.service_pidfile.clone(),
+        settings.service_log.clone(),
+    );
+    let operations = if settings.container_data.is_some() {
+        operations.with_supervisor()
+    } else {
+        operations
+    };
+    Ok(match &settings.systemctl {
+        Some(program) => operations.with_systemctl(&program.to_string_lossy()),
+        None => operations,
+    })
 }
 
 fn api_router(state: AppState) -> Router {

@@ -29,6 +29,11 @@ pub struct Operations {
     /// The service log file under procd; when Some, the log page reads it instead of journalctl
     #[cfg_attr(not(unix), allow(dead_code))]
     service_logfile: Option<PathBuf>,
+    /// 容器里由看管进程（`kixdns-panel-helper supervise`）管内核：状态也问它，它分得清在重拉、起不来和被停下
+    /// In a container the supervisor (`kixdns-panel-helper supervise`) runs the kernel: the state comes from it too, as it
+    /// tells being brought back, failing to come up and being stopped apart
+    #[cfg_attr(not(unix), allow(dead_code))]
+    supervised: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -215,6 +220,7 @@ impl Operations {
             systemctl: Arc::from("systemctl"),
             service_pidfile: None,
             service_logfile: None,
+            supervised: false,
         })
     }
 
@@ -231,6 +237,15 @@ impl Operations {
         self
     }
 
+    /// 切到看管进程后端（容器里）：状态经 helper 套接字问看管进程；日志照旧读 [`Self::with_procd_service`] 给的日志文件
+    /// Switch to the supervisor backend (in a container): the state is asked of the supervisor over the helper socket; logs
+    /// still come from the log file given to [`Self::with_procd_service`]
+    #[must_use]
+    pub fn with_supervisor(mut self) -> Self {
+        self.supervised = true;
+        self
+    }
+
     #[must_use]
     pub fn with_systemctl(mut self, program: &str) -> Self {
         self.systemctl = Arc::from(program);
@@ -239,6 +254,10 @@ impl Operations {
 
     #[cfg(unix)]
     pub async fn service_status(&self) -> Result<ServiceStatus, OperationError> {
+        if self.supervised {
+            let reply = self.helper_request("status").await?;
+            return parse_supervisor_status(self.service_unit.as_ref(), &reply);
+        }
         if let Some(pidfile) = &self.service_pidfile {
             // 先用 ubus 问 procd 自己：它分得清「用户停掉的」（服务不在列表里）和「崩了没
             // 被拉起来的」（实例还在但 running=false）。ubus 用不了（不在 OpenWrt 上、
@@ -288,16 +307,18 @@ impl Operations {
     /// status back (the caller waits for `KixDNS` itself)
     #[cfg(unix)]
     pub async fn service_request(&self, action: ServiceAction) -> Result<(), OperationError> {
-        self.helper_request(action.argument()).await
+        self.helper_request(action.argument()).await.map(drop)
     }
 
     #[cfg(unix)]
     pub async fn start_panel_update(&self) -> Result<(), OperationError> {
-        self.helper_request("panel-update").await
+        self.helper_request("panel-update").await.map(drop)
     }
 
+    /// 发一个动作给服务助手，返回 `OK` 后面跟的内容（只有 `status` 有）
+    /// Sends one action to the service helper and returns what follows `OK` (only `status` has any)
     #[cfg(unix)]
-    async fn helper_request(&self, action: &str) -> Result<(), OperationError> {
+    async fn helper_request(&self, action: &str) -> Result<String, OperationError> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::UnixStream;
 
@@ -332,14 +353,16 @@ impl Operations {
         .await
         .map_err(|_| OperationError::Failed("服务控制超时".to_owned()))?
         .map_err(|error| OperationError::Failed(format!("读取服务控制结果失败：{error}")))?;
-        if response.trim() != "OK" {
-            return Err(OperationError::Failed(helper_failure(
+        match response.trim().strip_prefix("OK") {
+            Some(detail) if detail.is_empty() || detail.starts_with(' ') => {
+                Ok(detail.trim_start().to_owned())
+            }
+            _ => Err(OperationError::Failed(helper_failure(
                 &self.service_unit,
                 action,
                 &response,
-            )));
+            ))),
         }
-        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -531,6 +554,33 @@ async fn run_command(
     }
     String::from_utf8(output.stdout)
         .map_err(|_| OperationError::Failed(format!("{program} 输出不是 UTF-8")))
+}
+
+/// 看管进程回的 `ActiveState SubState MainPID`（照 systemd 的说法），面板照读 systemd 的规矩读
+/// The supervisor's `ActiveState SubState MainPID` answer (in systemd's words), read by the same rules as systemd's
+#[cfg(unix)]
+fn parse_supervisor_status(unit: &str, reply: &str) -> Result<ServiceStatus, OperationError> {
+    let mut words = reply.split_whitespace();
+    let (Some(active_state), Some(sub_state), Some(Ok(main_pid)), None) = (
+        words.next(),
+        words.next(),
+        words.next().map(str::parse),
+        words.next(),
+    ) else {
+        return Err(OperationError::Failed(format!(
+            "看管进程回的内核状态读不懂：{}",
+            truncate(reply, 200)
+        )));
+    };
+    Ok(ServiceStatus {
+        unit: unit.to_owned(),
+        active_state: active_state.to_owned(),
+        sub_state: sub_state.to_owned(),
+        main_pid,
+        did_not_come_up: false,
+        restart_rollback: None,
+        pending_writable: None,
+    })
 }
 
 /// 读不到 procd 时的兜底状态：pid 文件里的进程还活着就是 active，否则 inactive。
@@ -1476,6 +1526,83 @@ mod tests {
                 .unwrap(),
             "192.0.2.53:53".parse().unwrap()
         );
+    }
+
+    /// 容器里内核状态问看管进程：helper 套接字回的 systemd 说法照原样读进来，动作照旧只认 `OK`
+    /// In a container the kernel state is asked of the supervisor: the systemd words the helper socket answers are read in
+    /// as they are, and actions still accept only `OK`
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_supervisor_answers_the_kernel_state_in_a_container() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = String::new();
+                stream.read_to_string(&mut request).await.unwrap();
+                let reply = match request.as_str() {
+                    "status" => "OK activating auto-restart 0\n",
+                    "restart" => "OK\n",
+                    _ => "ERROR 不支持的动作\n",
+                };
+                stream.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        let operations = Operations::new(
+            "kixdns.service".to_owned(),
+            socket,
+            "127.0.0.1:53".parse().unwrap(),
+        )
+        .unwrap()
+        .with_procd_service(None, Some(directory.path().join("kixdns.log")))
+        .with_supervisor();
+        let status = operations
+            .service_action(ServiceAction::Restart)
+            .await
+            .unwrap();
+        assert_eq!(status.active_state, "activating");
+        assert_eq!(status.sub_state, "auto-restart");
+        assert_eq!(status.main_pid, 0);
+        assert_eq!(
+            operations
+                .service_request(ServiceAction::Stop)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "不支持的动作"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_states_read_like_systemd() {
+        let running =
+            super::parse_supervisor_status("kixdns.service", "active running 4321").unwrap();
+        assert_eq!(
+            (
+                running.active_state.as_str(),
+                running.sub_state.as_str(),
+                running.main_pid
+            ),
+            ("active", "running", 4321)
+        );
+        let failed = super::parse_supervisor_status("kixdns.service", "failed failed 0").unwrap();
+        assert_eq!(failed.active_state, "failed");
+        for unreadable in [
+            "",
+            "active running",
+            "active running x",
+            "active running 1 more",
+        ] {
+            assert!(
+                super::parse_supervisor_status("kixdns.service", unreadable).is_err(),
+                "{unreadable:?}"
+            );
+        }
     }
 
     #[tokio::test]
