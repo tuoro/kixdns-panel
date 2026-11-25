@@ -1,4 +1,3 @@
-import { QTYPES } from '../config-model/grammar'
 import type { GlobalSettings, MatcherScope } from './types'
 
 export type SettingFieldType = 'text' | 'number' | 'boolean' | 'csv' | 'list'
@@ -166,12 +165,31 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
 ]
 
-// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有、只能在 JSON 里改的，在这里起名，再没有的照写内核的名字。
-// TCP 错误阈值不放进表单：内核的 TCP、DoT 连接一出错就重建，这一项不起作用（见内核文档），配置里写了的值原样保留
+/**
+ * 内核不再读的旧设置（内核 config.rs 的 RETIRED_SETTINGS）：写着照常加载、不起作用，配置每生效一次内核都提醒一次。面板原样写回，
+ * 基础设置页给一个一键清掉的入口
+ * The old settings the kernel no longer reads (RETIRED_SETTINGS in the kernel's config.rs): written, they load as usual to no effect,
+ * and the kernel reminds of them every time the config takes effect. The panel writes them back as they are, and the settings page
+ * offers to clear them in one go
+ */
+export const RETIRED_SETTINGS: readonly string[] = [
+  'flow_control_initial_permits', 'flow_control_min_permits', 'flow_control_max_permits', 'flow_control_latency_threshold_ms',
+  'flow_control_adjustment_interval_secs', 'prefetch', 'tcp_health_check_error_threshold', 'statistics_enabled',
+  'statistics_anonymize_client_ip', 'geoip_auto_convert', 'geoip_filter_countries',
+]
+
+/** 设置里写着的退役旧设置，按写的顺序 / The retired settings written in settings, in the order written */
+export const retiredIn = (settings: GlobalSettings): string[] => Object.keys(settings).filter((key) => RETIRED_SETTINGS.includes(key))
+
+// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有、只能在 JSON 里改的和退役的旧设置在这里起名，再没有的照写内核的名字。
+// TCP 错误阈值不放进表单：内核的 TCP、DoT 连接一出错就重建，这一项不起作用（见内核文档）
 // What a setting name the kernel reports is called on the page: the form's label without the bracketed unit; one the form lacks
-// (editable in JSON only) is named here, and anything else keeps the kernel's name. TCP 错误阈值 stays out of the form: the kernel
-// rebuilds a TCP or DoT connection on its first error, so the setting has no effect (see the kernel docs); a value in the config is kept as it is
-const JSON_ONLY_NAMES: Record<string, string> = { doh_health_check_error_threshold: 'DoH 错误阈值', tcp_health_check_error_threshold: 'TCP 错误阈值' }
+// (editable in JSON only) and the retired ones are named here, and anything else keeps the kernel's name. TCP 错误阈值 stays out of the
+// form: the kernel rebuilds a TCP or DoT connection on its first error, so the setting has no effect (see the kernel docs)
+const JSON_ONLY_NAMES: Record<string, string> = {
+  doh_health_check_error_threshold: 'DoH 错误阈值', tcp_health_check_error_threshold: 'TCP 错误阈值', prefetch: '预取',
+  statistics_enabled: '查询统计', statistics_anonymize_client_ip: '客户端地址脱敏', geoip_auto_convert: 'GeoIP 自动转换', geoip_filter_countries: 'GeoIP 国家过滤',
+}
 const FORM_FIELDS = SETTING_SECTIONS.flatMap((section) => section.fields)
 export function settingName(key: string): string {
   const field = FORM_FIELDS.find((item) => item.key === key)
@@ -307,8 +325,6 @@ export const ACTION_TYPES: ActionDefinition[] = [
   { value: 'continue', label: '继续往下' },
 ]
 
-// 高级规则里的查询类型也只给内核认的那几个，和条件表单同一张表 / Advanced rules offer only the record types the kernel takes, the condition form's table
-export const QTYPE_OPTIONS: readonly string[] = QTYPES
 export const TRANSPORT_OPTIONS = ['udp', 'tcp', 'tcp_udp', 'doh', 'dot', 'doq']
 
 const FIELD_DEFAULTS = new Map(SETTING_SECTIONS.flatMap((section) => section.fields).map((field) => [field.key, field.default]))
