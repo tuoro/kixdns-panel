@@ -1,5 +1,6 @@
 import { byteLength, isIp, isNet, isQclass, isQtype, isRcode, isTtl, kernelRegexCause, QCLASSES, qtypeRule, RCODES, regexCauseText, TTL_PROBLEM, TXT_SEGMENT_BYTES } from '../config-model/grammar'
 import { kernelRegexChecking, type RegexKind } from '../config-model/regex-check'
+import { forwardTarget, splitAddrs } from '../config-model/kernel'
 import { upstreamProblem } from '../config-model/model'
 import { matcherHint } from './matcher-hints'
 import { MATCHER_DEFINITIONS } from './schema'
@@ -86,20 +87,21 @@ export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope):
 // 动作参数的名字和动作列表里写的一样；CNAME 的「目标」在这里说全，和域名映射页一样叫「目标域名」
 // Action parameters are named as the action list labels them; the CNAME 目标 is spelled out as 目标域名, as the mapping tab calls it
 const ACTION_REQUIRED = {
-  upstream: requiredFieldError('上游'),
   pipeline: requiredFieldError('要转到的组', true),
   ip: requiredFieldError('IP'),
   target: requiredFieldError('目标域名'),
 }
 
+// defaultUpstream 是写进内核的默认上游（没写时内核用 1.1.1.1:53）：没写上游的转发问它 / defaultUpstream is the default upstream as written to
+// the kernel (1.1.1.1:53 when it writes none), which a forward writing no upstream asks
 export function actionFieldErrors(
   action: ActionConfig,
   currentPipelineId: string,
   pipelineIds: readonly string[] = [],
+  defaultUpstream = '1.1.1.1:53',
 ): Record<string, string> {
   const errors: Record<string, string> = {}
-  const requiredFields: Record<string, 'upstream' | 'pipeline' | 'ip' | 'target'> = {
-    forward: 'upstream',
+  const requiredFields: Record<string, 'pipeline' | 'ip' | 'target'> = {
     jump_to_pipeline: 'pipeline',
     static_ip_response: 'ip',
     static_cname_response: 'target',
@@ -114,11 +116,19 @@ export function actionFieldErrors(
   }
   // 固定 IP 照内核读：逗号隔开，每一项都是 IP / Fixed IPs as the kernel reads them: comma-separated, each one an IP
   if (action.type === 'static_ip_response' && !errors.ip && !(action.ip ?? '').split(',').every((ip) => isIp(ip.trim()))) errors.ip = 'IP 写得不对，几个 IP 用逗号隔开'
-  // 转发的每个上游照 upstream_problem 读，没写前缀的按这个动作的 transport / Each upstream of a forward read as upstream_problem does, one without
-  // a prefix by this action's transport
-  if (action.type === 'forward' && !errors.upstream && action.upstream) {
-    const bad = action.upstream.split(',').map((u) => u.trim()).filter(Boolean).map((u) => [u, upstreamProblem(u, action.transport ?? 'udp')] as const).find(([, p]) => p)
-    if (bad) errors.upstream = `上游 ${bad[0]}${bad[1]}`
+  // 转发的每个上游照 upstream_problem 读，没写前缀的按这个动作的 transport（「自动识别协议」是没写，按 UDP）。上游空着就不写这个键，问默认上游，
+  // 经这个动作的 transport 问：默认上游经 UDP 就用不了的设置里已经说了，这里只说经 UDP 用得了、经它用不了的（config.rs rule_problems）
+  // Each upstream of a forward read as upstream_problem does, one without a prefix by this action's transport (自动识别协议 writes none, so
+  // UDP). An empty upstream is not written and the default upstream is asked, over this action's transport: what makes it unusable over
+  // UDP the settings already say, so only one usable over UDP yet not over this transport is said here (config.rs rule_problems)
+  if (action.type === 'forward') {
+    const transport = action.transport || 'udp'
+    // 导入的高级规则里上游也可能写成数组、null（kernel.ts forwardTarget） / An imported advanced rule may write upstream as an array or null too
+    // (kernel.ts forwardTarget)
+    const written = splitAddrs(forwardTarget(action.upstream, ''))
+    const asked = written.length ? written : splitAddrs(defaultUpstream).filter((u) => !upstreamProblem(u))
+    const bad = asked.map((u) => [u, upstreamProblem(u, transport)] as const).find(([, p]) => p)
+    if (bad) errors.upstream = `${written.length ? '上游' : '没写上游，问的是默认上游'} ${bad[0]}${bad[1]}`
   }
   if (action.type === 'static_cname_response') {
     if (!errors.target && !validDnsName(action.target ?? '')) errors.target = 'CNAME 目标域名写得不对'

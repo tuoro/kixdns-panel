@@ -6,7 +6,7 @@ import {
   addressProblem, compile, compileNamed, isDomain, kernelDomain, kernelPreview, kernelUpstream, mainPipelineId, newRule, ruleProblems, upstreamProblem,
   type KernelConfig, type Model, type ResponseCondition, type Rule,
 } from './model'
-import { behaviourCheck, simulate, type SimQuery } from './testing/kernel-sim'
+import { behaviourCheck, checkResponder, simulate, type SimQuery } from './testing/kernel-sim'
 import { sampleModel } from './testing/samples'
 import { findRuleByText } from './trace-names'
 
@@ -366,7 +366,7 @@ describe('内核规则名：面板起的名字不和高级规则原样写回的�
   })
 })
 
-describe('Pipeline 的 id 不重复：内核的校验不收，启动时照收但只认后一个', () => {
+describe('Pipeline 的 id 不重复：内核的校验不收，启动时照收但只有第一个生效', () => {
   const repeated = (m: Model) => { const ids = compile(m).pipelines.map((p) => p.id); return ids.filter((id, i) => ids.indexOf(id) !== i) }
 
   it('JSON 里有一个叫 domain_mapping 的规则列表、又加了域名映射：映射的 Pipeline 另起一个名字', () => {
@@ -383,7 +383,7 @@ describe('Pipeline 的 id 不重复：内核的校验不收，启动时照收但
     expect(repeated(back)).toEqual([])
   })
 
-  it('读进来的配置里两个 Pipeline 同名：照内核只认后一个，读出来的模型不再编出两个', () => {
+  it('读进来的配置里两个 Pipeline 同名：照内核只留第一个，读出来的模型不再编出两个', () => {
     // kids 有入口又有跳转进去，读成规则组 / kids is both an entry and a jump target, so it reads as a rule group
     const cfg: KConfigLike = { version: '1.0', settings: { default_upstream: '1.1.1.1:53' }, pipeline_select: [{ pipeline: 'kids', matchers: [{ type: 'client_ip', cidr: '192.168.1.100/30' }] }, { pipeline: 'main', matchers: [] }], pipelines: [
       { id: 'main', rules: [{ name: 'to-kids', matchers: [{ type: 'domain_suffix', value: 'kids.example' }], actions: [{ type: 'jump_to_pipeline', pipeline: 'kids' }] }, { name: 'rest', matchers: [], actions: [{ type: 'forward', upstream: '8.8.8.8:53' }] }] },
@@ -391,10 +391,13 @@ describe('Pipeline 的 id 不重复：内核的校验不收，启动时照收但
       { id: 'kids', rules: [{ name: 'new', matchers: [{ type: 'domain_suffix', value: 'new.example' }], actions: [{ type: 'deny' }] }, { name: 'kids-rest', matchers: [], actions: [{ type: 'forward', upstream: '9.9.9.9:53' }] }] },
     ] }
     const { model, notes } = importKernel(cfg)
-    expect(notes.map((n) => n.text)).toContain('有两个 Pipeline 都叫「kids」，KixDNS 的入口和跳转只用后一个，前一个已去掉')
+    expect(notes.map((n) => n.text)).toContain('有几个 Pipeline 都叫「kids」，KixDNS 只有第一个生效，后面的已去掉')
     expect(repeated(model)).toEqual([])
     const again = compile(model) as KConfigLike
     expect(behaviourCheck(cfg, again).mismatches.slice(0, 3)).toEqual([])
+    // 留下的是第一个：old.example 照拦，new.example 不拦 / The first stays: old.example is still denied, new.example is not
+    const kids = { client: '192.168.1.101', qtype: 'A' }
+    expect([simulate(again, { ...kids, domain: 'old.example' }, checkResponder).rcode, simulate(again, { ...kids, domain: 'new.example' }, checkResponder).rcode]).toEqual(['REFUSED', 'NOERROR'])
   })
 
   it('内核最简单的那种配置（main 里只有一条转发）：读进来再写出去，主列表不和上游组同名，其余请求不转给自己', () => {

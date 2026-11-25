@@ -1,5 +1,5 @@
 import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, mergedFileIn, ownMatcher, ownRuleText, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
-import { effectiveOps, kernelKey, normalizeAddress, sameKernel, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
+import { effectiveOps, forwardTarget, kernelKey, normalizeAddress, sameKernel, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
 import {
   blocklistEntries, blocklistKey, compileNamed, emptyBlocklists, FIELD, groupPipeline, isIp, kernelUpstream, mainPipelineId, mappingKernelDomain, mappingLive, mappingRule, POLLUTED_CIDRS,
   RESPONSE_FIELD, ruleGroupPipelineId, ruleKernel, settingsFromKernel, splitList,
@@ -73,7 +73,7 @@ function dnf(matchers: KMatcher[] | undefined, ruleOp: string | undefined): Lit[
   let acc = lit(matchers[0]!, false)
   for (let i = 1; i < matchers.length; i++) {
     const op = ops[i]
-    const l = lit(matchers[i]!, op === 'and_not' || op === 'not' || op === 'or_not')
+    const l = lit(matchers[i]!, op === 'and_not' || op === 'or_not')
     if (op === 'or' || op === 'or_not') acc = [...acc, ...l]
     else {
       const next: Lit[][] = []
@@ -207,22 +207,20 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   // New rules number from above every id the previous model used: after a page reload the counter starts over and would collide with carried-over ids
   // (clicking one rule opened another)
   if (prev) nextId = Math.max(nextId, nextFreeId(prev))
-  // 两个 Pipeline 同名：内核的校验和热重载不收，启动时只记警告照样加载，入口和跳转按名字找到的是后一个（engine/types.rs pipeline_index），前一个的
-  // 规则用不上。正在跑的配置可能就是这样：照内核读，后一个放在前一个的位置，前一个去掉，说一句。不然读出来的模型自己就编出两个同名的
-  // Two pipelines of one name: the kernel's validation and reload refuse them, while startup only warns and loads them, entries and jumps then
-  // finding the later one by name (engine/types.rs pipeline_index) and the earlier one's rules going unused. A running config may be so: read
-  // as the kernel reads it, the later one takes the earlier one's place, the earlier one goes, and a note says so. Otherwise the model read
-  // would compile to two of one name itself
+  // 几个 Pipeline 同名：内核的校验和热重载不收，启动时只记一条问题照样加载，只有第一个生效（kixdns #546，config.rs problems），后面的规则从不
+  // 执行。正在跑的配置可能就是这样：照内核读，留第一个，后面的去掉，说一句。不然读出来的模型自己就编出几个同名的
+  // Several pipelines of one name: the kernel's validation and reload refuse them, while startup only notes a problem and loads them, the
+  // first alone taking effect (kixdns #546, config.rs problems) and the rules of the others never running. A running config may be so: read
+  // as the kernel reads it, the first stays, the others go, and a note says so. Otherwise the model read would compile to several of one
+  // name itself
   const pipelines: KPipelineLike[] = []
-  const placed = new Map<string, number>()
+  const placed = new Set<string>()
   const shadowed = new Set<string>()
   for (const p of (cfg.pipelines ?? []) as KPipelineLike[]) {
-    const at = placed.get(p.id)
-    if (at === undefined) { placed.set(p.id, pipelines.length); pipelines.push(p); continue }
-    pipelines[at] = p
-    shadowed.add(p.id)
+    if (placed.has(p.id)) shadowed.add(p.id)
+    else { placed.add(p.id); pipelines.push(p) }
   }
-  for (const id of shadowed) note(`有两个 Pipeline 都叫「${id}」，KixDNS 的入口和跳转只用后一个，前一个已去掉`, 'warn')
+  for (const id of shadowed) note(`有几个 Pipeline 都叫「${id}」，KixDNS 只有第一个生效，后面的已去掉`, 'warn')
   const byId = new Map(pipelines.map((p) => [p.id, p]))
   const settings = clone(cfg.settings ?? {})
   const defaultUp = String(settings.default_upstream ?? '1.1.1.1:53')
@@ -251,7 +249,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const a = acts[0]!
     try {
       if (a.type === 'allow') fwd.set(p.id, { addrs: addressesOf(defaultUp, 'udp'), ecs: null, rule: r })
-      else if (a.type === 'forward') fwd.set(p.id, { addrs: addressesOf(typeof a.upstream === 'string' && a.upstream ? a.upstream : defaultUp, a.transport), ecs: ecsOf(a.ecs), rule: r })
+      else if (a.type === 'forward') fwd.set(p.id, { addrs: addressesOf(forwardTarget(a.upstream, defaultUp), a.transport), ecs: ecsOf(a.ecs), rule: r })
     } catch { /* 认不出的 ECS：不当上游组 / unrecognized ECS: not a group */ }
   }
   type Fallback = { onError: boolean; onPolluted: boolean; target: string } | 'none' | null
@@ -511,8 +509,11 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
         return raw(`回答后转到的「${t}」不是上游组也不是规则组`)
       }
       case 'forward': {
-        if (typeof a.upstream !== 'string' || !a.upstream) return raw('回答后的转发没写地址')
-        const r = groupFor(addressesOf(a.upstream, a.transport), null)
+        // 没写上游的和请求阶段一样问 default_upstream；写成空的一个上游也没有 / One writing no upstream asks default_upstream as in the request
+        // phase; one written empty names no upstream at all
+        const addrs = addressesOf(forwardTarget(a.upstream, defaultUp), a.transport)
+        if (!addrs.length) return raw('回答后的转发一个上游也没写')
+        const r = groupFor(addrs, null)
         if (r.ecs !== 'inherit' || r.off) return raw('回答后的转发和现有的组设置不同')
         return done({ type: 'upstream', group: r.group.id })
       }
@@ -596,14 +597,19 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
         const resp = responseOf(from)
         rule.response = resp ?? { ...rule.response, mode: g.off ? 'off' : 'inherit' }
       }
-      // 几个转发的规则内核加载时会合并（不带子网、不执行其他动作）：不替用户整理，原样保留 / A rule with several forwards is merged by the kernel at load (no subnet, no other actions); it is kept verbatim rather than tidied
+      // 几个转发的规则内核合成一次转发（kernel.ts mergedForward）：不替用户整理，原样保留 / A rule with several forwards is asked as one merged forward
+      // by the kernel (kernel.ts mergedForward); it is kept verbatim rather than tidied
       if (forwards.length > 1) raw(`一条规则里有 ${forwards.length}\u00a0个转发`)
       let decided = false
       for (const [i, a] of actions.entries()) {
         if (a.type === 'log') { if (!rule.log.enabled) rule.log = { enabled: true, level: (typeof a.level === 'string' ? a.level : 'info') as Rule['log']['level'] }; continue }
+        // 请求时手上还没有回答可换：replace_txt_response 什么都不做，后面的动作照常执行（kernel.ts requestDecision），去掉它行为不变
+        // With no answer in hand yet in the request phase, replace_txt_response does nothing and the actions after it run as usual (kernel.ts
+        // requestDecision), so dropping it changes nothing
+        if (a.type === 'replace_txt_response') { note(`「${base(kr.name)}」在请求时就替换 TXT，这时还没有回答可换，KixDNS 什么都不做，已去掉`); continue }
         const dead = actions.length - i - 1
-        if (a.type === 'continue' || a.type === 'replace_txt_response') rule.outcome = { type: 'continue' }
-        else if (a.type === 'forward') { setForward(addressesOf(typeof a.upstream === 'string' && a.upstream ? a.upstream : defaultUp, a.transport), ecsOf(a.ecs), kr); forwardedHere = true }
+        if (a.type === 'continue') rule.outcome = { type: 'continue' }
+        else if (a.type === 'forward') { setForward(addressesOf(forwardTarget(a.upstream, defaultUp), a.transport), ecsOf(a.ecs), kr); forwardedHere = true }
         else if (a.type === 'allow') rule.outcome = { type: 'upstream', group: defaultGroup().id }
         else if (a.type === 'jump_to_pipeline') {
           const t = String(a.pipeline)
@@ -612,7 +618,6 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
           else if (ruleGroupOf.has(t)) rule.outcome = { type: 'group', group: ruleGroupOf.get(t)!.id }
           else raw(t === mainSource ? '跳回主列表' : `跳到不存在的「${t}」`)
         } else rule.outcome = staticOutcome(a) ?? raw(`动作 ${a.type} 没有对应的写法`)
-        if (a.type === 'replace_txt_response') note(`「${base(kr.name)}」在请求时就替换 TXT，内核当作「继续往下一条」处理，已这样显示`)
         if (dead) raw(`决定结果的动作后面还有 ${dead}\u00a0个动作`)
         decided = true
         break

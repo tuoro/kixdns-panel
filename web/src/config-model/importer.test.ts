@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { importKernel } from './importer'
 import { compile, type Model } from './model'
-import { behaviourCheck, type KConfigLike } from './testing/kernel-sim'
+import { behaviourCheck, checkResponder, simulate, type KConfigLike } from './testing/kernel-sim'
 import { demoModel, LEGACY_DEMO, LEGACY_MESSY, LEGACY_TEMPLATES, sampleModel } from './testing/samples'
 
 // 迁移前后行为一致：testing/kernel-sim.ts behaviourCheck 用同一批查询分别跑原配置和「导入再生成」的配置，客户端拿到的回答必须一样。
@@ -111,10 +111,10 @@ describe('导入说明说清上游组从哪来', () => {
 
 describe('读出来的编号不让 Pipeline 撞名 / ids read back never make two pipelines of one name', () => {
   // 自带转发的规则编出来有自己的 rule-编号 Pipeline：配置里手写了一个同名的（这里读成上游组）时，新读出来的规则拿到这个编号就编出两个同名的，
-  // 内核的校验不收（启动时照收，入口和跳转只认后一个）
+  // 内核的校验不收（启动时照收，只有第一个生效）
   // A rule with its own forward compiles to a pipeline rule-<id>: when the config holds a hand-written one of that name (read as an upstream group
-  // here), a rule read with that id compiles to two of one name, which the kernel's validation refuses (at startup it loads them and entries
-  // and jumps reach the later)
+  // here), a rule read with that id compiles to two of one name, which the kernel's validation refuses (at startup it loads them and the
+  // first alone takes effect)
   const cfg = (rules: unknown[]) => ({ version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }] as unknown[], pipelines: [{ id: 'main', rules }] as unknown[] })
   // 读之前先读一份只有一条规则的，看下一个编号是几，接下来读的规则编号就在它后面几个之内；再往配置里手写这之后 50 个编号的 rule-编号（读成上游组）
   // Before reading, a one-rule config learns the next id, and the rules read next take ids within a few after it; the config then gains
@@ -142,5 +142,51 @@ describe('读出来的编号不让 Pipeline 撞名 / ids read back never make tw
     const model = readAmongHandWritten(read)
     model.rules.find((r) => r.name === 'up')!.ecs = { mode: 'clear' }
     expect(repeated(model)).toEqual([])
+  })
+})
+
+// 转发问哪些上游照内核现在的读法（kernel.ts）：没写上游的（不写、null、[]）问默认上游，数组连成一串；请求时的 replace_txt_response 什么都不做
+// Which upstreams a forward asks follows the kernel as it is now (kernel.ts): one writing none (absent, null, []) asks the default upstream,
+// an array is one list; replace_txt_response does nothing in the request phase
+describe('转发照内核现在的读法', () => {
+  const cfg = (rules: unknown[]): KConfigLike => ({ version: '1.0', settings: { default_upstream: '9.9.9.9:53' }, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: rules as never }] })
+  const asked = (c: KConfigLike, domain: string) => { let up: string[] = []; simulate(c, { domain, client: '192.168.1.20', qtype: 'A' }, (ups, ecs, q) => { up = ups; return checkResponder(ups, ecs, q) }); return up }
+  const rule = (name: string, actions: unknown[], extra: Record<string, unknown> = {}) => ({ name, matchers: [{ type: 'domain_suffix', value: `${name}.example` }], actions, ...extra })
+
+  it('请求时的 replace_txt_response 不挡着后面的动作，读进来去掉它并说一句', () => {
+    const c = cfg([rule('txt', [{ type: 'replace_txt_response', text: ['x'] }, { type: 'forward', upstream: '8.8.8.8:53' }])])
+    expect(asked(c, 'a.txt.example')).toEqual(['udp:8.8.8.8:53'])
+    const { model, notes } = importKernel(c)
+    expect(notes.map((n) => n.text)).toContain('「txt」在请求时就替换 TXT，这时还没有回答可换，KixDNS 什么都不做，已去掉')
+    expect(model.rules.find((r) => r.name === 'txt')?.outcome.type).toBe('upstream')
+    expect(behaviourCheck(c, compile(model) as KConfigLike).mismatches.slice(0, 3)).toEqual([])
+  })
+
+  it('上游写成数组、没写上游的转发：读进来问的还是那些上游', () => {
+    const c = cfg([rule('list', [{ type: 'forward', upstream: ['8.8.8.8:53', '8.8.4.4:53'] }]), rule('none', [{ type: 'forward', upstream: null }])])
+    expect([asked(c, 'a.list.example'), asked(c, 'a.none.example')]).toEqual([['udp:8.8.4.4:53', 'udp:8.8.8.8:53'], ['udp:9.9.9.9:53']])
+    const { model } = importKernel(c)
+    expect(model.rules.filter((r) => r.raw).map((r) => r.name)).toEqual([])
+    expect(behaviourCheck(c, compile(model) as KConfigLike).mismatches.slice(0, 3)).toEqual([])
+  })
+
+  it('回答后没写上游的转发问默认上游，和请求阶段一样', () => {
+    const c = cfg([rule('retry', [{ type: 'forward', upstream: '10.0.0.53:53' }], { response_matchers: [{ type: 'response_rcode', value: 'SERVFAIL' }], response_actions_on_match: [{ type: 'forward' }] })])
+    expect(simulate(c, { domain: 'a.retry.example', client: '192.168.1.20', qtype: 'A' }, checkResponder).rcode).toBe('NOERROR')
+    const { model } = importKernel(c)
+    expect(model.rules.find((r) => r.name === 'retry')?.raw).toBeUndefined()
+    expect(behaviourCheck(c, compile(model) as KConfigLike).mismatches.slice(0, 3)).toEqual([])
+  })
+
+  it('几个转发合并：作决定的是转发才合并，没写上游的问默认上游，发它们共同写的 ECS', () => {
+    const ecs = { mode: 'from_client_ip', prefix_v4: 24, prefix_v6: 56 }
+    const c = cfg([
+      rule('merged', [{ type: 'log' }, { type: 'forward', ecs }, { type: 'forward', upstream: 'tcp://8.8.8.8:53', ecs }]),
+      rule('static', [{ type: 'static_response', rcode: 'NXDOMAIN' }, { type: 'forward', upstream: '8.8.8.8:53' }, { type: 'forward', upstream: '8.8.4.4:53' }]),
+    ])
+    let sent = ''
+    simulate(c, { domain: 'a.merged.example', client: '192.168.1.20', qtype: 'A' }, (ups, e, q) => { sent = `${ups.join('|')}#${e}`; return checkResponder(ups, e, q) })
+    expect(sent).toBe('tcp:8.8.8.8:53|udp:9.9.9.9:53#client/24/56')
+    expect(simulate(c, { domain: 'a.static.example', client: '192.168.1.20', qtype: 'A' }, checkResponder).rcode).toBe('NXDOMAIN')
   })
 })

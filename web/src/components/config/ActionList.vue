@@ -22,12 +22,14 @@ import type { ActionConfig, PipelineConfig } from '../../config-editor/types'
 // This placeholder holds a URL, so it is bound from here: since 3.3.12, vue-tsc reads a "//" in a
 // static component attribute inside v-for as the start of a comment and loses the loop variables
 // (vuejs/language-tools issue 6240).
-const upstreamPlaceholder = '192.168.1.1:53, https://dns.example/dns-query'
+const upstreamPlaceholder = '空着问默认上游；192.168.1.1:53, https://dns.example/dns-query'
 
 const props = withDefaults(defineProps<{
   pipelines: PipelineConfig[]
   currentPipelineId: string
   capabilities?: string[]
+  // 没写上游的转发问的默认上游（写进内核的那样） / The default upstream a forward writing none asks (as written to the kernel)
+  defaultUpstream?: string
   showErrors?: boolean
   // 组的叫法（主列表、规则组「X」、上游组「X」）；没给就照内核 id 写 / How to name a group (主列表, 规则组「X」, 上游组「X」); the kernel id without it
   pipelineName?: (id: string) => string | null
@@ -42,7 +44,7 @@ const supportedActionTypes = computed(() => ACTION_TYPES.filter((option) => (
   !option.requiresCapability || props.capabilities.includes(option.requiresCapability)
 )))
 const errors = computed(() => actions.value.map((action) => actionFieldErrors(
-  action, props.currentPipelineId, props.pipelines.map((pipeline) => pipeline.id),
+  action, props.currentPipelineId, props.pipelines.map((pipeline) => pipeline.id), props.defaultUpstream,
 )))
 const ordered = computed(() => actions.value.length > 1)
 const instanceId = useId()

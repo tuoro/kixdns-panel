@@ -41,7 +41,7 @@ describe('配置字段共享校验', () => {
   })
 
   it('动作的必填参数按动作列表里的字段名报错，拉丁字母前留一个空格（审计第五轮 B3）', () => {
-    expect(actionFieldErrors({ type: 'forward', upstream: '' }, 'default')).toEqual({ upstream: '还没填上游' })
+    expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: '' }, 'default')).toEqual({ pipeline: '还没选要转到的组' })
     expect(actionFieldErrors({ type: 'static_ip_response', ip: ' ' }, 'default')).toEqual({ ip: '还没填 IP' })
     // 必填错误靠开头的「还没填」「还没选」认出来，别的错误不算 / Required errors are told by their 还没填 / 还没选 opening; no other error is
     expect(['还没填域名', '还没选要转到的组'].every(isRequiredFieldError)).toBe(true)
@@ -137,6 +137,22 @@ describe('高级规则的字段照内核的读法查', () => {
         expect(matcherFieldErrors(matcher, scope), `${scope} ${def.value}`).toEqual({})
       }
     }
+  })
+
+  // 转发不写上游就问默认上游，经它自己的 transport（「自动识别协议」是没写，按 UDP）：默认上游经 UDP 用得了、经这个 transport 用不了时才报
+  // A forward writing no upstream asks the default upstream over its own transport (自动识别协议 writes none, so UDP): only a default upstream
+  // usable over UDP yet not over this transport is raised
+  it('转发不写上游：问默认上游，经它自己的 transport', () => {
+    for (const upstream of [undefined, '', ' , ']) {
+      expect(actionFieldErrors({ type: 'forward', upstream, transport: '' }, 'default')).toEqual({})
+      expect(actionFieldErrors({ type: 'forward', upstream, transport: 'doh' }, 'default', [], '223.5.5.5:53, tcp://dns.example:53')).toEqual({})
+    }
+    expect(actionFieldErrors({ type: 'forward', transport: 'doq' }, 'default', [], '9.9.9.9:53, quic://dns.example').upstream)
+      .toBe('没写上游，问的是默认上游 9.9.9.9:53：DoQ 用 IP 时要写 ?sni=服务器名，比如 quic://223.5.5.5?sni=dns.alidns.com')
+    // 经 UDP 就用不了的默认上游设置里会说，这里不重复 / A default upstream unusable over UDP is the settings' to say, not repeated here
+    expect(actionFieldErrors({ type: 'forward', transport: 'doq' }, 'default', [], 'dns.example:53')).toEqual({})
+    // 「自动识别协议」下没写前缀的地址按 UDP 读 / Under 自动识别协议 an address without a prefix reads as UDP
+    expect(actionFieldErrors({ type: 'forward', upstream: '223.5.5.5:53', transport: '' }, 'default')).toEqual({})
   })
 
   it('内核认的动作照样不报，上游的说法带上是哪个地址', () => {

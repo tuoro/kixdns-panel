@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { KixConfig } from './types'
+import type { KixConfig, RuleConfig } from './types'
 import {
   applyPipelineSelectMode,
   createAction,
@@ -8,6 +8,7 @@ import {
   applyMatcherMode,
   inferMatcherMode,
   inferPipelineSelectMode,
+  kernelRuleOf,
   moveRule,
   normalizeConfig,
   parseConfigSource,
@@ -147,6 +148,21 @@ describe('结构化配置模型', () => {
     expect(inferMatcherMode(matchers, 'and')).toBe('custom')
     expect(applyMatcherMode(matchers, 'custom')).toBe('and')
     expect(matchers.map((matcher) => matcher.operator)).toEqual(['and', 'and_not'])
+  })
+
+  // 新加的转发上游空着、协议是「自动识别协议」：写进内核时这两个键都不写，问默认上游、没写前缀的按 UDP；表单自己的那份不动
+  // A new forward with its upstream empty and 自动识别协议: neither key is written to the kernel, so the default upstream is asked and an
+  // address without a prefix reads as UDP; the form's own copy is left alone
+  it('表单里空着的转发上游和「自动识别协议」写进内核时不写', () => {
+    const rule: RuleConfig = {
+      name: 'r', matchers: [], matcher_operator: 'and', response_matchers: [], response_matcher_operator: 'and', response_actions_on_miss: [],
+      actions: [createAction('forward'), { type: 'forward', upstream: ' , ', transport: 'tcp' }, { type: 'forward', upstream: '1.1.1.1:53', transport: '' }, { type: 'log', level: 'info' }],
+      response_actions_on_match: [createAction('forward')],
+    }
+    const written = kernelRuleOf(rule)
+    expect(written.actions).toEqual([{ type: 'forward' }, { type: 'forward', transport: 'tcp' }, { type: 'forward', upstream: '1.1.1.1:53' }, { type: 'log', level: 'info' }])
+    expect(written.response_actions_on_match).toEqual([{ type: 'forward' }])
+    expect(rule.actions[0]).toEqual({ type: 'forward', upstream: '', transport: '' })
   })
 
   it('切换匹配器和动作类型时清除不兼容字段', () => {

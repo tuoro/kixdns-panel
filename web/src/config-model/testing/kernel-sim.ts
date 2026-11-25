@@ -1,13 +1,16 @@
 // 照内核源码复刻的配置执行器：入口选择、规则求值、动作、回答阶段。只给测试用：验证「导入前后行为一致」。不进运行时。
-// 依据（kixdns 681183c）：engine/pipeline.rs select_pipeline / evaluate_rules，engine/rules.rs 回答动作，
-// matcher/mod.rs eval_match_chain 和加载时的运算符改写，config.rs compute_merged_forward。
+// 依据（kixdns 681183c）：engine/pipeline.rs select_pipeline / evaluate_rules，engine/rules.rs 回答动作，matcher/mod.rs eval_match_chain
+// 和加载时的运算符改写。转发问哪些上游（没写上游的、几个合并的，见 kernel.ts）、请求阶段的 replace_txt_response、同名的 Pipeline 照 kixdns
+// d2b5fc3：engine/pipeline.rs evaluate_rules，engine/rules.rs run_response_actions，matcher/mod.rs RuntimePipelineConfig::from_config。
 // A config executor rebuilt from the kernel source: entry selection, rule evaluation, actions, the answer phase. It proves an
 // import behaves like the original and backs the domain tester. Sources (kixdns 681183c): engine/pipeline.rs select_pipeline /
-// evaluate_rules, engine/rules.rs response actions, matcher/mod.rs eval_match_chain and the load-time operator rewrite,
-// config.rs compute_merged_forward.
+// evaluate_rules, engine/rules.rs response actions, matcher/mod.rs eval_match_chain and the load-time operator rewrite. Which upstreams
+// a forward asks (one writing none, several merged, see kernel.ts), the request phase's replace_txt_response and pipelines of one name
+// follow kixdns d2b5fc3: engine/pipeline.rs evaluate_rules, engine/rules.rs run_response_actions, matcher/mod.rs
+// RuntimePipelineConfig::from_config.
 
 import { isIp, isNet } from '../grammar'
-import { effectiveOps, foldChain, mergedForward, normalizeAddress, splitAddrs, type KConfigLike, type KMatcher, type KRuleLike } from '../kernel'
+import { effectiveOps, foldChain, forwardsOf, forwardTarget, mergedForward, normalizeAddress, splitAddrs, type KConfigLike, type KMatcher, type KRuleLike } from '../kernel'
 export { effectiveOps, foldChain, mergedForward, normalizeAddress }
 export type { KAction, KConfigLike, KMatcher, KPipelineLike, KRuleLike, KSelectorLike } from '../kernel'
 
@@ -178,7 +181,8 @@ function staticIp(ipList: string, qtype: string): { rcode: string; answers: stri
 export function simulate(cfg: KConfigLike, q: SimQuery, respond: Responder): SimResult {
   refuseUnknownTypes(cfg)
   const pipelines = cfg.pipelines ?? []
-  const byId = new Map(pipelines.map((p) => [p.id, p]))
+  // 同名的几个 Pipeline 只有第一个生效 / Of several pipelines of one name the first alone takes effect
+  const byId = new Map([...pipelines].reverse().map((p) => [p.id, p]))
   const settings = cfg.settings ?? {}
   const defaultUp = String(settings.default_upstream ?? '1.1.1.1:53')
   const jumpLimit = Number(settings.response_jump_limit ?? 10)
@@ -197,12 +201,15 @@ export function simulate(cfg: KConfigLike, q: SimQuery, respond: Responder): Sim
     for (const rule of p.rules ?? []) {
       if (!foldChain(rule.matchers ?? [], rule.matcher_operator, (m) => requestMatch(m, q))) continue
       const actions = rule.actions ?? []
-      // 几个转发只在轮到转发时才合并：前面写了别的作决定的动作（日志不算）就是那个动作的结果（config.rs compute_merged_forward，内核 main 79e8fd5）
-      // Several forwards merge only when a forward's turn comes: another deciding action written first (a log does not count) gives its own
-      // outcome (config.rs compute_merged_forward, kernel main 79e8fd5)
-      if (actions.filter((a) => a.type === 'forward').length > 1 && actions.find((a) => a.type !== 'log')?.type === 'forward') {
+      // 几个转发只在作决定的是转发时才合并（kernel.ts mergedForward）：前面写了别的作决定的动作就是那个动作的结果。合并后发的 ECS 是几个问得到
+      // 地址的转发共同写的那个（写得不一样时内核不收这份配置）
+      // Several forwards merge only when a forward decides (kernel.ts mergedForward): another deciding action written first gives its own
+      // outcome. The merge sends the ECS the forwards asking an address all write (the kernel refuses the config when they differ)
+      const merged = mergedForward(actions, defaultUp)
+      if (merged) {
         steps.push({ pipeline: pid, rule: rule.name, phase: 'request', decision: 'forward' })
-        return { kind: 'forward', upstreams: mergedForward(actions).map((a) => upstreamKey(a, 'udp')).sort(), ecs: '', rule }
+        const ecs = forwardsOf(actions, defaultUp).find((f) => f.upstreams.length)?.ecs
+        return { kind: 'forward', upstreams: merged.map((a) => upstreamKey(a, 'udp')).sort(), ecs: ecsKey(ecs), rule }
       }
       for (const a of actions) {
         const done = (d: Decision): Decision => { steps.push({ pipeline: pid, rule: rule.name, phase: 'request', decision: d.kind }); return d }
@@ -215,11 +222,11 @@ export function simulate(cfg: KConfigLike, q: SimQuery, respond: Responder): Sim
         if (a.type === 'deny') return done({ kind: 'static', rcode: 'REFUSED', answers: [] })
         if (a.type === 'forward') {
           const t = String(a.transport ?? 'udp')
-          const up = typeof a.upstream === 'string' && a.upstream ? splitAddrs(a.upstream) : splitAddrs(defaultUp)
-          return done({ kind: 'forward', upstreams: up.map((x) => upstreamKey(x, t)).sort(), ecs: ecsKey(a.ecs), rule })
+          return done({ kind: 'forward', upstreams: splitAddrs(forwardTarget(a.upstream, defaultUp)).map((x) => upstreamKey(x, t)).sort(), ecs: ecsKey(a.ecs), rule })
         }
-        if (a.type === 'replace_txt_response' || a.type === 'continue') break
-        // log：不决定，接着看下一个动作 / log decides nothing; the next action follows
+        if (a.type === 'continue') break
+        // log、replace_txt_response（请求时手上没有回答可换）：不决定，接着看下一个动作 / log and replace_txt_response (no answer in hand to
+        // replace in the request phase) decide nothing; the next action follows
       }
     }
     return defaultForward()
@@ -250,9 +257,9 @@ export function simulate(cfg: KConfigLike, q: SimQuery, respond: Responder): Sim
       if (a.type === 'replace_txt_response') return { rcode: reply.rcode, answers: [`TXT ${(a.text as string[] | string)}`] }
       if (a.type === 'forward') {
         if (++forwards > 4) return { rcode: 'SERVFAIL', answers: [] }
+        // 没写上游的和请求阶段一样问 default_upstream / One writing no upstream asks default_upstream, as in the request phase
         const t = String(a.transport ?? 'udp')
-        const up = typeof a.upstream === 'string' && a.upstream ? splitAddrs(a.upstream).map((x) => upstreamKey(x, t)).sort() : d.upstreams
-        reply = respond(up, '', q)
+        reply = respond(splitAddrs(forwardTarget(a.upstream, defaultUp)).map((x) => upstreamKey(x, t)).sort(), '', q)
       }
     }
     return reply
