@@ -661,9 +661,13 @@ impl Merged {
         self.block.is_empty() && self.block_important.is_empty()
     }
 
-    /// 内核读的 `GeoSite` JSON：同样的内容总是同样的字节，按内容命名的文件因此不会白换
+    /// 内核读的 `GeoSite` JSON：同样的内容总是同样的字节，按内容命名的文件因此不会白换。四个分类总是都写上，空的写成
+    /// 空列表：配置里拦截列表的入口总是用到这四个（见前端的 blocklistEntries），文件里没有的分类内核会报「哪个文件里都没有」，
+    /// 空的分类照样一个域名也不命中
     /// The `GeoSite` JSON the kernel reads: the same content always gives the same bytes, so a file named by its
-    /// content is never replaced for nothing
+    /// content is never replaced for nothing. All four categories are always written, an empty one as an empty list:
+    /// the blocklists' entries in the config always use these four (see blocklistEntries in the web console), the
+    /// kernel reports a category no file has as missing, and an empty one matches no domain all the same
     ///
     /// # Panics
     ///
@@ -692,7 +696,6 @@ impl Merged {
             (TAG_ALLOW_IMPORTANT, &self.allow_important),
         ]
         .into_iter()
-        .filter(|(_, domains)| !domains.is_empty())
         .map(|(tag, domains)| Entry { tag, domains })
         .collect();
         serde_json::to_string(&File {
@@ -840,7 +843,7 @@ mod tests {
         assert_eq!(merged.add(&text, &HashSet::new()).rules, 1);
         assert_eq!(
             merged.geosite_json(&[]),
-            r#"{"entries":[{"tag":"kixdns-panel-block","domains":["regexp:^ad\\w{60}\\.example\\.com$"]}],"kixdns_panel":{"sources":[]}}"#
+            r#"{"entries":[{"tag":"kixdns-panel-block","domains":["regexp:^ad\\w{60}\\.example\\.com$"]},{"tag":"kixdns-panel-allow","domains":[]},{"tag":"kixdns-panel-block-important","domains":[]},{"tag":"kixdns-panel-allow-important","domains":[]}],"kixdns_panel":{"sources":[]}}"#
         );
     }
 
@@ -869,7 +872,39 @@ mod tests {
         assert_eq!(merged.add(second, &disabled).rules, 0);
         assert_eq!(
             merged.geosite_json(&[]),
-            r#"{"entries":[{"tag":"kixdns-panel-block","domains":["domain:keep.example"]}],"kixdns_panel":{"sources":[]}}"#
+            r#"{"entries":[{"tag":"kixdns-panel-block","domains":["domain:keep.example"]},{"tag":"kixdns-panel-allow","domains":[]},{"tag":"kixdns-panel-block-important","domains":[]},{"tag":"kixdns-panel-allow-important","domains":[]}],"kixdns_panel":{"sources":[]}}"#
+        );
+    }
+
+    /// 配置里拦截列表的入口用到的四个分类，文件里总是都有：列表里没有 `$important` 的规则、没有放行时，那几个分类写成空列表，
+    /// 内核就不会报它们「哪个文件里都没有」
+    /// The four categories the blocklists' entries in the config use are always in the file: with no `$important` rule
+    /// or no allow in the lists, those are written as empty lists, so the kernel never reports them missing from every
+    /// file
+    #[test]
+    fn every_category_the_config_uses_is_in_the_file_even_when_empty() {
+        let mut merged = Merged::default();
+        merged.add("||ads.example^\n", &HashSet::new());
+        let file: serde_json::Value = serde_json::from_str(&merged.geosite_json(&[])).unwrap();
+        let categories: Vec<(&str, usize)> = file["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry["tag"].as_str().unwrap(),
+                    entry["domains"].as_array().unwrap().len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            categories,
+            [
+                (TAG_BLOCK, 1),
+                (TAG_ALLOW, 0),
+                (TAG_BLOCK_IMPORTANT, 0),
+                (TAG_ALLOW_IMPORTANT, 0)
+            ]
         );
     }
 
