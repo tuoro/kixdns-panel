@@ -33,7 +33,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rustix::process::{
-    Pid, Signal, WaitOptions, WaitStatus, getpid, kill_process, set_child_subreaper, wait,
+    Pid, Signal, WaitOptions, WaitStatus, getpid, getuid, kill_process, set_child_subreaper, wait,
 };
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
@@ -123,12 +123,15 @@ pub fn run(args: &Args) -> Result<(), Box<dyn Error>> {
         }
     });
     let listener = protocol::listen(&layout.helper_socket(), layout.panel_uid)?;
-    let panel_uid = layout.panel_uid;
+    // 面板，和看管进程自己的用户（root：镜像的健康检查、docker exec 进来的管理员，本来就什么都能做）
+    // The panel, and the supervisor's own user (root: the image's health check, an admin in docker exec, who can do
+    // anything anyway)
+    let allowed = [layout.panel_uid, getuid().as_raw()];
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let events = events.clone();
             std::thread::spawn(move || {
-                let outcome = protocol::answer(stream, panel_uid, |action| {
+                let outcome = protocol::answer(stream, &allowed, |action| {
                     let (reply, answer) = mpsc::channel();
                     events
                         .send(Event::Request(action, reply))
