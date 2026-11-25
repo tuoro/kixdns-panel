@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { SETTING_SECTIONS, geoSummary, settingSections, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
@@ -44,7 +44,12 @@ const problemId = (field: SettingField) => `settings-problem-${field.key}`
 // The box being typed in says no mistake (half-typed text is always wrong, even 「8」 would be called one): it says so once the box is left,
 // on Enter, or on Ctrl+S inside it, as conditions do. A value not typed here (read in, edited in the JSON) is told at once as usual
 const typing = reactive(new Set<string>())
-const problemFor = (field: SettingField): string | undefined => (typing.has(field.key) ? undefined : props.problems?.[field.key])
+// 数字框里的字读不成数（「1e」「-」）时浏览器给的值是空的：不当成清空，配置不动，框下说一句；这一项在别处改了（撤销、JSON）就收起
+// A number box whose text reads as no number (「1e」「-」) gives an empty value: not taken as cleared, the config is left alone and a
+// sentence goes under the box, withdrawn once the setting changes elsewhere (an undo, the JSON)
+const unreadable = reactive(new Set<string>())
+watch(settings, (now, was) => { for (const key of unreadable) if (now[key] !== was[key]) unreadable.delete(key) })
+const problemFor = (field: SettingField): string | undefined => (unreadable.has(field.key) ? '填一个整数' : typing.has(field.key) ? undefined : props.problems?.[field.key])
 const warningFor = (field: SettingField): string | undefined => (problemFor(field) ? undefined : props.warnings?.[field.key])
 const warningId = (field: SettingField) => `settings-warning-${field.key}`
 const describedBy = (field: SettingField): string | undefined => (problemFor(field) ? problemId(field) : warningFor(field) ? warningId(field) : undefined)
@@ -222,7 +227,13 @@ function saveKey(field: SettingField, event: KeyboardEvent): void {
 }
 
 function setNumber(field: SettingField, event: Event): void {
-  const raw = (event.currentTarget as HTMLInputElement).value
+  const input = event.currentTarget as HTMLInputElement
+  if (input.validity.badInput) {
+    unreadable.add(field.key)
+    return
+  }
+  unreadable.delete(field.key)
+  const raw = input.value
   if (raw === '') {
     if (field.nullable) setValue(field.key, null)
     else unset(field.key)

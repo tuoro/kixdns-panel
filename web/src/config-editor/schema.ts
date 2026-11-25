@@ -16,6 +16,10 @@ export interface SettingField {
   placeholder?: string
   title?: string
   unit?: string
+  // 数字的取值范围，页面照它查（见 settings-checks）：内核收的范围（GlobalSettings::validate、problems() 和它的整数类型），不写 max 的
+  // 是 u64。只有连接池比内核严，最少 1（内核把 0 当 1）
+  // A number's range, which the page checks (see settings-checks): what the kernel takes (GlobalSettings::validate, problems() and its
+  // integer type), a missing max being u64. Only the pools are stricter than the kernel, at least 1 (the kernel takes 0 as 1)
   min?: number
   max?: number
   nullable?: boolean
@@ -56,6 +60,8 @@ export interface MatcherDefinition extends SelectOption {
   fields: Array<'value' | 'cidr' | 'expect' | 'country_codes' | 'mode'>
 }
 
+// 内核里 u32 的设置最大多少 / The most a u32 setting in the kernel may be
+const U32_MAX = 4_294_967_295
 const BIND_NOTE = '不写就用内核的默认端口，内核版本不同默认也不同；要固定在哪个端口就写上'
 const BOOTSTRAP_NOTE = '上游写成域名（如 tls://dns.google）时，先问这里的 DNS 要它的 IP。写成「IP:端口」，多个用逗号隔开，同时问、用先答的。' +
   '不写就交给系统解析：路由器上 KixDNS 接管了 53 端口时，系统解析会绕回 KixDNS 自己，写成域名的上游就连不上，这时一定要写'
@@ -79,10 +85,12 @@ export const SETTING_SECTIONS: SettingSection[] = [
       // 只有带高级规则时才显示（其余时候由「其余请求」决定）：说清它管的是哪些请求 / Shown only with advanced rules (otherwise 其余请求 decides it): say which requests it serves
       { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true, title: '高级规则里「交给默认上游」和没写地址的转发用这里的地址，多个用逗号隔开' },
       { key: 'bootstrap', label: '引导 DNS', type: 'text', example: '223.5.5.5:53, 119.29.29.29:53', wide: true, requiresCapability: CONFIG_BOOTSTRAP_V1, title: BOOTSTRAP_NOTE },
-      { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', default: 0 },
+      { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, max: U32_MAX, unit: '秒', default: 0 },
       { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
-      { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, unit: '毫秒', nullable: true, placeholder: '自动计算' },
-      { key: 'response_jump_limit', label: '回答后改问次数上限', type: 'number', min: 1, unit: '次', default: 10 },
+      { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 0, unit: '毫秒', nullable: true, placeholder: '自动计算', title: '一个请求连重发、改用 TCP 在内最多等多久，不能小于上游超时；不写是上游超时的两倍半' },
+      // 内核的 MAX_JUMP_LIMIT 是 64；请求阶段和回答动作的跳转各算一份 / The kernel's MAX_JUMP_LIMIT is 64; the request phase and answer
+      // actions each count their own
+      { key: 'response_jump_limit', label: '跳转次数上限', type: 'number', min: 0, max: 64, unit: '次', default: 10, title: '「转到另一组」最多跳几次：请求阶段最多跳这么多次，回答后检查从第一次跳转起另算这么多次，跳满还要跳就回 SERVFAIL。0 是一次也不许跳，最多 64' },
       { key: 'enable_tcp_fallback', label: 'UDP 失败改用 TCP', type: 'boolean', default: true },
     ],
   },
@@ -92,14 +100,15 @@ export const SETTING_SECTIONS: SettingSection[] = [
     description: '连接池、连接存活与保活',
     tone: 'ink',
     fields: [
-      { key: 'udp_pool_size', label: 'UDP 连接池', type: 'number', min: 1, unit: '个连接', default: 64 },
-      { key: 'tcp_pool_size', label: 'TCP 连接池', type: 'number', min: 1, unit: '个连接', default: 64 },
-      { key: 'doh_pool_size', label: 'DoH 连接池', type: 'number', min: 1, unit: '个连接', default: 8 },
-      { key: 'dot_pool_size', label: 'DoT 连接池', type: 'number', min: 1, unit: '个连接', default: 64 },
-      { key: 'doq_pool_size', label: 'DoQ 连接池', type: 'number', min: 1, unit: '个连接', default: 16 },
+      { key: 'udp_pool_size', label: 'UDP 连接池', type: 'number', min: 1, max: 1024, unit: '个连接', default: 64 },
+      { key: 'tcp_pool_size', label: 'TCP 连接池', type: 'number', min: 1, max: 1024, unit: '个连接', default: 64 },
+      { key: 'doh_pool_size', label: 'DoH 连接池', type: 'number', min: 1, max: 1024, unit: '个连接', default: 8 },
+      { key: 'dot_pool_size', label: 'DoT 连接池', type: 'number', min: 1, max: 1024, unit: '个连接', default: 64 },
+      { key: 'doq_pool_size', label: 'DoQ 连接池', type: 'number', min: 1, max: 1024, unit: '个连接', default: 16 },
       { key: 'tcp_connection_max_age_seconds', label: 'TCP 最大存活 (s)', type: 'number', min: 0, unit: '秒', default: 300 },
       { key: 'tcp_connection_idle_timeout_seconds', label: 'TCP 空闲超时 (s)', type: 'number', min: 0, unit: '秒', default: 60 },
-      { key: 'doq_connection_idle_timeout_seconds', label: 'DoQ 空闲超时 (s)', type: 'number', min: 0, unit: '秒', default: 60 },
+      // QUIC 的空闲超时按毫秒算、装在 2^62 以内 / QUIC counts the idle timeout in milliseconds, within 2^62
+      { key: 'doq_connection_idle_timeout_seconds', label: 'DoQ 空闲超时 (s)', type: 'number', min: 0, max: 4_611_686_018_427_387, unit: '秒', default: 60 },
       { key: 'doq_keepalive_interval_ms', label: 'DoQ 保活间隔 (ms)', type: 'number', min: 0, unit: '毫秒', default: 15000 },
       { key: 'doq_enable_0rtt', label: 'DoQ 0-RTT', type: 'boolean', default: true },
     ],
@@ -112,10 +121,10 @@ export const SETTING_SECTIONS: SettingSection[] = [
     fields: [
       { key: 'cache_capacity', label: '缓存容量', type: 'number', min: 1, unit: '条', default: 10000 },
       { key: 'cache_max_ttl', label: '缓存最大 TTL (s)', type: 'number', min: 1, unit: '秒', default: 86400 },
-      { key: 'dashmap_shards', label: '缓存分片数', type: 'number', min: 0, placeholder: '自动' },
+      { key: 'dashmap_shards', label: '缓存分片数', type: 'number', min: 0, max: 65536, placeholder: '自动', title: '0 是自动；要写就写 2 到 65536 之间 2 的幂（2、4、8……）' },
       { key: 'cache_background_refresh', label: '后台刷新', type: 'boolean', default: false },
-      { key: 'cache_refresh_threshold_percent', label: '刷新阈值 (%)', type: 'number', min: 1, max: 90, unit: '%', default: 10, visibleWhen: 'cache_background_refresh' },
-      { key: 'cache_refresh_min_ttl', label: '刷新最小 TTL (s)', type: 'number', min: 0, unit: '秒', default: 5, visibleWhen: 'cache_background_refresh' },
+      { key: 'cache_refresh_threshold_percent', label: '刷新阈值 (%)', type: 'number', min: 0, max: 99, unit: '%', default: 10, visibleWhen: 'cache_background_refresh', title: '缓存剩下的 TTL 不到原来的这么多时，在后台去上游取新的；0 是只剩 1 秒时才刷新，到 100 就每次命中都刷新了' },
+      { key: 'cache_refresh_min_ttl', label: '刷新最小 TTL (s)', type: 'number', min: 0, max: U32_MAX, unit: '秒', default: 5, visibleWhen: 'cache_background_refresh' },
     ],
   },
   {
@@ -125,7 +134,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
     tone: 'red',
     fields: [
       { key: 'serve_stale', label: '过期后继续用旧结果', type: 'boolean', default: false },
-      { key: 'serve_stale_ttl', label: '旧结果的 TTL (s)', type: 'number', min: 1, unit: '秒', default: 30, visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_ttl', label: '旧结果的 TTL (s)', type: 'number', min: 0, max: U32_MAX, unit: '秒', default: 30, visibleWhen: 'serve_stale', title: '交出旧结果时写给客户端的 TTL；0 是让客户端不缓存旧结果，每次都回来问' },
       { key: 'serve_stale_expire_ttl', label: '旧结果最多用多久 (s)', type: 'number', min: 0, unit: '秒', default: 86400, visibleWhen: 'serve_stale' },
       // 2026.11.23.45 起默认关，含义改成「后台刷新失败以后才重新计时」，内核带 config_serve_stale_ttl_reset_v2；以前的默认开，每交出一次旧结果就重新计时
       // From 2026.11.23.45 it is off by default and means 「count afresh only once a background refresh fails」, the kernel declaring
