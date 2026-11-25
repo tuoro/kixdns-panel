@@ -168,6 +168,22 @@ export function withDefaultPorts(text: string): string {
     return done === address ? part : part.replace(address, done)
   }).join(',')
 }
+/**
+ * 只写 IP 也行、写进内核时按 53 补上端口（withDefaultPorts）的设置：照写的默认上游和引导 DNS。页面上写完这一格时也这样补（SettingsTab），
+ * 检查的是补好的（settings-checks）
+ * The settings where an IP alone will do, taking 53 as the port when written to the kernel (withDefaultPorts): the default upstream as written
+ * and bootstrap. The page completes them the same way once the box is written (SettingsTab), and checks them as completed (settings-checks)
+ */
+export const PORTED_SETTINGS = ['default_upstream', 'bootstrap'] as const
+/** settings 里这几项（是文字时）补好端口，别的不动 / These settings (when text) with their ports completed, the rest as they are */
+export function withSettingPorts(settings: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const ported = { ...settings }
+  for (const key of PORTED_SETTINGS) {
+    const value = ported[key]
+    if (typeof value === 'string') ported[key] = withDefaultPorts(value)
+  }
+  return ported
+}
 
 // ---------- 文字摘要 / summaries ----------
 
@@ -1034,11 +1050,11 @@ function compileClaiming(model: Model, claim: Claim): KernelConfig {
   select.push({ pipeline: mainPipelineId(model), matcher_operator: 'and', matchers: [] })
   select.push(...(model.trailingEntries ?? []).map((e) => JSON.parse(JSON.stringify({ matcher_operator: 'and', ...e })) as KernelConfig['pipeline_select'][number]))
   const own = defaultUpstreamOf(model)
-  // 照写的默认上游（有高级规则、或其余请求拦截时）也按 53 补上没写的端口，和上游组的地址一样：没点「完成」就保存的、以前存下来的，写出去都是内核认的
-  // A default upstream written as it is (with advanced rules, or when 其余请求 blocks) takes 53 for a missing port too, as a group's addresses
-  // do: one saved without 完成, or stored long ago, is written as the kernel takes it
-  const asWritten = model.settings.default_upstream
-  const settings: Record<string, unknown> = { ...model.settings, ...(own !== undefined ? { default_upstream: own } : typeof asWritten === 'string' ? { default_upstream: withDefaultPorts(asWritten) } : {}) }
+  // 照写的默认上游（有高级规则、或其余请求拦截时）和引导 DNS 也按 53 补上没写的端口，和上游组的地址一样：没写完就保存的、以前存下来的，写出去
+  // 都是内核认的（见 withSettingPorts）
+  // A default upstream written as it is (with advanced rules, or when 其余请求 blocks) and bootstrap take 53 for a missing port too, as a
+  // group's addresses do: one saved before the box was done, or stored long ago, is written as the kernel takes it (see withSettingPorts)
+  const settings: Record<string, unknown> = { ...withSettingPorts(model.settings), ...(own !== undefined ? { default_upstream: own } : {}) }
   // 拦截列表合成的文件排在 Geo 数据的 GeoSite 后面，和面板服务端同步 Geo 数据时的写法一样 / The blocklists' file follows Geo data's GeoSite files, as the panel server writes them when syncing Geo data
   if (model.blocklists.file) {
     settings.geosite_data_paths = [...(Array.isArray(settings.geosite_data_paths) ? settings.geosite_data_paths : []), model.blocklists.file]
@@ -1072,8 +1088,12 @@ export function settingsFromKernel(model: Model, kernel: Record<string, unknown>
   const restore = (key: string) => { if (was[key] !== undefined) settings[key] = JSON.parse(JSON.stringify(was[key])) as unknown; else delete settings[key] }
   const own = defaultUpstreamOf(model)
   if (own !== undefined && settings.default_upstream === own) restore('default_upstream')
-  // 照写的那个只是补了端口：模型里还是原来的写法 / The one written as it is only took its ports: the model keeps how it was written
-  else if (own === undefined && typeof was.default_upstream === 'string' && settings.default_upstream === withDefaultPorts(was.default_upstream)) settings.default_upstream = was.default_upstream
+  // 照写的那几项只是补了端口：模型里还是原来的写法（默认上游由其余请求的组写时上面已经管了） / Those written as they are only took their
+  // ports: the model keeps how they were written (a default upstream written from 其余请求's group was settled above)
+  for (const key of PORTED_SETTINGS) {
+    const before = was[key]
+    if ((key !== 'default_upstream' || own === undefined) && typeof before === 'string' && settings[key] === withDefaultPorts(before)) settings[key] = before
+  }
   const file = model.blocklists.file
   if (file && Array.isArray(settings.geosite_data_paths)) {
     const paths = (settings.geosite_data_paths as unknown[]).filter((p) => p !== file)
