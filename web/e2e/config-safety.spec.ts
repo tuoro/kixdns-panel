@@ -168,6 +168,8 @@ test('右栏里改了没点完成就离开配置页：先问这条规则', async
   await expect(ask.getByRole('button', { name: '继续编辑' })).toBeFocused()
   await ask.getByRole('button', { name: '继续编辑' }).click()
   await expect(page.getByLabel('规则名称，可以不填，不填就用条件当名字')).toHaveValue('没点完成')
+  // 没走成，标签页标题还是配置页的 / The change did not happen: the tab title is still the config page's
+  await expect(page).toHaveTitle('配置 · KixDNS 面板')
 })
 
 test('JSON 视图里放弃修改：编辑器里的文字一起回到草稿的样子', async ({ page }) => {
