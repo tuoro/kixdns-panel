@@ -68,3 +68,40 @@ describe('写成主机名的上游', () => {
     expect(hostNamedUpstream(config(udp, forward('1.1.1.1:53, tls://dns.alidns.com, https://doh.pub/dns-query')))).toBe('dns.alidns.com')
   })
 })
+
+// 每一项照内核的范围和相互关系说，说法写清要怎么改；哪些项不收和内核对得上，见 settings-kernel-fixtures.test.ts
+// Each setting is told by the kernel's range and relations, saying what to write instead; which ones are refused matches the kernel,
+// see settings-kernel-fixtures.test.ts
+describe('设置的范围和相互关系', () => {
+  const problem = (settings: Record<string, unknown>, key: string) => settingProblems(settings, WITH)[key]
+  it('数字按内核的范围说，没写上限的是 u64', () => {
+    expect(problem({ response_jump_limit: 65 }, 'response_jump_limit')).toBe('填 0 到 64 之间的整数')
+    expect(problem({ cache_refresh_threshold_percent: 100 }, 'cache_refresh_threshold_percent')).toBe('填 0 到 99 之间的整数')
+    expect(problem({ udp_pool_size: 1025 }, 'udp_pool_size')).toBe('填 1 到 1024 之间的整数')
+    expect(problem({ cache_capacity: 0 }, 'cache_capacity')).toBe('填大于 0 的整数')
+    expect(problem({ serve_stale_expire_ttl: -1 }, 'serve_stale_expire_ttl')).toBe('填 0 或更大的整数')
+    expect(problem({ serve_stale_expire_ttl: 2 ** 64 }, 'serve_stale_expire_ttl')).toBe('填 0 或更大的整数')
+    expect(problem({ serve_stale_expire_ttl: 2 ** 64 - 2048 }, 'serve_stale_expire_ttl')).toBeUndefined()
+    expect(problem({ min_ttl: 1.5 }, 'min_ttl')).toBe('填 0 到 4294967295 之间的整数')
+  })
+  it('以前比内核严的放宽：刷新阈值到 99、可以是 0，旧结果的 TTL 和跳转上限可以是 0', () => {
+    expect(settingProblems({ cache_refresh_threshold_percent: 0, serve_stale_ttl: 0, response_jump_limit: 0 }, WITH)).toEqual({})
+    expect(settingProblems({ cache_refresh_threshold_percent: 99, response_jump_limit: 64 }, WITH)).toEqual({})
+  })
+  it('分片数要 0 或 2 到 65536 之间 2 的幂', () => {
+    for (const shards of [1, 3, 131_072, 2.5]) expect(problem({ dashmap_shards: shards }, 'dashmap_shards'), String(shards)).toBe('填 0（自动），或者 2 到 65536 之间 2 的幂（2、4、8……）')
+    for (const shards of [0, 2, 1024, 65_536]) expect(problem({ dashmap_shards: shards }, 'dashmap_shards'), String(shards)).toBeUndefined()
+  })
+  it('整体超时不能小于上游超时，没写上游超时按默认的 9000 比；自动的不比', () => {
+    expect(problem({ upstream_timeout_ms: 2000, request_timeout_ms: 1000 }, 'request_timeout_ms')).toBe('不能小于上游超时（2000 毫秒）')
+    expect(problem({ request_timeout_ms: 5000 }, 'request_timeout_ms')).toBe('不能小于上游超时（9000 毫秒）')
+    expect(problem({ request_timeout_ms: null }, 'request_timeout_ms')).toBeUndefined()
+    // 上游超时本身写错时只说它 / With the upstream timeout itself wrong only it is told
+    expect(settingProblems({ upstream_timeout_ms: 0, request_timeout_ms: 0 }, WITH)).toEqual({ upstream_timeout_ms: '填大于 0 的整数' })
+  })
+  it('监听地址、DoH 路径、证书和私钥', () => {
+    expect(problem({ bind_udp: 'localhost:53' }, 'bind_udp')).toBe('要写成「IP:端口」，比如 0.0.0.0:53 或 [::]:53')
+    expect(problem({ doh_path: 'dns-query' }, 'doh_path')).toBe('要以 / 开头：不以它开头的路径谁也对不上，DoH 每个请求都回 404')
+    expect(settingProblems({ bind_doh: '0.0.0.0:443' }, WITH)).toEqual({ doh_tls_cert: '写了 DoH 监听地址就要写证书', doh_tls_key: '写了 DoH 监听地址就要写私钥' })
+  })
+})
