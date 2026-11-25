@@ -3,14 +3,17 @@ import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { QueryLogSettings } from '../api/types'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
+import { CONFIG_BOOTSTRAP_V1 } from '../config-editor/schema'
+import { hasBootstrap, hostNamedUpstream, settingProblems } from '../config-editor/settings-checks'
 import QueryLogSettingsForm from '../components/logs/QueryLogSettingsForm.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useToast } from '../composables/useToast'
-import { defaultUpstreamFromRest, groupName, outcomeProblem, upstreamListProblem, withDefaultPorts } from '../config-model/model'
+import { compile, defaultUpstreamFromRest, groupName, outcomeProblem, upstreamListProblem, withDefaultPorts } from '../config-model/model'
 import { retentionText } from '../querylog'
 import { errorMessage } from '../utils'
 import { changedSettingKeys, model } from './store'
+import { capabilityError, runtimeCapabilities } from './useConfigDocument'
 
 // 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、Geo 数据），最前面多一组「规则默认值」。
 // 「默认上游」一般不单独出现：它由「其余请求」决定，生成配置时写成那个组的地址。
@@ -24,10 +27,20 @@ const hidden = computed(() => (defaultUpstreamFromRest(model) ? ['default_upstre
 // 显示出来的「默认上游」照内核读一遍，查的是写进内核的那样（没写端口的补上 53），说法和上游组的地址一样；没写这一项时内核用它的默认值，不查
 // The 默认上游 shown is read as the kernel reads it, checking what is written to the kernel (53 for a missing port), worded as an upstream
 // group's addresses; absent, the kernel uses its default and nothing is checked
+// 别的设置照内核的检查说（见 settings-checks）；KixDNS 没报能力时不按能力说
+// The other settings are told as the kernel checks them (see settings-checks); nothing is said by capability while KixDNS reports none
 const problems = computed((): Record<string, string> => {
   const value = model.settings.default_upstream
   const problem = hidden.value.length || value === undefined ? null : upstreamListProblem(withDefaultPorts(String(value)))
-  return problem ? { default_upstream: problem } : {}
+  return { ...settingProblems(model.settings, capabilityError.value ? null : runtimeCapabilities.value), ...(problem ? { default_upstream: problem } : {}) }
+})
+// 内核认引导 DNS、却没写，又有上游写成了主机名：保存以后内核会提醒的那件事，在框下面先说一句
+// The kernel reads bootstrap, none is written and an upstream is written with a host name: what the kernel will warn about after a
+// save is said under the box first
+const warnings = computed((): Record<string, string> => {
+  if (!runtimeCapabilities.value.includes(CONFIG_BOOTSTRAP_V1) || hasBootstrap(model.settings)) return {}
+  const host = hostNamedUpstream(compile(model))
+  return host ? { bootstrap: `上游 ${host} 写成了域名，没写引导 DNS 时交给系统解析；KixDNS 接管了本机的 53 端口时会绕回它自己，连不上` } : {}
 })
 // 默认上游写完（离开这一格、按回车、在框里按 Ctrl+S）时和上游组的地址按「完成」时一样，只写 IP、TCP 主机的按 53 补上端口；写到一半不动它，也不说错
 // 默认上游 once written (leaving the box, pressing Enter, Ctrl+S inside it) is treated as an upstream group's addresses on 完成: an IP or TCP
@@ -96,7 +109,7 @@ async function saveQueryLog(): Promise<void> {
 
 <template>
   <section class="ui-card sets__card" aria-label="基础设置">
-    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :tail="tail" :problems="problems" :commit="commit">
+    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :tail="tail" :problems="problems" :warnings="warnings" :commit="commit" :capabilities="runtimeCapabilities">
       <template #lead>
         <div class="ui-setrow">
           <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}。</small></span>

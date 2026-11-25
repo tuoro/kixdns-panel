@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SETTING_SECTIONS, geoSummary, settingName, settingNames, settingValues } from './schema'
+import { CONFIG_BOOTSTRAP_V1, CONFIG_SERVE_STALE_TTL_RESET_V2, SETTING_SECTIONS, geoSummary, settingName, settingNames, settingSections, settingValues } from './schema'
 
 // 查询排行一直开着、客户端地址照原样记：基础设置里没有这两个开关
 // Rankings are always on with whole client addresses: the settings carry neither switch
@@ -73,6 +73,8 @@ describe('提示条里的设置名', () => {
     expect(settingValues({ flow_control_enabled: true })).toBe('智能流控\u00a0开启')
     expect(settingValues({ flow_control_max_permits: 512 })).toBe('智能流控的几项数值')
     expect(settingValues({ doh_health_check_error_threshold: null })).toBe('DoH\u00a0错误阈值\u00a0默认值')
+    // 监听地址的默认端口随内核版本不同，不写具体是哪个 / The listen addresses' default port differs by kernel version, so none is named
+    expect(settingValues({ bind_udp: null, bind_tcp: null })).toBe('UDP\u00a0监听地址\u00a0默认值、TCP\u00a0监听地址\u00a0默认值')
   })
 })
 
@@ -87,5 +89,38 @@ describe('设置列表上 Geo 数据那一行', () => {
   it('GeoSite 只数填了的，刚添加还空着的那一行不算', () => {
     expect(geoSummary({ geosite_data_paths: ['/var/lib/kixdns/geosite.dat', ''] })[1]).toBe('GeoSite 1 个文件')
     expect(geoSummary({ geosite_data_paths: 'not a list' })[1]).toBe('GeoSite 0 个文件')
+  })
+})
+
+// 照内核报的能力读设置：要能力的没写就不列，写了照样列；默认值和名字随能力换
+// Settings read by the kernel's capabilities: one needing a capability is listed only when written; defaults and labels follow capabilities
+describe('设置照内核的能力读', () => {
+  const field = (capabilities: string[], key: string, settings: Record<string, unknown> = {}) =>
+    settingSections(capabilities, settings).flatMap((section) => section.fields).find((item) => item.key === key)
+  it('引导 DNS 要 config_bootstrap_v1：没有时不列，配置里写了的照样列出来，好清空', () => {
+    expect(field([CONFIG_BOOTSTRAP_V1], 'bootstrap')?.label).toBe('引导 DNS')
+    expect(field([], 'bootstrap')).toBeUndefined()
+    expect(field([], 'bootstrap', { bootstrap: '223.5.5.5:53' })?.label).toBe('引导 DNS')
+    expect(field([CONFIG_BOOTSTRAP_V1], 'bootstrap')?.title).toContain('接管了 53 端口')
+  })
+  it('刷新失败后重新计时：新内核默认关，旧内核照旧默认开、每用一次就重新计时', () => {
+    const v2 = field([CONFIG_SERVE_STALE_TTL_RESET_V2], 'serve_stale_ttl_reset')
+    expect([v2?.label, v2?.default]).toEqual(['刷新失败后重新计时', false])
+    expect(v2?.title).toContain('后台刷新失败以后')
+    const old = field([], 'serve_stale_ttl_reset')
+    expect([old?.label, old?.default]).toEqual(['每用一次旧结果就重新计时', true])
+    expect(old).not.toHaveProperty('capability')
+  })
+  it('监听地址不写默认端口，占位写「内核默认」', () => {
+    for (const key of ['bind_udp', 'bind_tcp']) {
+      const bind = field([], key)
+      expect(bind?.default).toBeUndefined()
+      expect(bind?.placeholder).toBe('内核默认')
+    }
+  })
+  it('别的字段和表单里的一样，不随能力变', () => {
+    const plain = (capabilities: string[]) => settingSections(capabilities, {}).flatMap((section) => section.fields).filter((item) => !['bootstrap', 'serve_stale_ttl_reset'].includes(item.key))
+    expect(plain([])).toEqual(plain([CONFIG_BOOTSTRAP_V1, CONFIG_SERVE_STALE_TTL_RESET_V2]))
+    expect(plain([])).toEqual(SETTING_SECTIONS.flatMap((section) => section.fields).filter((item) => !['bootstrap', 'serve_stale_ttl_reset'].includes(item.key)))
   })
 })
