@@ -134,6 +134,17 @@ impl Layout {
                 0o640,
                 (self.panel_uid, self.gid),
             )?;
+            // 新的数据卷和 systemd 版的全新安装一样：请面板第一次启动时导入一次镜像自带的 GeoSite（面板用完就删这个标记）。
+            // 搬来的配置不放：它可能有意不用 GeoSite，由用户自己决定
+            // A new volume is treated as a fresh systemd install: the panel's first start is asked to import the image's
+            // GeoSite once (the panel removes the marker after use). A config brought over gets none: it may leave GeoSite out
+            // on purpose, so the user decides
+            place(
+                Path::new("/dev/null"),
+                &self.data.join("geo/.import-builtin-geosite"),
+                0o640,
+                (self.panel_uid, self.gid),
+            )?;
         }
         Ok(())
     }
@@ -510,13 +521,17 @@ mod tests {
             std::fs::read_to_string(layout.pipeline()).unwrap(),
             "{\"default\":true}"
         );
+        let marker = layout.data.join("geo/.import-builtin-geosite");
+        assert!(marker.is_file(), "新的数据卷要导入一次自带的 GeoSite");
 
+        std::fs::remove_file(&marker).unwrap();
         std::fs::write(layout.pipeline(), "{\"mine\":true}").unwrap();
         layout.prepare().unwrap();
         assert_eq!(
             std::fs::read_to_string(layout.pipeline()).unwrap(),
             "{\"mine\":true}"
         );
+        assert!(!marker.exists(), "已经有配置的不再导入");
     }
 
     /// 搬来的配置：只有自己读得到的 pipeline.json 加上组可读；链接和目录原样不动，链接指的文件也不动
