@@ -116,10 +116,13 @@ function upstreamKinds(): Model {
   return m
 }
 
-// 有 config_qtype_names_v1 的内核认的每一个记录类型名，和 TYPEnnn、小写、* 的写法：查询类型和回答的记录类型各一遍
+// 有 config_qtype_names_v1 的内核认的每一个记录类型名，和 TYPEnnn、小写、* 的写法：查询类型和回答的记录类型各一遍。OPT、IXFR、ZERO 等最新的
+// 内核修好这一处（认 hickory Display 写得出的全部名字）以后再加，现在的 main 还不收
 // Every record type name a kernel with config_qtype_names_v1 takes, and the TYPEnnn, lower-case and * forms: once as the query type and once
-// as the answer's record type
-const QTYPE_FORMS = [...QTYPE_NAMES, 'https', 'TYPE65', 'type4321', 'TYPE0', 'TYPE65535', '*']
+// as the answer's record type. OPT, IXFR and ZERO join once the latest kernel is mended to take every name hickory's Display writes; main
+// refuses them still
+const NOT_YET = ['OPT', 'IXFR', 'ZERO']
+const QTYPE_FORMS = [...QTYPE_NAMES.filter((t) => !NOT_YET.includes(t)), 'https', 'TYPE65', 'type4321', 'TYPE0', 'TYPE65535', '*']
 function qtypeNames(): Model {
   return base([
     blockRule('每种查询类型', [[{ id: id(), field: 'qtype', negate: false, values: QTYPE_FORMS }]]),

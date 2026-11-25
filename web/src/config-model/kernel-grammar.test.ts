@@ -14,13 +14,14 @@ import { sampleModel } from './testing/samples'
 // config::validate of kixdns d2b5fc3 (the ten record types older kernels take follow parse_dns_type before a5126b9)
 
 // parse_dns_type、parse_dns_class 认的记录类型和类别，response_rcode 认的响应码（另外还有明写的 OTHER）。新内核的记录类型照
-// hickory-proto 0.26.3 RecordType::from_str 抄（* 是 ANY 的另一个写法），旧内核的是 a5126b9 之前 parse_dns_type 的十种
+// hickory-proto 0.26.3 的 Display（From<RecordType> for &str）抄，除了不是名字的 Unknown；旧内核的是 a5126b9 之前 parse_dns_type 的十种
 // The record types and classes parse_dns_type and parse_dns_class take, and the rcodes response_rcode takes (an explicit OTHER besides).
-// A new kernel's record types are copied from hickory-proto 0.26.3's RecordType::from_str (* being another spelling of ANY), an older
-// kernel's are the ten of parse_dns_type before a5126b9
+// A new kernel's record types are copied from hickory-proto 0.26.3's Display (From<RecordType> for &str), all but Unknown, which names
+// no type; an older kernel's are the ten of parse_dns_type before a5126b9
 const HICKORY_QTYPES = [
-  'A', 'AAAA', 'ANAME', 'AXFR', 'CAA', 'CDNSKEY', 'CERT', 'CDS', 'CNAME', 'CSYNC', 'DNAME', 'DNSKEY', 'DS', 'HINFO', 'HTTPS', 'KEY', 'MX', 'NAPTR', 'NSEC',
-  'NSEC3', 'NSEC3PARAM', 'NS', 'NULL', 'OPENPGPKEY', 'PTR', 'RRSIG', 'SIG', 'SMIMEA', 'SOA', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT', 'TSIG', 'ANY',
+  'A', 'AAAA', 'ANAME', 'ANY', 'AXFR', 'CAA', 'CDNSKEY', 'CERT', 'CDS', 'CNAME', 'CSYNC', 'DNAME', 'DNSKEY', 'DS', 'HINFO', 'HTTPS', 'KEY', 'IXFR', 'MX',
+  'NAPTR', 'NS', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'NULL', 'OPENPGPKEY', 'OPT', 'PTR', 'RRSIG', 'SIG', 'SMIMEA', 'SOA', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TSIG',
+  'TXT', 'ZERO',
 ]
 const LEGACY_QTYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT']
 const KERNEL_QCLASSES = ['IN', 'CH', 'CHAOS', 'HS']
@@ -137,16 +138,16 @@ describe('内核不认的值，编辑器也不认', () => {
     expect(SUGGEST.rcode!.filter((v) => !KERNEL_RCODES.includes(v))).toEqual([])
   })
 
-  // 有 config_qtype_names_v1 的内核：hickory 认的类型名一个不少、一个不多，建议的就是这些 / A kernel with config_qtype_names_v1: exactly the
-  // type names hickory knows, none missing and none extra, and those are what is suggested
-  it('新内核认 hickory 的全部类型名，建议也是这些', () => {
+  // 有 config_qtype_names_v1 的内核：hickory 的 Display 写得出的类型名一个不少、一个不多，建议的就是这些 / A kernel with
+  // config_qtype_names_v1: exactly the type names hickory's Display writes, none missing and none extra, and those are what is suggested
+  it('新内核认 hickory Display 的全部类型名，建议也是这些', () => {
     expect([...QTYPE_NAMES].sort()).toEqual([...HICKORY_QTYPES].sort())
     setKernelCapabilities([CONFIG_QTYPE_NAMES_V1])
     for (const field of ['qtype', 'answer_type']) expect([...SUGGEST[field]!].sort()).toEqual([...HICKORY_QTYPES].sort())
-    expect(problemsOf(ruleWith([[cond('qtype', ['HTTPS', 'svcb', 'TYPE65', '*'])]]))).toEqual([])
+    expect(problemsOf(ruleWith([[cond('qtype', ['HTTPS', 'svcb', 'OPT', 'TYPE65', '*'])]]))).toEqual([])
     expect(problemsOf(checked({ conditions: [rcond('answer_type', ['CAA', 'type4321'])] }))).toEqual([])
-    // OPT 不在 hickory 的名字里，只能写成 TYPE41；说的是能写什么 / OPT is no hickory name and is written TYPE41; what may be written is said
-    expect(problemsOf(ruleWith([[cond('qtype', ['OPT', 'HTTPSS', 'TYPE70000'])]]))).toEqual(['「查询类型」里标红的 KixDNS 不认，能用的是 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法'])
+    // 写错时说的是能写什么 / A mistake is met with what may be written
+    expect(problemsOf(ruleWith([[cond('qtype', ['HTTPSS', 'TYPE70000'])]]))).toEqual(['「查询类型」里标红的 KixDNS 不认，能用的是 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法'])
     setKernelCapabilities([])
     expect(problemsOf(ruleWith([[cond('qtype', ['HTTPS'])]]))).toEqual(['「查询类型」里标红的 KixDNS 不认，能用的是 A、AAAA、CNAME、MX、TXT、NS、PTR、SRV、SOA、OPT'])
   })
@@ -179,7 +180,6 @@ describe('内核不认的值，编辑器也不认', () => {
   })
 
   it('内核认的照样能用：小写、CHAOS、OTHER、IPv4 前导零、:: 只占一组、IPv6 里带 IPv4', () => {
-    // OPT 只有旧内核认，新内核要写成 TYPE41（见上面「新内核」那条） / Only older kernels take OPT; a new kernel needs TYPE41 (see 新内核 above)
     expect(problemsOf(ruleWith([[cond('qtype', ['aaaa', 'OPT']), cond('qclass', ['CHAOS'])]]))).toEqual([])
     expect(problemsOf(ruleWith([[cond('client_ip', ['010.0.0.0/8', '1:2:3:4:5:6:7::8', '::ffff:1.2.3.4/128', '2001:DB8::/32'])]]))).toEqual([])
     expect(problemsOf(checked({ conditions: [rcond('rcode', ['OTHER', 'servfail'])] }))).toEqual([])

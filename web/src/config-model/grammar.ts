@@ -29,15 +29,16 @@ export const QTYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'S
 /** 内核认全部类型名和 TYPEnnn 的能力 / The capability of a kernel taking every type name and TYPEnnn */
 export const CONFIG_QTYPE_NAMES_V1 = 'config_qtype_names_v1'
 /**
- * 有 config_qtype_names_v1 的内核认的类型名：hickory-proto 0.26 RecordType::from_str 的那一份（* 也是 ANY）。OPT、IXFR 不在里面，
- * 要写成 TYPE41、TYPE251
- * The type names a kernel with config_qtype_names_v1 takes: those of hickory-proto 0.26's RecordType::from_str (* is ANY too). OPT and
- * IXFR are not among them and are written TYPE41 and TYPE251
+ * 有 config_qtype_names_v1 的内核认的类型名：hickory-proto 0.26 的 Display 写得出的每一个名字（RecordType 每个有名字的变体），另外 * 也是
+ * ANY。2026.11.23.33 起到内核修好这一处之间的几版只认 RecordType::from_str 的那些，OPT、IXFR、ZERO 保存时由内核拒收
+ * The type names a kernel with config_qtype_names_v1 takes: every name hickory-proto 0.26's Display writes (each named variant of
+ * RecordType), * being ANY too. The versions from 2026.11.23.33 until the kernel mended this took RecordType::from_str's only, OPT, IXFR and
+ * ZERO being refused by the kernel on save
  */
 export const QTYPE_NAMES = [
   'A', 'AAAA', 'CNAME', 'HTTPS', 'SVCB', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'SOA', 'CAA', 'ANY', 'DS', 'DNSKEY', 'RRSIG', 'NSEC', 'NSEC3',
   'NSEC3PARAM', 'CDS', 'CDNSKEY', 'TLSA', 'SSHFP', 'NAPTR', 'DNAME', 'HINFO', 'CERT', 'KEY', 'SIG', 'OPENPGPKEY', 'SMIMEA', 'CSYNC', 'ANAME',
-  'AXFR', 'NULL', 'TSIG',
+  'AXFR', 'IXFR', 'OPT', 'NULL', 'TSIG', 'ZERO',
 ] as const
 // 运行中的内核读不读全部类型名：配置页照它的能力改（useConfigDocument），响应式的，用到它的提示和标红跟着变；没说时按旧内核
 // Whether the running kernel reads every type name: the config page sets it from its capabilities (useConfigDocument), reactively, so the

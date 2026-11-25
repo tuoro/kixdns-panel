@@ -166,8 +166,8 @@ describe('高级规则的字段照内核的读法查', () => {
     })
     it('新内核', () => {
       setKernelCapabilities([CONFIG_QTYPE_NAMES_V1])
-      expect([qtype('HTTPS'), qtype('svcb'), answer('TYPE65'), answer('*')]).toEqual([undefined, undefined, undefined, undefined])
-      expect([qtype('OPT'), answer(' A')]).toEqual(['KixDNS 只认 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法', 'KixDNS 只认 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法'])
+      expect([qtype('HTTPS'), qtype('svcb'), qtype('OPT'), answer('TYPE65'), answer('*')]).toEqual([undefined, undefined, undefined, undefined, undefined])
+      expect([qtype('HTTPSS'), answer(' A')]).toEqual(['KixDNS 只认 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法', 'KixDNS 只认 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法'])
     })
   })
 })

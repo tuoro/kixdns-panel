@@ -91,7 +91,7 @@ let config: ConfigDocument = {
     generation: 18,
     apply_state: 'active',
     pending_error: null,
-    declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+    declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1', 'config_qtype_names_v1'],
   },
 }
 
@@ -216,7 +216,7 @@ const overview: Overview = {
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,
-    capabilities: ['stats_top_v1', 'config_static_cname_response_v1', 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1', ...(demoQueryLogSupported() ? ['querylog_v1'] : [])],
+    capabilities: ['stats_top_v1', 'config_static_cname_response_v1', 'config_qtype_names_v1', 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1', ...(demoQueryLogSupported() ? ['querylog_v1'] : [])],
   },
   active_config: activeConfig,
   metrics: {
@@ -356,7 +356,7 @@ function activateCopy(sourceId: number, content: Record<string, unknown>, messag
       generation: activeConfig.generation + 1,
       apply_state: 'active',
       pending_error: null,
-      declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+      declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1', 'config_qtype_names_v1'],
     },
   }
   activeConfig.sha256 = config.sha256
@@ -520,7 +520,7 @@ function sampleFiguresFollow(): void {
     '92b2b2c7e669235f24b1e0a752e7594dc4b2006e',
     'sha256:2da45695bc6a13bc6be57b3f22ca160f1c97f12c5e5bfa431c9dcde0b1ba89c5',
     '2026-10-15T15:07:23Z',
-    ['config_query_stats_v1', 'config_static_cname_response_v1'],
+    ['config_query_stats_v1', 'config_static_cname_response_v1', 'config_qtype_names_v1'],
   )
   const before = forkVersion(
     638010733,
@@ -528,7 +528,7 @@ function sampleFiguresFollow(): void {
     '22d9ff148fa56aea6d6612d00d9341e6c1b9f066',
     'sha256:07e4da703dc6e467feaea2030e0ff651468ae07c07771cc8fa628322b2a62a9e',
     '2026-10-14T01:34:26Z',
-    ['config_query_stats_v1', 'config_static_cname_response_v1'],
+    ['config_query_stats_v1', 'config_static_cname_response_v1', 'config_qtype_names_v1'],
   )
   latestKixdnsVersion = release
   activeKixdnsVersion = installedFromRelease(release, true, now - 289_420)
@@ -850,7 +850,7 @@ let latestKixdnsVersion = forkVersion(
   '527ae0a023c81094d80c949d844dbc7d1da85b32',
   'sha256:e704a45cfda8e009e1d13d2cc516ad88a7fdfa9a9d11f46712947de8e9e19913',
   '2026-10-13T09:12:40Z',
-  ['config_query_stats_v1', 'config_static_cname_response_v1'],
+  ['config_query_stats_v1', 'config_static_cname_response_v1', 'config_qtype_names_v1'],
 )
 const installedForkVersion = forkVersion(
   637165884,
@@ -1404,7 +1404,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
           generation: config.runtime.generation,
           apply_state: 'pending',
           pending_error: null,
-          declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+          declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1', 'config_qtype_names_v1'],
         },
       }
       versions.versions.unshift({
@@ -1432,7 +1432,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
         generation: activeConfig.generation + 1,
         apply_state: 'active',
         pending_error: null,
-        declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+        declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1', 'config_qtype_names_v1'],
       },
     }
     activeConfig.sha256 = nextSha

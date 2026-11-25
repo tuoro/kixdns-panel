@@ -15,12 +15,13 @@ const tableAnswer = ({ kind, pattern }: { kind: 'domain' | 'txt'; pattern: strin
 }
 
 // grammar.ts 照内核的读法写：下面每一条的答案都是把这个写法放进一份最小配置、跑 kixdns d2b5fc3 的 config::validate 得到的（只有旧内核才有的，
-// 比如只认十种记录类型，是 a5126b9 之前的内核）。内核收的这里也收、内核拒绝的这里也拒绝；少数几个内核收、这里查不出来的（CNAME 目标里的
-// IDN 域名）单独说明，宁可多拦不放过
+// 比如只认十种记录类型，是 a5126b9 之前的内核；OPT、IXFR、ZERO 这三个类型名照内核修好以后的读法，d2b5fc3 还不认）。内核收的这里也收、内核
+// 拒绝的这里也拒绝；少数几个内核收、这里查不出来的（CNAME 目标里的 IDN 域名）单独说明，宁可多拦不放过
 // grammar.ts follows the kernel's reading: every answer below came from putting the form into a minimal config and running the
-// config::validate of kixdns d2b5fc3 (what only older kernels do, such as taking ten record types, from a kernel before a5126b9). What the
-// kernel takes is taken here and what it refuses is refused; the few the kernel takes that cannot be checked here (IDN names as CNAME
-// targets) are noted apart, erring on the strict side
+// config::validate of kixdns d2b5fc3 (what only older kernels do, such as taking ten record types, from a kernel before a5126b9; the type
+// names OPT, IXFR and ZERO as the kernel reads them once mended, d2b5fc3 refusing them still). What the kernel takes is taken here and what
+// it refuses is refused; the few the kernel takes that cannot be checked here (IDN names as CNAME targets) are noted apart, erring on the
+// strict side
 
 const both = <T>(ok: T[], refused: T[], check: (v: T) => boolean) => {
   expect(ok.filter((v) => !check(v)), '内核收的').toEqual([])
@@ -57,11 +58,11 @@ describe('内核的读法', () => {
 
   describe('记录类型：有 config_qtype_names_v1 的内核', () => {
     afterEach(() => setKernelCapabilities([]))
-    it('认 hickory 的全部类型名和 TYPEnnn，OPT 要写成 TYPE41', () => {
+    it('认 hickory Display 写得出的全部类型名和 TYPEnnn', () => {
       setKernelCapabilities([CONFIG_QTYPE_NAMES_V1])
       both(
-        [...QTYPE_NAMES, 'a', 'https', 'Https', 'svcb', '*', 'any', 'TYPE65', 'type65', 'Type65', 'TYPE+65', 'TYPE065', 'TYPE0', 'TYPE41', 'TYPE251', 'TYPE65535', 'type4321'],
-        ['OPT', 'opt', 'IXFR', 'ZERO', 'SPF', 'HTTPSS', 'UNKNOWN', 'CH', 'TYPE65536', 'TYPE70000', 'TYPE', 'TYPE-1', 'TYPE 65', 'TYPE٦٥', ...NOT_ASCII],
+        [...QTYPE_NAMES, 'a', 'https', 'Https', 'svcb', 'opt', 'ixfr', '*', 'any', 'TYPE65', 'type65', 'Type65', 'TYPE+65', 'TYPE065', 'TYPE0', 'TYPE41', 'TYPE251', 'TYPE65535', 'type4321'],
+        ['SPF', 'HTTPSS', 'UNKNOWN', 'CH', 'TYPE65536', 'TYPE70000', 'TYPE', 'TYPE-1', 'TYPE 65', 'TYPE٦٥', ...NOT_ASCII],
         isQtype,
       )
     })
