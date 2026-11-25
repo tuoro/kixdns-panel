@@ -1430,7 +1430,7 @@ async fn apply_system_config(
             "KixDNS 没有接受{}，仍在用之前的配置：{}",
             write.subject,
             match &error {
-                ControlError::Rejected(reason) => reason.clone(),
+                ControlError::Rejected(refusal) => refusal.to_string(),
                 other => reload_failure(other),
             }
         );
@@ -1623,7 +1623,11 @@ async fn activate_candidate(
                 .map_err(map_config_error)?;
             let message = format!("{}，仍在用之前的配置", reload_failure(&error));
             mark_candidate_failed(state, result.version_id, message.clone()).await?;
-            return Err(AppError::Unprocessable("reload_failed", message));
+            let reasons = match error {
+                ControlError::Rejected(refusal) => refusal.problems,
+                _ => Vec::new(),
+            };
+            return Err(AppError::Refused("reload_failed", message, reasons));
         }
     };
     state
@@ -2106,7 +2110,9 @@ fn map_config_error(error: ConfigError) -> AppError {
 
 fn map_control_error(error: ControlError) -> AppError {
     match error {
-        ControlError::Rejected(message) => AppError::Unprocessable("kixdns_rejected", message),
+        ControlError::Rejected(refusal) => {
+            AppError::Refused("kixdns_rejected", refusal.message, refusal.problems)
+        }
         ControlError::Unavailable(message) => AppError::ServiceUnavailable(
             "kixdns_unavailable",
             normalize_control_unavailable_message(&message),

@@ -1,3 +1,4 @@
+import type { PlaceNames } from '../kernel-problems'
 import { blocklistPipelineId, kernelRuleIndex, mainPipelineId, mappingPipelineId, ruleGroupPipelineId, ruleTitle, upstreamPipelineId, type KernelRuleIndex, type KernelRuleRef, type Model, type Rule } from './model'
 
 // 执行路径里内核用的名字（rule-12、main、group-g1、upstream-cn）换回配置页上看到的名字。认不出的返回 null，照原样显示。
@@ -101,5 +102,30 @@ export function traceNames(model: Model): TraceNames {
       const rule = findKernelRule(model, label, at ?? null, index)
       return rule ? ruleTitle(rule) : null
     },
+  }
+}
+
+/**
+ * 内核按位置说的几处（pipelines[i]、pipelines[i].rules[j]）在页面上的叫法：位置在 config（内核读的那份配置：被拒的那份草稿写出的、在用的
+ * 那个文件）里数，名字照 model 认。认回面板规则的说规则的标题；面板自己生成的（拦截列表、域名映射这些）说所在的列表和第几条
+ * What the places the kernel names by position (pipelines[i], pipelines[i].rules[j]) are called on the page: positions are counted in config
+ * (the config the kernel read: what the refused draft writes, the file in use), names traced through model. A place traced back to a panel
+ * rule reads as that rule's title; one the panel generates (the blocklists, the mappings and so on) as its list and which rule it is there
+ */
+export function placeNames(model: Model, config: { pipelines?: readonly { id: string; rules?: readonly { name: string }[] }[] }): PlaceNames {
+  const pipelines = config.pipelines ?? []
+  const names = traceNames(model)
+  return {
+    pipeline: (i) => { const at = pipelines[i]; return at ? names.pipeline(at.id) : null },
+    rule: (i, j) => {
+      const at = pipelines[i]
+      const kernelRule = at?.rules?.[j]
+      if (!at || !kernelRule) return null
+      const title = names.rule(kernelRule.name, at.id)
+      if (title) return `规则「${title}」`
+      const list = names.pipeline(at.id)
+      return list ? `${list}的第\u00a0${j + 1}\u00a0条规则` : null
+    },
+    quoted: names.pipeline,
   }
 }

@@ -10,7 +10,8 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
-import { busy, doc, waitingForBuild, cnameBlocked, clashNote, pipelineClash, sayClash, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, saveBarShown, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, doc, waitingForBuild, cnameBlocked, clashNote, pipelineClash, sayClash, pendingVersionId, queued, reasons, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, saveBarShown, stage, validate, validation, verdict } from './useConfigDocument'
+import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, saysPanelBlock } from '../kernel-problems'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -179,7 +180,12 @@ function discard(): void {
         <template v-else-if="draftStage === 'applying'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="deferSave ? ['存成待应用版本', ...(elapsed ? [elapsed] : [])] : ['第 2 步', '写入并应用', ...(elapsed ? [elapsed] : [])]" /></span></template>
         <template v-else-if="draftStage === 'failed'">
           <span class="ui-savebar__verdict">{{ verdict }}</span>
-          <small><RuleText :text="note" @rule="emit('rule', $event)" @group="emit('group', $event)" /></small>
+          <!-- 内核不认面板的配置块：改草稿没用，出路是更新内核，链接跟在那句后面 / The kernel does not take the panel's block: editing the draft
+               cannot help, updating the kernel can, with the link after the sentence -->
+          <small><RuleText :text="note" @rule="emit('rule', $event)" @group="emit('group', $event)" /><template v-if="saysPanelBlock(note)"><RouterLink class="ui-link kernel-update-link" :to="KERNEL_UPDATE">{{ KERNEL_UPDATE_LABEL }}</RouterLink></template></small>
+          <!-- KixDNS 逐条列出的原因，一条一行，规则名能点；多了在栏里滚动 / The reasons KixDNS listed, one a line with rule names as links; many
+               scroll inside the bar -->
+          <span v-if="reasons.length" class="savebar__reasons" role="list"><span v-for="(reason, i) in reasons" :key="i" role="listitem"><RuleText :text="reason" @rule="emit('rule', $event)" @group="emit('group', $event)" /></span></span>
           <!-- 别处先存了一个版本：不覆盖它，重新读取再改 / Someone else saved first: never overwrite it; reload and redo -->
           <span v-if="conflict" class="savebar__acts"><button class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('download')">下载草稿</button><button class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('reload')">重新读取</button></span>
         </template>

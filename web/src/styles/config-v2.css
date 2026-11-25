@@ -38,6 +38,10 @@ body { background: var(--l-canvas); }
 /* 页头里传送过来的按钮（新建规则、测试域名）跟着调淡：它们的容器是 display: contents，自己挂不上透明度 / The buttons teleported into the header (新建规则, 测试域名) dim too: their container is display: contents and cannot carry opacity */
 .cfg__page-acts[inert] > * { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
+/* 内核报来的那一块和提示条一样贴着页头；跟在提示条后面时两块只隔 8，读作同一处的两件事 / The kernel's report sits against the header as the
+   notice does; following the notice the two are 8 apart, read as two things in one place */
+.cfg__kernel { margin-top: calc(var(--s-1) * -1); }
+.cfg__notice + .cfg__kernel { margin-top: calc(var(--s-2) - var(--s-5)); }
 /* 锁着时提示条吸顶，贴在顶栏和断线横幅下面：内容点不动的原因一直看得到，滚到下面按的保存、回去看改的那一项时都在。--stick-gap 是它和
    顶栏（横幅）之间的距离 / While locked the notice sticks below the header and the outage banner, so why the content does not respond
    stays in sight, for a save pressed far down and when going back to the edited row. --stick-gap is its distance from the header (banner) */
@@ -50,7 +54,7 @@ body { background: var(--l-canvas); }
    the gap left by the rounded banner height is in it). In place there is nothing beneath to cover, so it looks as usual */
 .cfg__notice--floating { border-top-left-radius: 0; border-top-right-radius: 0; box-shadow: 0 1px 0 var(--l-hair), 0 var(--s-2) var(--s-5) var(--shadow-bar-tint); }
 .cfg__notice--floating::before { content: ""; position: absolute; left: -1px; right: -1px; bottom: 100%; height: calc(var(--stick-gap) + 1px); background: var(--l-canvas); }
-.cfg__notice .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
+.cfg__notice .ui-objlink, .cfg__kernel .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
 .cfg__json { display: grid; gap: var(--s-3); }
 .cfg__json-note { max-width: 52em; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .cfg__json-editor { min-height: 60vh; }
@@ -88,6 +92,11 @@ body { background: var(--l-canvas); }
 .is-aside { visibility: hidden; }
 .savebar__save { min-width: 7.5rem; }
 .savebar__acts { display: inline-flex; gap: var(--s-1); }
+/* 跟在「请到系统页把内核更新到最新版」后面的链接：和那句隔开一点 / The link after 「请到系统页把内核更新到最新版」, set a little apart from it */
+.kernel-update-link { margin-left: var(--s-2); }
+/* 逐条的原因占满一行，一条一行；多了不把保存条撑到半屏以上，在里面滚 / The reasons take a full line, one each; many never push the bar past a
+   third of the screen but scroll inside it */
+.savebar__reasons { display: grid; flex: 1 1 100%; gap: var(--s-1); max-height: 33vh; overflow-y: auto; color: var(--l-ink-2); font-size: var(--t-2); overflow-wrap: anywhere; }
 /* 「下载草稿」「重新读取」是小号文字按钮：退回它们的内边距和边框，折到下一行时字和上面的标题对齐；和说明同一行时，拉开的距离挪到说明右边，照旧 25
    下载草稿 and 重新读取 are small text buttons: their padding and border are pulled back so, wrapped to the next line, their words line up with the title above;
    on the same line as the sentence the gap moves to the sentence's right, 25 as before */
