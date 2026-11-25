@@ -143,9 +143,11 @@ start_container() {
   wait_until 60 "面板健康" curl -sSf "http://${PANEL}/api/v1/health"
 }
 
-# 正在跑的面板程序 / The panel program that runs
+# 正在跑的面板程序，按命令行认：/proc/<pid>/exe 要能 ptrace 才读得到，容器里的 root 没有这个能力
+# The panel program that runs, told by its command line: /proc/<pid>/exe needs the right to ptrace, which root in the
+# container lacks
 panel_program() {
-  docker exec "${NAME}" sh -c 'for process in /proc/[0-9]*; do readlink "${process}/exe"; done' |
+  docker exec "${NAME}" sh -c 'for process in /proc/[0-9]*; do tr "\0" "\n" <"${process}/cmdline" | head -n 1; done' 2>/dev/null |
     grep '/kixdns-panel-server$'
 }
 
