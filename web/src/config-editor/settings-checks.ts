@@ -1,6 +1,6 @@
 import { isIp, upstreamFault } from '../config-model/grammar'
 import { normalizeAddress } from '../config-model/kernel'
-import type { KernelConfig } from '../config-model/model'
+import { withDefaultPorts, type KernelConfig } from '../config-model/model'
 import { CONFIG_BOOTSTRAP_V1, SETTING_SECTIONS, settingValue } from './schema'
 import type { GlobalSettings } from './types'
 
@@ -60,10 +60,11 @@ export function settingProblems(settings: GlobalSettings, capabilities: readonly
   if (bootstrap !== undefined && capabilities && !capabilities.includes(CONFIG_BOOTSTRAP_V1)) {
     problems.bootstrap = '当前内核不认引导 DNS：清空它，或者先把内核更新到最新'
   } else if (bootstrap !== undefined) {
-    // 引导 DNS 自己就是解析上游名字的：只能写成 IP 和端口，经 UDP 问，不带前缀 / Bootstrap is what resolves upstream names: an IP and a
-    // port only, asked over UDP, with no prefix
-    const wrong = typeof bootstrap === 'string' ? splitAddresses(bootstrap).find((server) => server.includes('://') || upstreamFault(server, 'udp') !== null) : String(bootstrap)
-    if (wrong !== undefined) problems.bootstrap = `「${wrong}」不是「IP:端口」：引导 DNS 只能写成 IP 和端口，比如 223.5.5.5:53`
+    // 引导 DNS 自己就是解析上游名字的：只能写 IP，经 UDP 问，不带前缀。没写端口的写进内核时补上 53（见 withSettingPorts），所以查的是补好的
+    // Bootstrap is what resolves upstream names: IPs only, asked over UDP, with no prefix. A missing port becomes 53 when written to the
+    // kernel (see withSettingPorts), so what is checked is the completed one
+    const wrong = typeof bootstrap === 'string' ? splitAddresses(bootstrap).find((server) => server.includes('://') || upstreamFault(withDefaultPorts(server), 'udp') !== null) : String(bootstrap)
+    if (wrong !== undefined) problems.bootstrap = `「${wrong}」写得不对：引导 DNS 只能写 IP 或「IP:端口」，比如 223.5.5.5 或 223.5.5.5:53`
   }
   return problems
 }

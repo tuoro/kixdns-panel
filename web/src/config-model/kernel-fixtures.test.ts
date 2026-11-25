@@ -139,9 +139,9 @@ function blocklistKinds(): Model[] {
   }))
 }
 
-// 其余请求拦截时，设置里照写的默认上游（没写端口的写进内核时补上 53） / With 其余请求 blocking, the default upstream as written in the settings (a
-// missing port takes 53 when written to the kernel)
-const restBlocks = (): Model => base([], { rest: { type: 'block', response: 'default' }, settings: { ...SETTINGS, default_upstream: '9.9.9.9, tcp://dns.example, 2400:3200::1' } })
+// 其余请求拦截时，设置里照写的默认上游，和只写 IP 的引导 DNS（没写端口的写进内核时补上 53） / With 其余请求 blocking, the default upstream as
+// written in the settings, and bootstrap written as IPs alone (a missing port takes 53 when written to the kernel)
+const restBlocks = (): Model => base([], { rest: { type: 'block', response: 'default' }, settings: { ...SETTINGS, default_upstream: '9.9.9.9, tcp://dns.example, 2400:3200::1', bootstrap: '223.5.5.5, 2400:3200::1' } })
 
 // 高级规则编辑器（config-editor/schema.ts）里能选的每一种类型，填上它要的字段：编辑器写出来的类型名内核得认
 // Every type the advanced rule editor (config-editor/schema.ts) offers, with the fields it takes: the type names the editor writes must be

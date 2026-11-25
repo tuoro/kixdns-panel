@@ -110,6 +110,16 @@ describe('上游地址：没写端口的按 53 补上，编辑器查的、写进
     expect(kernelKey(compile(back).settings)).toBe(kernelKey(k.settings))
   })
 
+  it('引导 DNS 只写了 IP：写进内核时带上 :53（IPv6 加方括号），读回来还是原来那样写', () => {
+    const m = plain()
+    m.settings = { ...m.settings, bootstrap: '223.5.5.5, 119.29.29.29:53, 2400:3200::1' }
+    const k = compile(m)
+    expect(k.settings.bootstrap).toBe('223.5.5.5:53, 119.29.29.29:53, [2400:3200::1]:53')
+    const back = editElsewhere(m)
+    expect(back.settings.bootstrap).toBe('223.5.5.5, 119.29.29.29:53, 2400:3200::1')
+    expect(kernelKey(compile(back).settings)).toBe(kernelKey(k.settings))
+  })
+
   it('读进来的转发只写了 IP：和带 :53 的是同一个组', () => {
     const cfg: KConfigLike = { version: '1.0', settings: { default_upstream: '1.1.1.1:53' }, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [
       { name: 'a', matchers: [{ type: 'domain_suffix', value: 'a.example' }], actions: [{ type: 'forward', upstream: '223.5.5.5', transport: 'tcp' }] },

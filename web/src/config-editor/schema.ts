@@ -67,7 +67,7 @@ export interface MatcherDefinition extends SelectOption {
 // 内核里 u32 的设置最大多少 / The most a u32 setting in the kernel may be
 const U32_MAX = 4_294_967_295
 const BIND_NOTE = '不写就用内核的默认端口，内核版本不同默认也不同；要固定在哪个端口就写上'
-const BOOTSTRAP_NOTE = '上游写成域名（如 tls://dns.google）时，先问这里的 DNS 要它的 IP。写成「IP:端口」，多个用逗号隔开，同时问、用先答的。' +
+const BOOTSTRAP_NOTE = '上游写成域名（如 tls://dns.google）时，先问这里的 DNS 要它的 IP。写 IP，端口默认 53，多个用逗号隔开，同时问、用先答的。' +
   '不写就交给系统解析：路由器上 KixDNS 接管了 53 端口时，系统解析会绕回 KixDNS 自己，写成域名的上游就连不上，这时一定要写'
 
 export const SETTING_SECTIONS: SettingSection[] = [
@@ -88,7 +88,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', example: '/path/to/key.pem', wide: true },
       // 只有带高级规则时才显示（其余时候由「其余请求」决定）：说清它管的是哪些请求 / Shown only with advanced rules (otherwise 其余请求 decides it): say which requests it serves
       { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', keepsEmpty: true, wide: true, title: '高级规则里「交给默认上游」和没写地址的转发用这里的地址，多个用逗号隔开' },
-      { key: 'bootstrap', label: '引导 DNS', type: 'text', example: '223.5.5.5:53, 119.29.29.29:53', wide: true, requiresCapability: CONFIG_BOOTSTRAP_V1, title: BOOTSTRAP_NOTE },
+      { key: 'bootstrap', label: '引导 DNS', type: 'text', example: '223.5.5.5, 119.29.29.29', wide: true, requiresCapability: CONFIG_BOOTSTRAP_V1, title: BOOTSTRAP_NOTE },
       { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, max: U32_MAX, unit: '秒', default: 0 },
       { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
       { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 0, unit: '毫秒', nullable: true, placeholder: '自动计算', title: '一个请求连重发、改用 TCP 在内最多等多久，不能小于上游超时；不写是上游超时的两倍半' },

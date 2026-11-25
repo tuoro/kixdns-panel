@@ -35,10 +35,15 @@ test('引导 DNS：照内核查写法；没写又有上游写成域名时框下�
   await expect(box).toBeVisible()
   await box.fill('dns.google:53')
   await box.blur()
-  await expect(page.locator('.ui-field-error', { hasText: '「dns.google:53」不是「IP:端口」' })).toBeVisible()
+  await expect(page.locator('.ui-field-error', { hasText: '「dns.google:53」写得不对' })).toBeVisible()
   await box.fill('223.5.5.5:53, 119.29.29.29:53')
   await box.blur()
-  await expect(page.locator('.ui-field-error', { hasText: '不是「IP:端口」' })).toHaveCount(0)
+  await expect(page.locator('.ui-field-error', { hasText: '写得不对' })).toHaveCount(0)
+  // 只写 IP 也行：写完这一格补上 53，和默认上游一样 / IPs alone will do: once the box is written they take 53, as 默认上游 does
+  await box.fill('223.5.5.5, 2400:3200::1')
+  await box.blur()
+  await expect(box).toHaveValue('223.5.5.5:53, [2400:3200::1]:53')
+  await expect(page.locator('.ui-field-error', { hasText: '写得不对' })).toHaveCount(0)
   // 清空的框不写进配置，内核按没写处理 / A cleared box is not written, so the kernel takes it as unset
   await box.fill('')
   await expect.poll(() => bootstrapWritten(page)).toBe(false)

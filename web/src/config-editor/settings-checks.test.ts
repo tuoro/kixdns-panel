@@ -5,19 +5,20 @@ import { hasBootstrap, hostNamedUpstream, settingProblems } from './settings-che
 
 const WITH = [CONFIG_BOOTSTRAP_V1]
 
-// 引导 DNS 照内核的 problems() 查：逗号分开、去掉空白和空的，每个都要是不带前缀的「IP:端口」，端口不为 0
-// Bootstrap is checked as the kernel's problems() checks it: split by commas, trimmed, empty parts dropped, each a prefix-free 「IP:port」
-// whose port is not 0
+// 引导 DNS 照内核的 problems() 查写进内核的样子：逗号分开、去掉空白和空的，每个都要是不带前缀的「IP:端口」，端口不为 0；只写 IP 的写进内核时
+// 补上 53，所以也收
+// Bootstrap is checked as the kernel's problems() checks what is written to it: split by commas, trimmed, empty parts dropped, each a
+// prefix-free 「IP:port」 whose port is not 0; an IP alone takes 53 when written to the kernel, so it is taken too
 describe('引导 DNS 的写法', () => {
-  it('IP 和端口都收，IPv6 带方括号，空的就是没写', () => {
-    for (const bootstrap of ['223.5.5.5:53', '223.5.5.5:53, 119.29.29.29:53', '[2400:3200::1]:53', ' 223.5.5.5:53 , ', '', ' , ']) {
+  it('IP 和端口都收，只写 IP 也收（端口按 53），IPv6 带不带方括号都行，空的就是没写', () => {
+    for (const bootstrap of ['223.5.5.5:53', '223.5.5.5:53, 119.29.29.29:53', '[2400:3200::1]:53', ' 223.5.5.5:53 , ', '223.5.5.5', '223.5.5.5, 119.29.29.29', '2400:3200::1', '[2400:3200::1]', '', ' , ']) {
       expect(settingProblems({ bootstrap }, WITH), bootstrap).toEqual({})
     }
   })
-  it('主机名、前缀、没写端口、端口 0、IPv4 前导零都不收，说出是哪一个', () => {
+  it('主机名、前缀、端口 0、IPv4 前导零都不收，说出是哪一个', () => {
     // dns.google:53 是内核测试 problems_name_what_would_silently_do_something_else 里的那个 / dns.google:53 is the one in the kernel's test
-    for (const [bootstrap, wrong] of [['223.5.5.5:53, dns.google:53', 'dns.google:53'], ['udp://223.5.5.5:53', 'udp://223.5.5.5:53'], ['223.5.5.5', '223.5.5.5'], ['223.5.5.5:0', '223.5.5.5:0'], ['223.005.5.5:53', '223.005.5.5:53'], ['2400:3200::1:53', '2400:3200::1:53']]) {
-      expect(settingProblems({ bootstrap }, WITH).bootstrap, bootstrap).toBe(`「${wrong}」不是「IP:端口」：引导 DNS 只能写成 IP 和端口，比如 223.5.5.5:53`)
+    for (const [bootstrap, wrong] of [['223.5.5.5:53, dns.google:53', 'dns.google:53'], ['udp://223.5.5.5', 'udp://223.5.5.5'], ['223.5.5.5:0', '223.5.5.5:0'], ['223.005.5.5:53', '223.005.5.5:53'], ['dns.google', 'dns.google']]) {
+      expect(settingProblems({ bootstrap }, WITH).bootstrap, bootstrap).toBe(`「${wrong}」写得不对：引导 DNS 只能写 IP 或「IP:端口」，比如 223.5.5.5 或 223.5.5.5:53`)
     }
   })
   it('内核不认引导 DNS 时，写了就说，空的也说；不知道内核认什么时只查写法', () => {

@@ -10,7 +10,7 @@ import QueryLogSettingsForm from '../components/logs/QueryLogSettingsForm.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useToast } from '../composables/useToast'
-import { compile, defaultUpstreamFromRest, groupName, outcomeProblem, upstreamListProblem, withDefaultPorts } from '../config-model/model'
+import { compile, defaultUpstreamFromRest, groupName, outcomeProblem, PORTED_SETTINGS, upstreamListProblem, withDefaultPorts } from '../config-model/model'
 import { retentionText } from '../querylog'
 import { errorMessage } from '../utils'
 import { changedSettingKeys, model } from './store'
@@ -44,10 +44,11 @@ const warnings = computed((): Record<string, string> => {
   const host = hostNamedUpstream(compile(model))
   return host ? { bootstrap: hostNameWarning(host) } : {}
 })
-// 默认上游写完（离开这一格、按回车、在框里按 Ctrl+S）时和上游组的地址按「完成」时一样，只写 IP、TCP 主机的按 53 补上端口；写到一半不动它，也不说错
-// 默认上游 once written (leaving the box, pressing Enter, Ctrl+S inside it) is treated as an upstream group's addresses on 完成: an IP or TCP
-// host alone takes port 53; mid-typing it is left alone, and no mistake is said
-const commit = { default_upstream: withDefaultPorts }
+// 默认上游、引导 DNS 写完（离开这一格、按回车、在框里按 Ctrl+S）时和上游组的地址按「完成」时一样，只写 IP、TCP 主机的按 53 补上端口；写到一半不动它，
+// 也不说错（见 PORTED_SETTINGS）
+// 默认上游 and 引导 DNS once written (leaving the box, pressing Enter, Ctrl+S inside it) are treated as an upstream group's addresses on 完成:
+// an IP or TCP host alone takes port 53; mid-typing they are left alone, and no mistake is said (see PORTED_SETTINGS)
+const commit = Object.fromEntries(PORTED_SETTINGS.map((key) => [key, withDefaultPorts]))
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]
 const blockNote: Record<string, string> = {
   // 词不拆到两行：「不存在」「放弃」 / Words are not split across lines: 不存在, 放弃

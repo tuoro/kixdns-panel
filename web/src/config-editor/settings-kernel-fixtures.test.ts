@@ -2,18 +2,19 @@ import { writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { CONFIG_BOOTSTRAP_V1, RETIRED_SETTINGS } from './schema'
 import { hostNamedUpstream, settingProblems } from './settings-checks'
-import type { KernelConfig } from '../config-model/model'
+import { withSettingPorts, type KernelConfig } from '../config-model/model'
 
 // 设置页说不收的、和内核说不收的一一对上：每一行是一份设置和页面认为有问题的那几项。这里先断言页面这样说；CI 里设了
 // KERNEL_SETTINGS_FIXTURES 时把它们写成一个 JSON 数组，tools/kernel-config-check 拿最新的内核（main）逐份校验，内核拒的原因里说到的
-// 设置要正好是这几项（没有问题的要收下）。没写引导 DNS 时的主机名上游也一样，对的是内核的警告。值尽量用内核测试里的那一组
+// 设置要正好是这几项（没有问题的要收下）。交给内核的是写进内核的样子：只写 IP 的照 compile 补上端口（withSettingPorts）。没写引导 DNS 时
+// 的主机名上游也一样，对的是内核的警告。值尽量用内核测试里的那一组
 // （settings_errors_start_with_the_setting_and_its_value、validate_rejects_configs_the_server_cannot_bind、
 // settings_over_their_limits_start_held_to_them、a_named_upstream_without_bootstrap_is_a_warning）
 // What the settings page refuses matches what the kernel refuses one for one: each row is a set of settings with the ones the page
 // finds wrong. The page is asserted to say so here; with KERNEL_SETTINGS_FIXTURES set (in CI) the rows are written as one JSON array,
 // and tools/kernel-config-check checks each with the latest kernel (main): the settings its reasons speak of must be exactly these
-// (one with none must be accepted). Host-named upstreams without bootstrap likewise, against the kernel's warning. The values are those
-// of the kernel's tests where they can be
+// (one with none must be accepted); the kernel gets them as written to it, an IP alone given its port as compile does (withSettingPorts).
+// Host-named upstreams without bootstrap likewise, against the kernel's warning. The values are those of the kernel's tests where they can be
 
 const ALL = [CONFIG_BOOTSTRAP_V1]
 type Row = [name: string, settings: Record<string, unknown>, refused: string[]]
@@ -75,6 +76,7 @@ const ROWS: Row[] = [
   ['刷新阈值超出 u8', { cache_refresh_threshold_percent: 256 }, ['cache_refresh_threshold_percent']],
   // 引导 DNS（内核测试里的 dns.google:53） / Bootstrap (dns.google:53 from the kernel's test)
   ['引导 DNS', { bootstrap: '223.5.5.5:53, [2400:3200::1]:53' }, []],
+  ['引导 DNS 只写 IP', { bootstrap: '223.5.5.5, 119.29.29.29, 2400:3200::1, [2402:4e00::]' }, []],
   ['引导 DNS 写成空的', { bootstrap: ' , ' }, []],
   ['引导 DNS 里有主机名', { bootstrap: '223.5.5.5:53, dns.google:53' }, ['bootstrap']],
   ['引导 DNS 带前缀', { bootstrap: 'udp://223.5.5.5:53' }, ['bootstrap']],
@@ -108,7 +110,7 @@ describe('设置的检查和内核一一对上', () => {
     const out = process.env.KERNEL_SETTINGS_FIXTURES
     if (!out) return
     const fixtures = [
-      ...ROWS.map(([name, settings, refused]) => ({ name, config: { settings }, ...(refused.length ? { refuses: refused.map((key) => `settings.${key}`) } : {}) })),
+      ...ROWS.map(([name, settings, refused]) => ({ name, config: { settings: withSettingPorts(settings) }, ...(refused.length ? { refuses: refused.map((key) => `settings.${key}`) } : {}) })),
       ...NAMED.map(([upstream, warned]) => ({ name: `上游 ${upstream}`, config: forwarding(upstream), warns: warned ? ['settings.bootstrap'] : [] })),
       { name: '退役的旧设置', config: { settings: retired }, warns: RETIRED_SETTINGS.map((key) => `settings.${key}`) },
     ]
