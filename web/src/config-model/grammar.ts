@@ -1,30 +1,70 @@
+import { shallowReactive } from 'vue'
 import { PREFIX } from './kernel'
 import { kernelRegexVerdict, REGEX_MAX_BYTES, TXT_REGEX_BYTES, type RegexCause, type RegexKind } from './regex-check'
 
 // 内核读配置时认的写法：编辑器查一个值写没写对都看这里，读法和内核加载配置时一样，内核拒绝的这里也不认，内核会悄悄另作解释的这里也不放过。
-// 依据 kixdns 79e8fd5：matcher/mod.rs parse_dns_type、parse_dns_class、client_net、cidr_list、domain_regex、ResponseRcode、ResponseTxtContent；
-// engine/response.rs static_ips、static_cname_target、txt_size_problem；engine/upstream.rs upstream_problem；engine/transport.rs
-// check_upstream_address；config.rs 里 ttl（u32）和 ecs 前缀（u8）的类型。网段照 ipnet 2.12 读，IP 和端口照 Rust 标准库读，服务器名照
-// rustls-pki-types 1.15 读。每一条都拿内核的 config::validate 跑过（见 kernel-grammar.test.ts）
+// 依据 kixdns d2b5fc3：matcher/mod.rs parse_dns_type、parse_dns_class、parse_rcode、canonical_net、cidr_list、static_ips、static_cname_target，
+// matcher/pattern.rs domain_regex，matcher/response.rs 的 ResponseTxtContent；engine/response.rs txt_problem；config.rs upstream_problem 和
+// problems 里的 response_rcode，ttl（u32）和 ecs 前缀（u8）的类型；engine/transport/address.rs check_upstream_address、build_doh_url、
+// parse_tls_upstream。网段照 ipnet 2.12 读，IP 和端口照 Rust 标准库读，服务器名照 rustls-pki-types 1.15 读，DoH、DoT、DoQ 的地址照
+// url 2.5 读。每一条都拿内核的 config::validate 跑过（见 kernel-grammar.test.ts、grammar.test.ts）
 // What the kernel accepts when it reads a config: every check of whether a value is written right looks here, reading it as the kernel
 // does at load, so what the kernel refuses is refused here too and what the kernel would quietly read some other way is caught. Sources
-// (kixdns 79e8fd5): matcher/mod.rs parse_dns_type, parse_dns_class, client_net, cidr_list, domain_regex, ResponseRcode, ResponseTxtContent;
-// engine/response.rs static_ips, static_cname_target, txt_size_problem; engine/upstream.rs upstream_problem; engine/transport.rs
-// check_upstream_address; the types config.rs gives ttl (u32) and the ecs prefixes (u8). Networks read as ipnet 2.12 reads them, IPs and
-// ports as Rust's standard library does, server names as rustls-pki-types 1.15 does. Each was run through the kernel's config::validate
-// (see kernel-grammar.test.ts)
+// (kixdns d2b5fc3): matcher/mod.rs parse_dns_type, parse_dns_class, parse_rcode, canonical_net, cidr_list, static_ips, static_cname_target;
+// matcher/pattern.rs domain_regex; ResponseTxtContent in matcher/response.rs; engine/response.rs txt_problem; config.rs upstream_problem
+// and the response_rcode of problems, the types it gives ttl (u32) and the ecs prefixes (u8); engine/transport/address.rs
+// check_upstream_address, build_doh_url, parse_tls_upstream. Networks read as ipnet 2.12 reads them, IPs and ports as Rust's standard
+// library does, server names as rustls-pki-types 1.15 does, DoH, DoT and DoQ addresses as url 2.5 does. Each was run through the kernel's
+// config::validate (see kernel-grammar.test.ts, grammar.test.ts)
 
 // ---------- 记录类型、类别、响应码 / record types, classes, rcodes ----------
+// 内核读这几样时只把 ASCII 字母换成大写，不去两头的空白（parse_dns_type、parse_dns_class、parse_rcode） / The kernel reads these with only
+// ASCII letters upper-cased and no whitespace trimmed (parse_dns_type, parse_dns_class, parse_rcode)
+const asciiUpper = (v: string): string => v.replace(/[a-z]+/g, (s) => s.toUpperCase())
+const oneOf = (list: readonly string[]) => (v: string): boolean => list.includes(asciiUpper(v))
 // 顺序是输入时建议的顺序，常用的在前 / The order is the order suggested while typing, common ones first
-/** parse_dns_type 认的记录类型，别的整份配置存不进去 / The record types parse_dns_type takes; any other and the whole config is refused */
+/** 没有 config_qtype_names_v1 的内核，parse_dns_type 只认这十种，别的整份配置存不进去 / Without config_qtype_names_v1 parse_dns_type takes
+ * these ten only, and any other has the whole config refused */
 export const QTYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'SOA', 'OPT'] as const
+/** 内核认全部类型名和 TYPEnnn 的能力 / The capability of a kernel taking every type name and TYPEnnn */
+export const CONFIG_QTYPE_NAMES_V1 = 'config_qtype_names_v1'
+/**
+ * 有 config_qtype_names_v1 的内核认的类型名：hickory-proto 0.26 RecordType::from_str 的那一份（* 也是 ANY）。OPT、IXFR 不在里面，
+ * 要写成 TYPE41、TYPE251
+ * The type names a kernel with config_qtype_names_v1 takes: those of hickory-proto 0.26's RecordType::from_str (* is ANY too). OPT and
+ * IXFR are not among them and are written TYPE41 and TYPE251
+ */
+export const QTYPE_NAMES = [
+  'A', 'AAAA', 'CNAME', 'HTTPS', 'SVCB', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'SOA', 'CAA', 'ANY', 'DS', 'DNSKEY', 'RRSIG', 'NSEC', 'NSEC3',
+  'NSEC3PARAM', 'CDS', 'CDNSKEY', 'TLSA', 'SSHFP', 'NAPTR', 'DNAME', 'HINFO', 'CERT', 'KEY', 'SIG', 'OPENPGPKEY', 'SMIMEA', 'CSYNC', 'ANAME',
+  'AXFR', 'NULL', 'TSIG',
+] as const
+// 运行中的内核读不读全部类型名：配置页照它的能力改（useConfigDocument），响应式的，用到它的提示和标红跟着变；没说时按旧内核
+// Whether the running kernel reads every type name: the config page sets it from its capabilities (useConfigDocument), reactively, so the
+// hints and red marks using it follow; older kernels are assumed until told
+const kernel = shallowReactive({ qtypeNames: false })
+/** 照运行中内核的能力改记录类型的读法 / Sets how record types are read from the running kernel's capabilities */
+export function setKernelCapabilities(capabilities: readonly string[]): void {
+  kernel.qtypeNames = capabilities.includes(CONFIG_QTYPE_NAMES_V1)
+}
+/** 输入记录类型时建议的那些，都是这个内核认的 / The record types suggested while typing, each one this kernel takes */
+export const qtypeSuggestions = (): readonly string[] => (kernel.qtypeNames ? QTYPE_NAMES : QTYPES)
+/** 内核认不认这个记录类型，照 parse_dns_type 读：类型名，或者 TYPE 加 0 到 65535 的数（RFC 3597，数照 Rust 的 u16 读，可以带 +、前导零）
+ * / Whether the kernel takes this record type, read as parse_dns_type does: a type name, or TYPE and a number 0 to 65535 (RFC 3597, the
+ * number read as Rust reads a u16, a + and leading zeros allowed) */
+export function isQtype(v: string): boolean {
+  const upper = asciiUpper(v)
+  if (!kernel.qtypeNames) return (QTYPES as readonly string[]).includes(upper)
+  const code = /^TYPE\+?(\d+)$/.exec(upper)?.[1]
+  return code !== undefined ? Number(code) <= 65_535 : upper === '*' || (QTYPE_NAMES as readonly string[]).includes(upper)
+}
+/** 记录类型写错时说能写什么，接在「能用的是」「只认」后面 / What may be written when a record type is wrong, following 「能用的是」 or 「只认」 */
+export const qtypeRule = (): string => (kernel.qtypeNames ? 'HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法' : QTYPES.join('、'))
 /** parse_dns_class 认的类别（CHAOS 是 CH 的另一个写法） / The classes parse_dns_class takes (CHAOS is another spelling of CH) */
 export const QCLASSES = ['IN', 'CH', 'HS'] as const
-/** 响应码条件认得出的六个；写别的不报错，内核当成「这六个以外的任何响应码」，明写就是 OTHER / The six rcodes a condition knows; any other
- * is not refused but read as 「any code but these six」, which is written OTHER */
+/** 响应码条件认得出的六个，和明写的 OTHER（这六个以外的任何响应码）；写别的整份配置都不收（config.rs problems） / The six rcodes a
+ * condition knows, and an explicit OTHER (any code but these six); anything else has the whole config refused (config.rs problems) */
 export const RCODES = ['NOERROR', 'SERVFAIL', 'NXDOMAIN', 'REFUSED', 'FORMERR', 'NOTIMP'] as const
-const oneOf = (list: readonly string[]) => (v: string): boolean => list.includes(v.trim().toUpperCase())
-export const isQtype = oneOf(QTYPES)
 export const isQclass = oneOf([...QCLASSES, 'CHAOS'])
 export const isRcode = oneOf([...RCODES, 'OTHER'])
 
@@ -204,9 +244,10 @@ export const TTL_PROBLEM = 'TTL 填 0 到 4294967295 之间的整数'
 export const isPrefix = (n: unknown, bits: number): boolean => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= bits
 
 // ---------- 上游地址 / upstream addresses ----------
-/** 上游地址哪里不对：前缀、UDP 要「IP:端口」、端口、TCP 的主机、DoH 链接、DoT / DoQ 的路径和服务器名、DoQ 用 IP 时要 sni / What is wrong with an
- * upstream: the prefix, UDP's 「IP:port」, the port, TCP's host, the DoH link, the DoT / DoQ path and server name, DoQ's sni for an IP */
-export type UpstreamFault = 'prefix' | 'ip-port' | 'port' | 'host-port' | 'host' | 'url' | 'path' | 'server-name' | 'sni'
+/** 上游地址哪里不对：前缀、UDP 要「IP:端口」、端口、TCP 的主机、前缀后面又写了一个前缀、DoH 链接、DoT / DoQ 的路径、参数、0rtt 的值和
+ * 服务器名、DoQ 用 IP 时要 sni / What is wrong with an upstream: the prefix, UDP's 「IP:port」, the port, TCP's host, a second prefix after
+ * the first, the DoH link, the DoT / DoQ path, parameters, 0rtt value and server name, DoQ's sni for an IP */
+export type UpstreamFault = 'prefix' | 'ip-port' | 'port' | 'host-port' | 'host' | 'second-prefix' | 'url' | 'path' | 'param' | '0rtt' | 'server-name' | 'sni'
 
 const port = (digits: string): number | null => (Number(digits) <= 65535 ? Number(digits) : null)
 // SocketAddr 的写法：「IPv4:端口」或「[IPv6]:端口」，IPv6 可以带「%数字」的作用域 / A SocketAddr: 「IPv4:port」 or 「[IPv6]:port」, the IPv6 may carry a 「%number」 scope
@@ -256,14 +297,26 @@ function addressFault(address: string, transport: string): UpstreamFault | null 
     if (!/^\+?\d+$/.test(digits) || port(digits.replace('+', '')) === null || Number(digits) === 0) return 'port'
     return /^[A-Za-z0-9.-]+$/.test(address.slice(0, cut)) ? null : 'host'
   }
-  if (transport === 'doh') return url(/^https?:\/\//.test(address) ? address : `https://${address}`)?.hostname ? null : 'url'
-  // DoT、DoQ：主机、端口（缺省 853），不能带路径，sni / servername 参数（空的不算，几个取最后一个） / DoT and DoQ: host, port (853 by
-  // default), no path, the sni / servername parameter (an empty one does not count, the last of several wins)
+  // DoH、DoT、DoQ 的前缀后面不能再有一个前缀（doh://https://…、tls://tcp://…）：去掉前缀以后哪儿还有「://」都算（split_scheme），DoH 一律走
+  // https / DoH, DoT and DoQ take no second prefix after the first (doh://https://…, tls://tcp://…): a 「://」 anywhere once the prefix is
+  // gone counts (split_scheme), DoH always going over https
+  if (address.includes('://')) return 'second-prefix'
+  if (transport === 'doh') return url(`https://${address}`)?.hostname ? null : 'url'
+  // DoT、DoQ（parse_tls_upstream）：主机、端口（缺省 853），不能带路径；参数只认 sni、servername（空的不算，几个取最后一个），DoQ 再加 0rtt、
+  // enable_0rtt，值只认 true、false、1、0、yes、no、on、off，键和值的大小写不论；别的参数都不收
+  // DoT and DoQ (parse_tls_upstream): host, port (853 by default), no path; the parameters taken are sni and servername only (an empty one
+  // does not count, the last of several wins), DoQ adding 0rtt and enable_0rtt, whose value is true, false, 1, 0, yes, no, on or off, keys
+  // and values in any case; any other parameter is refused
   const u = url(`${transport}://${address}`)
   const host = u?.hostname.replace(/^\[(.*)\]$/, '$1')
   if (!u || !host) return 'url'
   if (u.pathname !== '' && u.pathname !== '/') return 'path'
-  const sni = [...u.searchParams].filter(([k, v]) => /^(sni|servername)$/i.test(k) && v !== '').at(-1)?.[1]
+  let sni: string | undefined
+  for (const [key, value] of u.searchParams) {
+    if (/^(?:sni|servername)$/i.test(key)) sni = value || sni
+    else if (transport !== 'doq' || !/^(?:0rtt|enable_0rtt)$/i.test(key)) return 'param'
+    else if (!/^(?:true|false|1|0|yes|no|on|off)$/i.test(value)) return '0rtt'
+  }
   if (transport === 'doq' && sni === undefined && isIp(host)) return 'sni'
   return serverName(sni ?? host) ? null : 'server-name'
 }

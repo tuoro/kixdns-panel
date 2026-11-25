@@ -1,19 +1,28 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { SUGGEST } from './condKinds'
+import { CONFIG_QTYPE_NAMES_V1, QTYPE_NAMES, setKernelCapabilities } from './grammar'
 import { importKernel } from './importer'
 import { compile, newRule, ruleProblems, type Condition, type ConditionField, type Ecs, type Model, type Outcome, type Remedy, type ResponseCondition, type ResponseField, type Rule } from './model'
 import { behaviourCheck, checkResponder, foldChain, simulate, type KConfigLike, type KMatcher } from './testing/kernel-sim'
 import { sampleModel } from './testing/samples'
 
 // 编辑器认的写法要和内核认的一样：内核拒绝的，保存前就在页面上报出来；内核另作解释的，不能悄悄写出去。
-// 下面「内核认不认」的答案都是拿 kixdns 79e8fd5 的 config::validate 一条条跑出来的
+// 下面「内核认不认」的答案都是拿 kixdns d2b5fc3 的 config::validate 一条条跑出来的（旧内核只认的十种记录类型照 a5126b9 之前的
+// parse_dns_type）
 // The editor must accept what the kernel accepts: what the kernel refuses is raised on the page before saving, and what the kernel
 // would read some other way is never written out silently. Every "does the kernel take it" answer below was run through the
-// config::validate of kixdns 79e8fd5
+// config::validate of kixdns d2b5fc3 (the ten record types older kernels take follow parse_dns_type before a5126b9)
 
-// parse_dns_type、parse_dns_class 认的记录类型和类别，response_rcode 认得出的响应码（其余的都当 OTHER）
-// The record types and classes parse_dns_type and parse_dns_class take, and the rcodes response_rcode knows (any other reads as OTHER)
-const KERNEL_QTYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT']
+// parse_dns_type、parse_dns_class 认的记录类型和类别，response_rcode 认的响应码（另外还有明写的 OTHER）。新内核的记录类型照
+// hickory-proto 0.26.3 RecordType::from_str 抄（* 是 ANY 的另一个写法），旧内核的是 a5126b9 之前 parse_dns_type 的十种
+// The record types and classes parse_dns_type and parse_dns_class take, and the rcodes response_rcode takes (an explicit OTHER besides).
+// A new kernel's record types are copied from hickory-proto 0.26.3's RecordType::from_str (* being another spelling of ANY), an older
+// kernel's are the ten of parse_dns_type before a5126b9
+const HICKORY_QTYPES = [
+  'A', 'AAAA', 'ANAME', 'AXFR', 'CAA', 'CDNSKEY', 'CERT', 'CDS', 'CNAME', 'CSYNC', 'DNAME', 'DNSKEY', 'DS', 'HINFO', 'HTTPS', 'KEY', 'MX', 'NAPTR', 'NSEC',
+  'NSEC3', 'NSEC3PARAM', 'NS', 'NULL', 'OPENPGPKEY', 'PTR', 'RRSIG', 'SIG', 'SMIMEA', 'SOA', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT', 'TSIG', 'ANY',
+]
+const LEGACY_QTYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT']
 const KERNEL_QCLASSES = ['IN', 'CH', 'CHAOS', 'HS']
 const KERNEL_RCODES = ['NOERROR', 'FORMERR', 'SERVFAIL', 'NXDOMAIN', 'NOTIMP', 'REFUSED']
 
@@ -120,10 +129,26 @@ describe('编出来的条件链和表单说的一样', () => {
 })
 
 describe('内核不认的值，编辑器也不认', () => {
+  afterEach(() => setKernelCapabilities([]))
+
   it('记录类型、类别、响应码的建议都是内核认的', () => {
-    for (const field of ['qtype', 'answer_type']) expect(SUGGEST[field]!.filter((v) => !KERNEL_QTYPES.includes(v))).toEqual([])
+    for (const field of ['qtype', 'answer_type']) expect([...SUGGEST[field]!].sort()).toEqual([...LEGACY_QTYPES].sort())
     expect(SUGGEST.qclass!.filter((v) => !KERNEL_QCLASSES.includes(v))).toEqual([])
     expect(SUGGEST.rcode!.filter((v) => !KERNEL_RCODES.includes(v))).toEqual([])
+  })
+
+  // 有 config_qtype_names_v1 的内核：hickory 认的类型名一个不少、一个不多，建议的就是这些 / A kernel with config_qtype_names_v1: exactly the
+  // type names hickory knows, none missing and none extra, and those are what is suggested
+  it('新内核认 hickory 的全部类型名，建议也是这些', () => {
+    expect([...QTYPE_NAMES].sort()).toEqual([...HICKORY_QTYPES].sort())
+    setKernelCapabilities([CONFIG_QTYPE_NAMES_V1])
+    for (const field of ['qtype', 'answer_type']) expect([...SUGGEST[field]!].sort()).toEqual([...HICKORY_QTYPES].sort())
+    expect(problemsOf(ruleWith([[cond('qtype', ['HTTPS', 'svcb', 'TYPE65', '*'])]]))).toEqual([])
+    expect(problemsOf(checked({ conditions: [rcond('answer_type', ['CAA', 'type4321'])] }))).toEqual([])
+    // OPT 不在 hickory 的名字里，只能写成 TYPE41；说的是能写什么 / OPT is no hickory name and is written TYPE41; what may be written is said
+    expect(problemsOf(ruleWith([[cond('qtype', ['OPT', 'HTTPSS', 'TYPE70000'])]]))).toEqual(['「查询类型」里标红的 KixDNS 不认，能用的是 HTTPS、SVCB、CAA 这样的记录类型名，或 TYPE65 这样的数字写法'])
+    setKernelCapabilities([])
+    expect(problemsOf(ruleWith([[cond('qtype', ['HTTPS'])]]))).toEqual(['「查询类型」里标红的 KixDNS 不认，能用的是 A、AAAA、CNAME、MX、TXT、NS、PTR、SRV、SOA、OPT'])
   })
 
   it.each([
@@ -142,7 +167,7 @@ describe('内核不认的值，编辑器也不认', () => {
   })
 
   it.each([
-    ['响应码 NOTAUTH（内核当成「其余的响应码」）', [rcond('rcode', ['NOTAUTH'])]],
+    ['响应码 NOTAUTH（不是六个之一，也不是 OTHER）', [rcond('rcode', ['NOTAUTH'])]],
     ['回答的记录类型 CAA', [rcond('answer_type', ['CAA'])]],
     ['查询类别 NONE', [rcond('qclass', ['NONE'])]],
     ['回答的 IP 前缀 33', [rcond('answer_ip', ['10.0.0.0/33'])]],
@@ -154,6 +179,7 @@ describe('内核不认的值，编辑器也不认', () => {
   })
 
   it('内核认的照样能用：小写、CHAOS、OTHER、IPv4 前导零、:: 只占一组、IPv6 里带 IPv4', () => {
+    // OPT 只有旧内核认，新内核要写成 TYPE41（见上面「新内核」那条） / Only older kernels take OPT; a new kernel needs TYPE41 (see 新内核 above)
     expect(problemsOf(ruleWith([[cond('qtype', ['aaaa', 'OPT']), cond('qclass', ['CHAOS'])]]))).toEqual([])
     expect(problemsOf(ruleWith([[cond('client_ip', ['010.0.0.0/8', '1:2:3:4:5:6:7::8', '::ffff:1.2.3.4/128', '2001:DB8::/32'])]]))).toEqual([])
     expect(problemsOf(checked({ conditions: [rcond('rcode', ['OTHER', 'servfail'])] }))).toEqual([])
