@@ -171,9 +171,9 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
      -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
    ```
 
-2. 打开 `http://<主机地址>:5738` 创建管理员。KixDNS 随容器启动，默认配置听 `0.0.0.0:53`、转给 `1.1.1.1`。在「系统」页停止以后，重启、重建容器都还停着，点「启动」才再起来。
+2. 打开 `http://<主机地址>:5738` 创建管理员。KixDNS 随容器启动，默认配置听 `0.0.0.0:53`、转给 `1.1.1.1`；和 systemd 版的全新安装一样，面板第一次启动时导入一次镜像自带的 GeoSite。在「系统」页停止以后，重启、重建容器都还停着，点「启动」才再起来。
 
-**从现有安装搬过来**：第一次启动之前把原来的 `pipeline.json` 放到 `./data/config/pipeline.json`，面板首次启动时把它导入成第一个版本（文件会改给容器里的面板用户，内容不动）。面板的账号和版本历史不跟着搬。
+**从现有安装搬过来**：第一次启动之前把原来的 `pipeline.json` 放到 `./data/config/pipeline.json`，面板首次启动时把它导入成第一个版本（文件会改给容器里的面板用户，内容不动）。面板的账号和版本历史不跟着搬；自带的 GeoSite 不自动导入（原来的配置可能有意不用它），要用就在「Geo 数据」里点「导入」。
 
 **主机的 53 端口被 systemd-resolved 占着**（Ubuntu 默认，它听 `127.0.0.53:53`）：host 网络下内核听不上 `0.0.0.0:53`，「系统」页显示启动失败，运行日志里是 `Address in use`。关掉它的本机监听，再到「系统」页启动：
 

@@ -169,9 +169,9 @@ The image is `ghcr.io/tuoro/kixdns-panel`, amd64 and arm64, published with every
      -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
    ```
 
-2. Open `http://<host address>:5738` to create the administrator. KixDNS starts with the container; the default config listens on `0.0.0.0:53` and forwards to `1.1.1.1`. Once stopped on the 系统 (System) page it stays stopped across restarts and rebuilt containers until 启动 (Start) is pressed.
+2. Open `http://<host address>:5738` to create the administrator. KixDNS starts with the container; the default config listens on `0.0.0.0:53` and forwards to `1.1.1.1`, and, as on a fresh systemd install, the panel's first start imports the image's GeoSite once. Once stopped on the 系统 (System) page it stays stopped across restarts and rebuilt containers until 启动 (Start) is pressed.
 
-**Moving an existing install**: before the first start, put the existing `pipeline.json` at `./data/config/pipeline.json`; on its first start the panel imports it as the first version (the file is handed to the container's panel user, its content untouched). The panel's accounts and version history do not move with it.
+**Moving an existing install**: before the first start, put the existing `pipeline.json` at `./data/config/pipeline.json`; on its first start the panel imports it as the first version (the file is handed to the container's panel user, its content untouched). The panel's accounts and version history do not move with it, and the bundled GeoSite is not imported by itself (the existing config may leave it out on purpose): to use it, press 导入 (Import) under Geo 数据 (Geo data).
 
 **systemd-resolved holds the host's port 53** (the Ubuntu default, listening on `127.0.0.53:53`): with host networking the kernel cannot listen on `0.0.0.0:53`, the 系统 (System) page says it failed to start, and the runtime log says `Address in use`. Turn its local listener off, then start KixDNS on the 系统 (System) page:
 
