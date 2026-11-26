@@ -337,6 +337,65 @@ async fn a_non_ascii_byte_in_forwarded_for_stays_with_the_attacker() {
     assert_eq!(status, StatusCode::OK);
 }
 
+/// 把一组用户名和密码发到 `path`（setup 或 login），返回状态码 / Posts a username and password to `path` (setup or login)
+/// and returns the status
+async fn post_credentials(app: &Router, path: &str, username: &str, password: &str) -> StatusCode {
+    let mut request = Request::post(path)
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({"username": username, "password": password}).to_string(),
+        ))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 42_005))));
+    app.clone().oneshot(request).await.unwrap().status()
+}
+
+/// argon2 0.5 写进数据库的管理员照样登录、错的密码照样不行；忘记密码时 reset-admin 之后重新创建的管理员也能登录
+/// An administrator written to the database by argon2 0.5 still logs in and a wrong password still fails; after a
+/// forgotten password, the administrator created again after reset-admin logs in too
+#[tokio::test]
+async fn an_admin_hashed_by_argon2_0_5_logs_in_and_reset_admin_starts_over() {
+    // origin/main 上 argon2 0.5.3 的 auth::hash_password 算出的，密码是 a-password-from-argon2-0.5
+    // Computed by auth::hash_password with argon2 0.5.3 on origin/main; the password is a-password-from-argon2-0.5
+    const ARGON2_0_5_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$yJd0E76PaV6hxRi9Vnnr5w$siGoi+oTw0WtXtZUkLpOBpl7jwcmOoB5EWatuvKf4k8";
+    let (directory, app) = test_app().await;
+    let database_path = directory.path().join("panel.db");
+    crate::db::Database::open(database_path.clone())
+        .await
+        .unwrap()
+        .create_first_user("admin".to_owned(), ARGON2_0_5_HASH.to_owned(), 1)
+        .await
+        .unwrap();
+    let login =
+        |username, password| post_credentials(&app, "/api/v1/auth/login", username, password);
+
+    assert_eq!(
+        login("admin", "a-password-from-argon2-0.5").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        login("admin", "a-password-from-argon2-0.6").await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    assert_eq!(crate::reset_admins(database_path).await.unwrap(), 1);
+    assert_eq!(
+        login("admin", "a-password-from-argon2-0.5").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_credentials(&app, "/api/v1/setup", "admin", "a-fresh-password").await,
+        StatusCode::OK
+    );
+    assert_eq!(login("admin", "a-fresh-password").await, StatusCode::OK);
+    assert_eq!(
+        login("admin", "a-password-from-argon2-0.5").await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 #[tokio::test]
 async fn setup_issues_session_and_write_requires_csrf() {
     let context = authenticated_app().await;
