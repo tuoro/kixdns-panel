@@ -605,6 +605,7 @@ async function sampleLiveTrace(domain: string, recordType: string, client: strin
   const trace: DnsDiagnostic['trace'] = [{ stage: 'request', status: 'parsed', label: `${recordType} ${domain}`, detail: `客户端：${client}；监听器：default`, elapsed_ms: 0 }]
   let pipeline = ''
   let target = ''
+  let rule = ''
   for (const step of sim.steps.filter((one) => one.phase === 'request')) {
     // 入口之后的列表是跳过去的；内核先查响应缓存，再看规则 / Lists after the entry are jumped to; the kernel checks the response cache before the rules
     if (!pipeline) trace.push({ stage: 'pipeline', status: 'selected', label: step.pipeline, detail: null, elapsed_ms: 0 }, { stage: 'response_cache', status: 'miss', label: '响应缓存未命中', detail: `管线：${step.pipeline}`, elapsed_ms: 0 })
@@ -616,6 +617,7 @@ async function sampleLiveTrace(domain: string, recordType: string, client: strin
       continue
     }
     target = kernel.pipelines?.find((one) => one.id === step.pipeline)?.rules?.find((rule) => rule.name === step.rule)?.actions?.find((action) => action.type === 'forward')?.upstream ?? ''
+    rule = step.rule
     trace.push({ stage: 'decision', status: 'selected', label: `规则 ${step.rule} 转发`, detail: `目标：${target}`, elapsed_ms: 1 })
   }
   let elapsed = 1
@@ -623,8 +625,14 @@ async function sampleLiveTrace(domain: string, recordType: string, client: strin
     const asked = target.split(',').map((one) => one.trim())
     const latency = (address: string) => overview.metrics.upstreams.find((one) => one.upstream === address)?.avg_latency_ms ?? Infinity
     const winner = [...asked].sort((left, right) => latency(left) - latency(right))[0]!
+    // 和内核一样：每个地址各记一步发出，先回的那个用上，其余的没等它回（aborted） / As the kernel does: one send step per address, the
+    // first answer is used and the rest are not waited for (aborted)
+    const SCHEMES: Record<string, string> = { https: 'doh', doh: 'doh', tls: 'dot', dot: 'dot', quic: 'doq', doq: 'doq', tcp: 'tcp' }
+    const transport = (address: string) => SCHEMES[/^(\w+):\/\//.exec(address)?.[1]?.toLowerCase() ?? ''] ?? 'udp'
+    for (const address of asked) trace.push({ stage: 'upstream', status: 'started', label: `准备转发到 ${address}`, detail: `规则：${rule}；传输：${transport(address)}`, elapsed_ms: 1 })
     elapsed += Math.round(Number.isFinite(latency(winner)) ? latency(winner) : 12)
     trace.push({ stage: 'upstream', status: 'succeeded', label: winner, detail: `响应码：No Error；耗时：${elapsed - 1} ms；截断：false`, elapsed_ms: elapsed })
+    for (const address of asked.filter((one) => one !== winner)) trace.push({ stage: 'upstream', status: 'aborted', label: address, detail: null, elapsed_ms: elapsed })
     for (const step of sim.steps.filter((one) => one.phase === 'response')) {
       trace.push({ stage: 'response_rule', status: step.decision === 'match' ? 'matched' : 'missed', label: step.rule, detail: '匹配器数：1', elapsed_ms: elapsed })
     }

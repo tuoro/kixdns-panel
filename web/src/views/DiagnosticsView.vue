@@ -15,7 +15,7 @@ import { serviceTone } from '../service-state'
 import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
-import { answeredByUpstream, asksUpstream, describeStep, detailValue, noteRuns, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { answeredByUpstream, asksUpstream, describeStep, forwardStates, detailValue, noteRuns, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceIdle, traceTone, type TextPart } from '../diagnostics'
 import { clientRegionText, knownRegions, lookupRegions, regionText } from '../ip-region'
 import { vLineDots } from '../line-dots'
 import { errorMessage, formatKixdnsVersion } from '../utils'
@@ -192,18 +192,19 @@ const leadMode = computed(() => answers.value.every((answer) => answer.fields &&
 // When types or TTLs differ (commonly a CNAME, then the addresses) each record takes its own line with its type and TTL (and region) after
 // it; flowed in one line, each record's notes ran together and no one could tell which belonged to which
 const rowsMode = computed(() => leadMode.value && !uniformMeta.value)
-const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
 // 执行路径的每一行：一句话、一行细节、语气和时刻。连着的未命中规则并成一行。
 // Each row of the path: a sentence, a detail line, a tone and a time. Consecutive missed rules share one row.
 const rows = computed(() => {
   // 记着上一次转给了谁，上游应答时就不用再写一遍地址。 / Remember the last forward target so the reply need not repeat the address.
   let target: string | null = null
   const asks = asksUpstream(steps.value)
-  return groupTrace(hidePlumbing(steps.value, names.value)).map((row) => {
+  const shown = hidePlumbing(steps.value, names.value)
+  const forwards = forwardStates(shown)
+  return groupTrace(shown).map((row) => {
   if (row.kind === 'step') {
     // 只有命中规则这一步打勾：它定下了请求怎么走；应答成功是结果栏的事，节点用普通的点
     // Only the matched-rule step gets a check, since it decides the route; a successful reply belongs to the result band, so its node is a plain dot
-    const view = { ...describeStep(row.step, { target, names: names.value, asksUpstream: asks, clientRegion: (result.value?.client_ip && clientRegionText(regions.value.get(result.value.client_ip))) || undefined }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
+    const view = { ...describeStep(row.step, { target, names: names.value, asksUpstream: asks, ...forwards.get(row.step), clientRegion: (result.value?.client_ip && clientRegionText(regions.value.get(result.value.client_ip))) || undefined }), tone: traceTone(row.step), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: traceIdle(row.step), elapsed: (row.sent ?? row.step).elapsed_ms }
     target = forwardTarget(row.sent ?? row.step) ?? target
     return view
   }

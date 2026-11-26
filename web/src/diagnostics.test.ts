@@ -3,7 +3,7 @@ import type { DnsTraceStep } from './api/types'
 import { blocklistPipelineId, compile } from './config-model/model'
 import { sampleModel } from './config-model/testing/samples'
 import { traceNames } from './config-model/trace-names'
-import { answeredByUpstream, asksUpstream, noteRuns, humanizeTraceDetail, missedRulesText, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, hidePlumbing, type TextPart } from './diagnostics'
+import { answeredByUpstream, asksUpstream, noteRuns, humanizeTraceDetail, missedRulesText, isDnsSuccess, parseDnsAnswer, responseCodeName, traceIdle, traceTone, describeStep, detailParts, formatElapsed, forwardStates, forwardTarget, groupTrace, hidePlumbing, type TextPart } from './diagnostics'
 
 describe('DNS 应答台账', () => {
   it.each([
@@ -27,9 +27,24 @@ describe('DNS 应答台账', () => {
 })
 
 describe('轨迹语气与响应码', () => {
-  it.each(['miss', 'missed', 'unknown'])('%s 不是故障', (status) => expect(traceTone(status)).toBe('neutral'))
-  it('明确失败才用故障状态', () => expect(traceTone('failed')).toBe('danger'))
-  it('被限速是提醒，不是故障', () => expect(traceTone('throttled')).toBe('warning'))
+  const upstream = (status: string, detail: string | null = null) => ({ stage: 'upstream', status, detail })
+  it.each(['miss', 'missed', 'unknown'])('%s 不是故障', (status) => expect(traceTone({ stage: 'rule', status, detail: null })).toBe('neutral'))
+  it('明确失败才用故障状态', () => expect(traceTone(upstream('failed', 'request timed out'))).toBe('danger'))
+  it('被限速、回了用不上的回答是提醒，不是故障', () => {
+    expect(traceTone(upstream('throttled', 'HTTP 状态码：429'))).toBe('warning')
+    expect(traceTone(upstream('rejected', '响应码：SERVFAIL；耗时：9 ms；截断：false'))).toBe('warning')
+  })
+  // 同组别的先回了、没等它回的不是故障，灰掉；旧内核把它记成不带原因的失败，也一样（真出错的一定带原因）
+  // One not waited for because another of its group answered first is no fault and is greyed; so is an older kernel's failure without a
+  // reason, the way it logged that (a real error always carries its cause)
+  it.each([upstream('aborted'), upstream('failed')])('没等它回不是故障：%o', (step) => {
+    expect(traceTone(step)).toBe('neutral')
+    expect(traceIdle(step)).toBe(true)
+  })
+  it('真出错、回了用不上的不灰掉', () => {
+    expect(traceIdle(upstream('failed', 'request timed out'))).toBe(false)
+    expect(traceIdle(upstream('rejected', '响应码：SERVFAIL'))).toBe(false)
+  })
   it.each(['No Error', 'NOERROR'])('识别响应码 %s', (code) => expect(isDnsSuccess(code)).toBe(true))
   it('不把 NXDOMAIN 画成成功应答', () => expect(isDnsSuccess('NXDOMAIN')).toBe(false))
 })
@@ -87,6 +102,12 @@ describe('执行路径每一步写成一句话', () => {
     [kstep('upstream', 'joined', '等候正在进行的同一个查询'), '同样的查询正在问上游，等它的结果', ''],
     [kstep('upstream', 'throttled', 'https://doh.pub/dns-query', 'HTTP 状态码：429；暂停：1 秒'), 'https://doh.pub/dns-query 被限速了', 'HTTP 状态码 429 · 暂停 1 秒'],
     [kstep('upstream', 'skipped', 'https://doh.pub/dns-query', '正在限速，这次没问它'), 'https://doh.pub/dns-query 正在限速，这次没问它', ''],
+    // 和查询日志同一句话 / The query log's sentences
+    [kstep('upstream', 'rejected', '8.8.8.8:53', '响应码：SERVFAIL；耗时：9 ms；截断：false'), '8.8.8.8:53 回了 SERVFAIL，这个回答没用', ''],
+    [kstep('upstream', 'rejected', '8.8.8.8:53', '响应码：NOERROR；耗时：9 ms；截断：true'), '8.8.8.8:53 回了 NOERROR，这个回答没用', '已截断'],
+    [kstep('upstream', 'aborted', 'https://cloudflare-dns.com/dns-query'), 'https://cloudflare-dns.com/dns-query 没等它回', ''],
+    // 旧内核不带原因的失败：还没有上游回时分不出是哪种 / An older kernel's failure without a reason: before any answer, which kind it was is unknown
+    [kstep('upstream', 'failed', 'https://cloudflare-dns.com/dns-query'), 'https://cloudflare-dns.com/dns-query 没用上', '内核没写原因'],
   ])('%#', (input, lead, note) => {
     const view = describeStep(input)
     expect(plain(view.lead)).toBe(lead)
@@ -161,6 +182,56 @@ describe('转发和应答不把同一个地址说三遍', () => {
     const timedOut = describeStep(kstep('upstream', 'failed', 'https://1.1.1.1/dns-query', '超时'), { target: 'https://1.1.1.1/dns-query' })
     expect(plain(timedOut.lead)).toBe('超时')
     expect(timedOut.note).toEqual([])
+  })
+})
+
+describe('同时问了几个上游：写明是谁先回的，没等的不是出错', () => {
+  // 诊断页上见过的那一次：上游组同时问两个 DoH，dns.google 先回，cloudflare 那次就不等了
+  // The case seen on the diagnostics page: the group asks two DoH upstreams at once, dns.google answers first and cloudflare is not waited for
+  const decision = kstep('decision', 'selected', '规则 国外-doh 转发', '目标：https://cloudflare-dns.com/dns-query, https://dns.google/dns-query')
+  const cloudflare = kstep('upstream', 'started', '准备转发到 https://cloudflare-dns.com/dns-query', '规则：国外-doh；传输：doh')
+  const google = kstep('upstream', 'started', '准备转发到 https://dns.google/dns-query', '规则：国外-doh；传输：doh')
+  const reply = kstep('upstream', 'succeeded', 'https://dns.google/dns-query', '响应码：NOERROR；耗时：137 ms；截断：false')
+  const read = (steps: DnsTraceStep[]) => {
+    const forwards = forwardStates(steps)
+    let target: string | null = null
+    return steps.map((step) => {
+      const lead = plain(describeStep(step, { target, ...forwards.get(step) }).lead)
+      target = forwardTarget(step) ?? target
+      return lead
+    })
+  }
+
+  it('先回的写名字，不说「上游回了」；没等的说另一个先回了', () => {
+    expect(read([decision, cloudflare, google, reply, kstep('upstream', 'aborted', 'https://cloudflare-dns.com/dns-query')]).slice(3)).toEqual([
+      'https://dns.google/dns-query 先回',
+      'https://cloudflare-dns.com/dns-query 没等它回，另一个先回了',
+    ])
+  })
+
+  it('旧内核把没等的记成不带原因的失败：已经有上游回了，就照没等它回说', () => {
+    expect(read([decision, cloudflare, google, reply, kstep('upstream', 'failed', 'https://cloudflare-dns.com/dns-query')]).at(-1)).toBe('https://cloudflare-dns.com/dns-query 没等它回，另一个先回了')
+  })
+
+  it('同时问的几个里出错的照样写名字和原因', () => {
+    expect(read([decision, cloudflare, google, kstep('upstream', 'failed', 'https://dns.google/dns-query', 'request timed out')]).at(-1)).toBe('https://dns.google/dns-query 超时')
+  })
+
+  it('只问了一个还是「上游回了」；回答后检查改问的另一组是新的一次转发', () => {
+    const single = kstep('upstream', 'started', '准备转发到 https://1.1.1.1/dns-query', '规则：r；传输：doh')
+    const answer = kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：NOERROR；耗时：9 ms；截断：false')
+    expect(read([single, answer]).at(-1)).toBe('上游回了')
+    const failing = kstep('upstream', 'rejected', 'https://cloudflare-dns.com/dns-query', '响应码：SERVFAIL；耗时：5 ms；截断：false')
+    const steps = [cloudflare, google, failing, kstep('upstream', 'rejected', 'https://dns.google/dns-query', '响应码：SERVFAIL；耗时：6 ms；截断：false'), kstep('pipeline', 'jump', 'a -> b'), single, answer]
+    const states = forwardStates(steps)
+    expect(states.get(failing)).toEqual({ raced: true, answered: false })
+    expect(states.get(answer)).toEqual({ raced: false, answered: false })
+    expect(read(steps).at(-1)).toBe('上游回了')
+  })
+
+  it('这次没问的（正在限速）夹在发出的几步中间，还是同一次转发', () => {
+    const skipped = kstep('upstream', 'skipped', 'https://doh.pub/dns-query', '正在限速，这次没问它')
+    expect(forwardStates([cloudflare, skipped, google, reply]).get(reply)).toEqual({ raced: true, answered: false })
   })
 })
 
