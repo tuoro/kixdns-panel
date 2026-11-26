@@ -26,8 +26,12 @@ ipnet = "2"
 maxminddb = "0.33"
 regex = "1"
 regex-syntax = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# 连外网的 TLS：rustls 加 ring（rustls-no-provider 加下面的 rustls），只认 webpki-root-certs 的 Mozilla 根证书，见 src/http_client.rs
+# TLS to the internet: rustls with ring (rustls-no-provider plus rustls below), trusting only the Mozilla roots of
+# webpki-root-certs, see src/http_client.rs
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 secrecy = "0.10"
 semver = "1"
 serde = { version = "1", features = ["derive", "rc"] }
@@ -42,6 +46,7 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread
 tower-http = { version = "0.7", features = ["fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+webpki-root-certs = "1"
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
 zstd = "0.14"
 

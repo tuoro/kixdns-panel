@@ -301,8 +301,7 @@ impl UpdateManager {
         connect_timeout: Duration,
         read_timeout: Duration,
     ) -> Result<reqwest::Client, UpdateError> {
-        reqwest::Client::builder()
-            .user_agent(concat!("kixdns-panel/", env!("CARGO_PKG_VERSION")))
+        crate::http_client::builder()
             .timeout(api_timeout)
             .connect_timeout(connect_timeout)
             .read_timeout(read_timeout)
