@@ -5,8 +5,8 @@ use std::sync::Mutex;
 use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::Argon2;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use axum::http::HeaderMap;
 use axum_extra::extract::CookieJar;
 use base64::Engine;
@@ -364,15 +364,13 @@ pub fn validate_password(password: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// 用 argon2 的默认参数算出 PHC 串：Argon2id v19、19 MiB、两遍、单线程（OWASP 的推荐值），16 字节随机盐；测试钉住这些参数
+/// The PHC string from argon2's default parameters: Argon2id v19, 19 MiB, two passes, one lane (OWASP's recommendation),
+/// with a random 16-byte salt; a test pins these parameters
 pub async fn hash_password(password: String) -> anyhow::Result<String> {
     tokio::task::spawn_blocking(move || {
-        let params = Params::new(19_456, 2, 1, None).context("Argon2 参数无效")?;
-        let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-        let mut salt_bytes = [0_u8; 16];
-        fill(&mut salt_bytes).map_err(|error| anyhow::anyhow!("生成密码盐失败：{error}"))?;
-        let salt = SaltString::encode_b64(&salt_bytes).context("编码密码盐失败")?;
-        argon
-            .hash_password(password.as_bytes(), &salt)
+        Argon2::default()
+            .hash_password(password.as_bytes())
             .map(|hash| hash.to_string())
             .context("计算密码哈希失败")
     })
@@ -380,13 +378,12 @@ pub async fn hash_password(password: String) -> anyhow::Result<String> {
     .context("密码哈希任务异常结束")?
 }
 
+/// 按 PHC 串里记下的算法和参数校验，存下来的串解析不了也算不对
+/// Verifies with the algorithm and parameters recorded in the PHC string; one that does not parse is a mismatch too
 pub async fn verify_password(password: String, encoded: String) -> anyhow::Result<bool> {
     tokio::task::spawn_blocking(move || {
-        let Ok(hash) = PasswordHash::new(&encoded) else {
-            return Ok(false);
-        };
         Ok(Argon2::default()
-            .verify_password(password.as_bytes(), &hash)
+            .verify_password(password.as_bytes(), encoded.as_str())
             .is_ok())
     })
     .await
@@ -476,7 +473,10 @@ mod tests {
 
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::{LoginLimiter, TrustedProxies, token_hash, validate_password, validate_username};
+    use super::{
+        LoginLimiter, TrustedProxies, hash_password, token_hash, validate_password,
+        validate_username, verify_password,
+    };
     use crate::error::AppError;
 
     #[test]
@@ -485,6 +485,38 @@ mod tests {
         assert!(validate_username("a/").is_err());
         assert!(validate_password("long-enough-password").is_ok());
         assert!(validate_password("short").is_err());
+    }
+
+    /// 新写的哈希和 argon2 0.5 时一样：Argon2id v19、m=19456、t=2、p=1，16 字节盐、32 字节输出，每次的盐都不同
+    /// New hashes match those from argon2 0.5: Argon2id v19, m=19456, t=2, p=1, a 16-byte salt and a 32-byte output,
+    /// with a fresh salt every time
+    #[tokio::test]
+    async fn new_hashes_keep_the_parameters_and_a_fresh_salt() {
+        let first = hash_password("a-secure-password".to_owned()).await.unwrap();
+        let second = hash_password("a-secure-password".to_owned()).await.unwrap();
+        for hash in [&first, &second] {
+            let fields = hash.split('$').collect::<Vec<_>>();
+            assert_eq!(
+                fields[..4],
+                ["", "argon2id", "v=19", "m=19456,t=2,p=1"],
+                "{hash}"
+            );
+            assert_eq!((fields[4].len(), fields[5].len()), (22, 43), "{hash}");
+            assert!(
+                verify_password("a-secure-password".to_owned(), hash.clone())
+                    .await
+                    .unwrap()
+            );
+        }
+        assert_ne!(first, second);
+        assert!(
+            !verify_password(
+                "a-secure-password".to_owned(),
+                "not-a-phc-string".to_owned()
+            )
+            .await
+            .unwrap()
+        );
     }
 
     #[test]
