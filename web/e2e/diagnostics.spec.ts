@@ -200,6 +200,34 @@ test('真实内核轨迹：未命中的规则并成一行，「准备转发」�
   await noOverflow(page)
 })
 
+// 上游组同时问两个 DoH：先回的写名字（不说「上游回了」，问了两个说不清是谁），没等的那个灰掉，不是红色的「出错」。
+// 内核以前把没等的记成不带原因的失败，诊断页上就是一个红叉
+// A group asks two DoH upstreams at once: the first to answer is named (「上游回了」 cannot say which of the two), and the one not
+// waited for is greyed, not a red 「出错」. Kernels used to log it as a failure without a reason, a red cross on this page
+test('同时问了两个上游：写明谁先回，没等的不算出错 @responsive', async ({ page }) => {
+  const trace: DnsTraceStep[] = [
+    { stage: 'pipeline', status: 'selected', label: 'default', detail: null, elapsed_ms: 0 },
+    { stage: 'rule', status: 'matched', label: 'geosite-global', detail: '管线：default；匹配器数：1', elapsed_ms: 0 },
+    { stage: 'decision', status: 'selected', label: '规则 geosite-global 转发', detail: '目标：https://cloudflare-dns.com/dns-query, https://dns.google/dns-query', elapsed_ms: 0 },
+    { stage: 'upstream', status: 'started', label: '准备转发到 https://cloudflare-dns.com/dns-query', detail: '规则：geosite-global；传输：doh', elapsed_ms: 0 },
+    { stage: 'upstream', status: 'started', label: '准备转发到 https://dns.google/dns-query', detail: '规则：geosite-global；传输：doh', elapsed_ms: 0 },
+    { stage: 'upstream', status: 'succeeded', label: 'https://dns.google/dns-query', detail: '响应码：NOERROR；耗时：137 ms；截断：false', elapsed_ms: 137 },
+    { stage: 'upstream', status: 'aborted', label: 'https://cloudflare-dns.com/dns-query', detail: null, elapsed_ms: 137 },
+  ]
+  await diagnosticFixture(page, { ...answerFixture, trace })
+  await query(page)
+  const steps = page.locator('.diag-trace .ui-steps > .ui-step')
+  await expect(steps).toHaveCount(7)
+  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('https://dns.google/dns-query 先回')
+  const unawaited = steps.nth(6)
+  await expect(unawaited.locator('.ui-step__what')).toHaveText('https://cloudflare-dns.com/dns-query 没等它回，另一个先回了')
+  await expect(unawaited).toHaveClass(/ui-step--idle/)
+  await expect(unawaited).not.toHaveClass(/ui-step--(ok|err|warn)/)
+  await expect(page.locator('.diag-trace')).not.toContainText('出错')
+  await expect(page.locator('.diag-trace')).not.toContainText('上游回了')
+  await noOverflow(page)
+})
+
 // 同一个查询正好在问上游：这次不另发，等那一次的回答。和查询日志一个说法，是一句话，不像地址那样标成字面值
 // The same query is already out upstream: this one waits for that answer. Worded as in the query log, a sentence, not marked as a literal like an address
 test('同样的查询正在问上游：写成一句话，和查询日志一样 @responsive', async ({ page }) => {

@@ -9,7 +9,7 @@ import UiTabs from '../components/ui/UiTabs.vue'
 import { coversOnly, ownBlocksFor, parseOwnRules } from '../config-model/blocklist'
 import { blocklistPipelineId, compile, isIp, mappingPipelineId, type Model } from '../config-model/model'
 import { findKernelRule, traceNames } from '../config-model/trace-names'
-import { asksUpstream, describeStep, detailValue, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { asksUpstream, describeStep, forwardStates, detailValue, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceIdle, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 import { useConnection } from '../composables/useConnection'
 import { appliedModel, dirty, model } from './store'
@@ -108,7 +108,6 @@ const verdict = computed(() => {
   return answers.value.length ? `回答 ${answers.value.join('、')}` : '没有返回记录'
 })
 // 执行路径的每一行，和诊断页同一种整理：连着的未命中规则并成一行，只有命中规则那一步打勾 / The path's rows, folded as on the diagnostics page: consecutive misses share a row, only the matched rule gets a check
-const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
 // 路径里的规则和规则组写配置页上的名字，不写内核的 rule-1、main / The path names rules and rule groups as the config page does, not as the kernel's rule-1 or main
 // 执行路径按测的那份配置起名：测正在用的配置时用保存过的那份，不用草稿 / The path is named after the config tested: the saved one when testing what
 // runs, not the draft
@@ -118,9 +117,11 @@ const rows = computed(() => {
   let target: string | null = null
   const trace = result.value?.trace_supported ? result.value.trace : []
   const asks = asksUpstream(trace)
-  return groupTrace(hidePlumbing(trace, names.value)).map((row) => {
+  const shown = hidePlumbing(trace, names.value)
+  const forwards = forwardStates(shown)
+  return groupTrace(shown).map((row) => {
     if (row.kind === 'step') {
-      const view = { ...describeStep(row.step, { target, names: names.value, asksUpstream: asks }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
+      const view = { ...describeStep(row.step, { target, names: names.value, asksUpstream: asks, ...forwards.get(row.step) }), tone: traceTone(row.step), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: traceIdle(row.step), elapsed: (row.sent ?? row.step).elapsed_ms }
       target = forwardTarget(row.sent ?? row.step) ?? target
       return view
     }

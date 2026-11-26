@@ -30,11 +30,33 @@ export const traceStatusNames: Record<string, string> = {
   skipped: '已跳过', rejected: '已拒绝', started: '已发出', jump: '跳转', throttled: '被限速',
 }
 
-export function traceTone(status: string): 'success' | 'warning' | 'danger' | 'neutral' {
+type StepFacts = Pick<DnsTraceStep, 'stage' | 'status' | 'detail'>
+
+/**
+ * 上游不带原因的失败：tuoro/kixdns#572 以前的内核把没等它回的（同组别的先回了）和回了用不上的回答都这样记，真出错的一定带原因。
+ * 它们不是故障，不画成红的
+ * An upstream failure without a reason: kernels before tuoro/kixdns#572 logged both an attempt not waited for (another of its group
+ * answered first) and a reply that could not be used this way, while a real error always carries its cause. Neither is a fault, so
+ * neither is red
+ */
+const unexplained = ({ stage, status, detail }: StepFacts): boolean => stage === 'upstream' && status === 'failed' && !detail
+
+export function traceTone(step: StepFacts): 'success' | 'warning' | 'danger' | 'neutral' {
+  const { status } = step
   if (['matched', 'hit', 'fresh', 'succeeded'].includes(status)) return 'success'
+  if (unexplained(step)) return 'neutral'
   if (['failed', 'error'].includes(status)) return 'danger'
-  if (status === 'stale' || status === 'throttled') return 'warning'
+  // 回了用不上的回答（SERVFAIL 这类），和查询日志一样是提醒 / A reply that cannot be used (SERVFAIL and the like) is a warning, as in the query log
+  if (['stale', 'throttled', 'rejected'].includes(status)) return 'warning'
   return 'neutral'
+}
+
+/**
+ * 灰掉的步骤：没命中、这次没问的，和没等它回的——都是没做成什么、也不是故障
+ * Greyed steps: misses, upstreams not asked this time and those not waited for — nothing was done, and nothing went wrong
+ */
+export function traceIdle(step: StepFacts): boolean {
+  return ['miss', 'missed', 'skipped', 'aborted'].includes(step.status) || unexplained(step)
 }
 
 export function isDnsSuccess(code: string): boolean {
@@ -208,6 +230,34 @@ export interface TraceContext {
   names?: TraceNames | null
   /** 这次查询后来有没有问上游（或者等着同样的查询问） / Whether this query went on to ask upstreams (or waited on the same query asking) */
   asksUpstream?: boolean
+  /** 这一步所在的那次转发同时问了几个上游，见 forwardStates / The forward this step belongs to asked several upstreams at once, see forwardStates */
+  raced?: boolean
+  /** 那次转发里已经有上游回了，见 forwardStates / An upstream of that forward has already answered, see forwardStates */
+  answered?: boolean
+}
+
+/**
+ * 每一步所在的那次转发：同时问了几个上游、这一步之前有没有已经回了的。连着发出的几步（中间可以夹着这次没问的）是同一次转发，
+ * 之后再发出的是新的一次（比如回答后检查改问备用组）。同时问了几个时，回了的那个写明是谁「先回」；之后没等的那几个说「另一个先回了」
+ * The forward each step belongs to: whether it asked several upstreams at once, and whether one had answered before this step.
+ * Consecutive sends (with upstreams left out this time between them) are one forward; a later send starts another (say, an answer
+ * check falling back to another group). With several asked, the reply names who answered first, and the ones not waited for
+ * afterwards say another answered first
+ */
+export function forwardStates(steps: readonly DnsTraceStep[]): Map<DnsTraceStep, Pick<TraceContext, 'raced' | 'answered'>> {
+  const states = new Map<DnsTraceStep, Pick<TraceContext, 'raced' | 'answered'>>()
+  let asked = 0
+  let answered = false
+  let sending = false
+  for (const step of steps) {
+    const sends = step.stage === 'upstream' && step.status === 'started'
+    if (sends && !sending) [asked, answered] = [0, false]
+    if (sends) asked += 1
+    if (!(step.stage === 'upstream' && step.status === 'skipped')) sending = sends
+    states.set(step, { raced: asked > 1, answered })
+    if (step.stage === 'upstream' && step.status === 'succeeded') answered = true
+  }
+  return states
 }
 
 /**
@@ -290,12 +340,26 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
   if (stage === 'upstream') {
     if (status === 'started' && (match = /^准备转发到 (.+)$/.exec(label))) return { lead: sentence(t('转发给'), m(match[1]!)), note: detailParts(detail, ['规则']) }
     const code = detailValue(detail, '响应码')
-    const same = context.target === label
+    // 只问了它一个、又正是刚转给的那个：说「上游回了」，不再重复地址。同时问了几个就写明是谁，回了的说「先回」，和查询日志一样
+    // Only it was asked and it is the one just forwarded to: 「上游回了」, without repeating the address. With several asked each is
+    // named, and the one that answered says 「先回」, as in the query log
+    const same = !context.raced && context.target === label
     // 回答本身和总耗时在结果栏和右边的时间列里，这一行只说收到了；不是 NOERROR 才写出响应码
     // The answer and the total time live in the result bar and the time column, so this row only says a reply came; the code is named only when it is not NOERROR
-    // 刚转给的就是它：说「上游回了」，不再重复地址 / The one just forwarded to: 「上游回了」, without repeating the address
-    const heard = code && isDnsSuccess(code) ? '回了' : `回了 ${responseCodeName(code ?? '')}`
+    const verb = context.raced ? '先回' : '回了'
+    const heard = code && isDnsSuccess(code) ? verb : `${verb} ${responseCodeName(code ?? '')}`
     if (status === 'succeeded' && code) return { lead: same ? [t(`上游${heard}`)] : sentence(m(label), t(heard)), note: detailParts(detail, ['响应码', '耗时']) }
+    // 同时问了几个、它回的是 SERVFAIL 这类用不上的（或者被截断）：放到一边等别的。截断了写在下面一行
+    // Several were asked and its reply cannot be used (SERVFAIL and the like, or truncated): set aside for the others. Truncation goes on
+    // the line below
+    if (status === 'rejected') return { lead: sentence(m(label), t(`回了 ${code ? responseCodeName(code) : '错误'}，这个回答没用`)), note: detailParts(detail, ['响应码', '耗时']) }
+    // 没等它回：同组别的先回了，或者整个转发被放下。它没出错，也没有回答可说。旧内核记成不带原因的失败，已经有上游回了的就是这种
+    // Not waited for: another of its group answered first, or the whole forward was dropped. Nothing went wrong and there is no reply to
+    // name. Older kernels log it as a failure without a reason, which after an answer can only be this
+    if (status === 'aborted' || (unexplained(step) && context.answered)) return { lead: sentence(m(label), t(context.answered ? '没等它回，另一个先回了' : '没等它回')), note: [] }
+    // 旧内核不带原因的失败，又还没有上游回：没等它回和回答用不上分不出来 / An older kernel's failure without a reason before any answer:
+    // not waited for and a reply that cannot be used look the same
+    if (unexplained(step)) return { lead: sentence(m(label), t('没用上')), note: [t('内核没写原因')] }
     if (status === 'failed') {
       // 失败说原因（超时、连不上……），内核的英文原文放在下面一行；本来就是中文的照原话 / A failure names its cause (timeout, no
       // connection…) with the kernel's English below; text already in Chinese is used as it is
