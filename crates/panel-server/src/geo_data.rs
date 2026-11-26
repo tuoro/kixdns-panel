@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
-use reqwest::{Client, Response, StatusCode, Url};
+use reqwest::{Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1158,12 +1158,11 @@ async fn request_with_safe_redirects(
 ) -> Result<(Response, Url), GeoDataError> {
     for redirect_count in 0..=MAX_REDIRECTS {
         let (host, address) = resolve_public_address(&url, what).await?;
-        let client = Client::builder()
+        let client = crate::http_client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_mins(2))
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
-            .user_agent(concat!("kixdns-panel/", env!("CARGO_PKG_VERSION")))
             .resolve(&host, address)
             .build()
             .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;

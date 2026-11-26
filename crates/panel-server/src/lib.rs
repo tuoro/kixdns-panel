@@ -11,6 +11,7 @@ mod digest;
 mod error;
 mod geo_data;
 mod geosite_catalog;
+mod http_client;
 mod ip_region;
 mod operations;
 mod panel_update;
