@@ -54,20 +54,15 @@ updates:
         update-types:
           - minor
           - patch
-    # 这些主版本需要与固定的 Node 24 和 Vue 构建链统一迁移。
     ignore:
+      # @types/node 的主版本跟着 CI 固定的 Node（24）走，换 Node 主版本时一起改
+      # @types/node's major follows the Node pinned in CI (24) and moves together with it
       - dependency-name: "@types/node"
         update-types:
           - version-update:semver-major
-      - dependency-name: "@vitejs/plugin-vue"
-        update-types:
-          - version-update:semver-major
+      # vue-tsc 用 TypeScript 的 JS 编译器 API（typescript/lib/tsc），TypeScript 7 是原生编译器、没有这套 API，等 vue-tsc 支持了再升
+      # vue-tsc runs on TypeScript's JS compiler API (typescript/lib/tsc), which TypeScript 7, a native compiler, does not ship;
+      # it moves once vue-tsc supports it
       - dependency-name: typescript
-        update-types:
-          - version-update:semver-major
-      - dependency-name: vite
-        update-types:
-          - version-update:semver-major
-      - dependency-name: vue-router
         update-types:
           - version-update:semver-major
