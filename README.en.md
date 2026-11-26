@@ -58,29 +58,79 @@ Then open `http://<router LAN address>:5738`. Starting KixDNS from the 系统 (S
 
 ### Docker
 
-The image is [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel), x86_64 and arm64, published with every stable release. The `latest` tag is the newest stable release; you can also pin the major.minor version (such as `4.4`) or the full version (such as `4.4.1`). The panel and the kernel share one container, and all data lives in `./data`.
+You need an x86_64 or arm64 Linux host with Docker Engine. The image is [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel), published with every stable release: `latest` is the newest stable release, and version tags such as `4.4` and `4.4.1` exist too. The panel and the kernel share one container. Pick either way below.
 
-Start it with compose in an empty directory:
+#### With docker run
 
 ```bash
-mkdir kixdns-panel && cd kixdns-panel
-curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/docker/compose.yaml
+docker run -d --name kixdns-panel \
+  --restart unless-stopped \
+  --network host \
+  -e TZ=Asia/Shanghai \
+  -v /opt/kixdns-panel/data:/data \
+  ghcr.io/tuoro/kixdns-panel:latest
+```
+
+Open `http://<host address>:5738` and create the administrator (the password needs at least 12 characters), and it is ready. KixDNS starts with the container, listening on `0.0.0.0:53` and forwarding to `1.1.1.1` by default; change the rules and upstreams under 配置 (Config).
+
+- `--network host`: the host's network, so the kernel sees each device's real IP, and per-client rules, the query log and flow control count per device. The panel listens on `5738` on every interface: **keep it off the public internet**. When only a reverse proxy on the same host uses it, add `-e KIXDNS_PANEL_BIND=127.0.0.1:5738`
+- `-v /opt/kixdns-panel/data:/data`: the config, the database and the kernels and panels installed online all live in this directory and survive removing the container. **Only `data/config` needs a backup** (the kernel config `pipeline.json` and the panel database `panel.db`)
+- `-e TZ=Asia/Shanghai`: the time zone for logs and statistics; UTC when unset
+
+On hosts such as Ubuntu, systemd-resolved holds port 53 (it listens on `127.0.0.53:53`), so the kernel cannot start: the 系统 (System) page shows the start failing and the runtime log says `Address in use`. Turn off its local listener, then press 启动 (Start) on the System page:
+
+```bash
+sudo mkdir -p /etc/systemd/resolved.conf.d
+printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/kixdns.conf
+sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+sudo systemctl restart systemd-resolved
+```
+
+Already running KixDNS? Before the first start, put your `pipeline.json` at `/opt/kixdns-panel/data/config/pipeline.json`, and the panel imports it as the first version. When host networking is not an option, replace `--network host` with `-p 53:53/udp -p 53:53/tcp -p 5738:5738`; the kernel may then see only the Docker gateway's address, depending on Docker's network setup.
+
+Day to day:
+
+```bash
+docker logs -f kixdns-panel   # the container and panel log: kernel starts and stops, panel version switches; the kernel's own log is on the panel's 日志 (Logs) page
+docker restart kixdns-panel   # restart
+docker rm -f kixdns-panel     # remove the container; the data stays in /opt/kixdns-panel/data
+```
+
+The panel and the kernel both update online from the System page, with no new image needed, and DNS keeps answering while the panel updates. A new image works too: `docker pull ghcr.io/tuoro/kixdns-panel:latest`, remove the container and run the same `docker run` again; the data is all still there.
+
+#### With Docker Compose
+
+The same as the `docker run` above, written as a file. Create `/opt/kixdns-panel/compose.yaml`:
+
+```yaml
+services:
+  kixdns-panel:
+    image: ghcr.io/tuoro/kixdns-panel:latest
+    container_name: kixdns-panel
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/data
+```
+
+Start it in that directory, and run everything after from there too:
+
+```bash
+cd /opt/kixdns-panel
 docker compose up -d
 ```
 
-Without compose:
+`./data` is `/opt/kixdns-panel/data`, the same directory `docker run` uses. Access, port 53 and backups work as above.
 
 ```bash
-mkdir kixdns-panel && cd kixdns-panel
-docker run -d --name kixdns-panel --network host --restart unless-stopped \
-  -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
+docker compose logs -f                        # logs
+docker compose pull && docker compose up -d   # a new image
+docker compose down                           # remove the container; the data stays in ./data
 ```
 
-Then open `http://<host address>:5738` to create the administrator. Host networking is the default (only then does the kernel see the real client IPs); KixDNS starts with the container and listens on the host's port 53. On hosts where systemd-resolved holds port 53, such as Ubuntu, read the [Docker section of the deployment guide](docs/deployment.en.md#docker) first.
-
-- **Updates**: the panel and the kernel both update online from the 系统 (System) page, with no new image needed; pulling a new image works too: `docker compose pull && docker compose up -d`
-- **Backup**: only `./data/config` (the kernel config and the panel database)
-- Moving an existing install, bridge networking, environment variables and the data directory are covered in the [deployment guide](docs/deployment.en.md#docker)
+Optional settings such as the panel's listen address, reverse proxies and keeping the query log in memory, and what to do about a forgotten administrator password, are in the [Docker section of the deployment guide](docs/deployment.en.md#docker).
 
 What changed in each version is in [Releases](https://github.com/tuoro/kixdns-panel/releases).
 

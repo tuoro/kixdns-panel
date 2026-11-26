@@ -56,29 +56,79 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 ### Docker
 
-镜像是 [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel)，x86_64 和 arm64，随每个正式版发布。标签 `latest` 是最新正式版，也可以固定到主次版本（如 `4.4`）或完整版本（如 `4.4.1`）。面板和内核在一个容器里，数据都在 `./data`。
+需要 x86_64 或 arm64 的 Linux 主机和 Docker Engine。镜像是 [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel)，随每个正式版发布：`latest` 是最新正式版，也有 `4.4`、`4.4.1` 这样的版本标签。面板和内核在一个容器里，两条路径任选一条。
 
-在一个空目录里用 compose 启动：
+#### 用 docker run
 
 ```bash
-mkdir kixdns-panel && cd kixdns-panel
-curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/docker/compose.yaml
+docker run -d --name kixdns-panel \
+  --restart unless-stopped \
+  --network host \
+  -e TZ=Asia/Shanghai \
+  -v /opt/kixdns-panel/data:/data \
+  ghcr.io/tuoro/kixdns-panel:latest
+```
+
+打开 `http://<主机地址>:5738`，创建管理员（密码至少 12 个字符）之后即可使用。KixDNS 随容器启动，默认听 `0.0.0.0:53`、转给 `1.1.1.1`，在「配置」里改成自己的规则和上游。
+
+- `--network host`：用主机的网络，内核才看得到每台设备的真实 IP，按客户端分流、查询日志和智能流控才按设备算。面板听所有网卡的 `5738`，**不要把它暴露到公网**；只给本机的反向代理用时，加 `-e KIXDNS_PANEL_BIND=127.0.0.1:5738`
+- `-v /opt/kixdns-panel/data:/data`：配置、数据库、在线装的内核和面板都在这个目录里，删了容器也还在。**要备份的只有 `data/config`**（内核配置 `pipeline.json` 和面板数据库 `panel.db`）
+- `-e TZ=Asia/Shanghai`：日志和统计用的时区，不设就是 UTC
+
+Ubuntu 这类主机的 53 端口被 systemd-resolved 占着（它听 `127.0.0.53:53`），内核起不来，「系统」页显示启动失败，运行日志里是 `Address in use`。关掉它的本机监听，再到「系统」页点「启动」：
+
+```bash
+sudo mkdir -p /etc/systemd/resolved.conf.d
+printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/kixdns.conf
+sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+sudo systemctl restart systemd-resolved
+```
+
+已经在用 KixDNS 的，第一次启动之前把原来的 `pipeline.json` 放到 `/opt/kixdns-panel/data/config/pipeline.json`，面板会把它导入成第一个版本。不能用 host 网络时，把 `--network host` 换成 `-p 53:53/udp -p 53:53/tcp -p 5738:5738`；这样内核可能只看得到 Docker 网关的地址，取决于 Docker 的网络设置。
+
+日常操作：
+
+```bash
+docker logs -f kixdns-panel   # 容器和面板的日志：内核的起停、面板换版本都在这里；内核自己的日志在面板的「日志」页
+docker restart kixdns-panel   # 重启
+docker rm -f kixdns-panel     # 删除容器，数据留在 /opt/kixdns-panel/data
+```
+
+面板和内核都在「系统」页在线更新，不用换镜像，更新面板时 DNS 不断。想换新镜像也可以：`docker pull ghcr.io/tuoro/kixdns-panel:latest`，删掉容器再用上面那条 `docker run` 重建，数据都在。
+
+#### 用 Docker Compose
+
+和上面那条 `docker run` 等价，写成一个文件。新建 `/opt/kixdns-panel/compose.yaml`：
+
+```yaml
+services:
+  kixdns-panel:
+    image: ghcr.io/tuoro/kixdns-panel:latest
+    container_name: kixdns-panel
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/data
+```
+
+在这个目录里启动，之后的操作也都在这里执行：
+
+```bash
+cd /opt/kixdns-panel
 docker compose up -d
 ```
 
-不用 compose 时：
+`./data` 就是 `/opt/kixdns-panel/data`，和 `docker run` 用的是同一个目录。访问、53 端口和备份同上。
 
 ```bash
-mkdir kixdns-panel && cd kixdns-panel
-docker run -d --name kixdns-panel --network host --restart unless-stopped \
-  -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
+docker compose logs -f                        # 看日志
+docker compose pull && docker compose up -d   # 换新镜像
+docker compose down                           # 删除容器，数据留在 ./data
 ```
 
-装完打开 `http://<主机地址>:5738` 创建管理员。默认用 host 网络（内核才看得到真实的客户端 IP），KixDNS 随容器启动、听主机的 53 端口；Ubuntu 这类 53 被 systemd-resolved 占着的主机先看[部署指南的 Docker 一节](docs/deployment.md#docker)。
-
-- **更新**：面板和内核都在「系统」页在线更新，不用换镜像；也可以拉新镜像：`docker compose pull && docker compose up -d`
-- **备份**：只需要 `./data/config`（内核配置和面板数据库）
-- 从现有安装搬配置、桥接网络、环境变量和数据目录的说明，见[部署指南](docs/deployment.md#docker)
+面板的监听地址、反向代理、查询日志放内存这些可选参数，以及忘记管理员密码怎么办，见[部署指南的 Docker 一节](docs/deployment.md#docker)。
 
 每个版本的变化见 [Releases](https://github.com/tuoro/kixdns-panel/releases)。
 
