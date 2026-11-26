@@ -56,7 +56,9 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 ### Docker
 
-x86_64 和 arm64。面板和内核在一个容器里，数据都在 `./data`：
+镜像是 [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel)，x86_64 和 arm64，随每个正式版发布。标签 `latest` 是最新正式版，也可以固定到主次版本（如 `4.4`）或完整版本（如 `4.4.1`）。面板和内核在一个容器里，数据都在 `./data`。
+
+在一个空目录里用 compose 启动：
 
 ```bash
 mkdir kixdns-panel && cd kixdns-panel
@@ -64,7 +66,19 @@ curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/doc
 docker compose up -d
 ```
 
-装完打开 `http://<主机地址>:5738` 创建管理员。默认用 host 网络（内核才看得到真实的客户端 IP），KixDNS 随容器启动、听主机的 53 端口；Ubuntu 这类 53 被 systemd-resolved 占着的主机先看[部署指南的 Docker 一节](docs/deployment.md#docker)。面板和内核都在「系统」页在线更新；要备份的只有 `./data/config`。
+不用 compose 时：
+
+```bash
+mkdir kixdns-panel && cd kixdns-panel
+docker run -d --name kixdns-panel --network host --restart unless-stopped \
+  -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
+```
+
+装完打开 `http://<主机地址>:5738` 创建管理员。默认用 host 网络（内核才看得到真实的客户端 IP），KixDNS 随容器启动、听主机的 53 端口；Ubuntu 这类 53 被 systemd-resolved 占着的主机先看[部署指南的 Docker 一节](docs/deployment.md#docker)。
+
+- **更新**：面板和内核都在「系统」页在线更新，不用换镜像；也可以拉新镜像：`docker compose pull && docker compose up -d`
+- **备份**：只需要 `./data/config`（内核配置和面板数据库）
+- 从现有安装搬配置、桥接网络、环境变量和数据目录的说明，见[部署指南](docs/deployment.md#docker)
 
 每个版本的变化见 [Releases](https://github.com/tuoro/kixdns-panel/releases)。
 

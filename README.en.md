@@ -58,7 +58,9 @@ Then open `http://<router LAN address>:5738`. Starting KixDNS from the 系统 (S
 
 ### Docker
 
-x86_64 and arm64. The panel and the kernel share one container, and all data lives in `./data`:
+The image is [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel), x86_64 and arm64, published with every stable release. The `latest` tag is the newest stable release; you can also pin the major.minor version (such as `4.4`) or the full version (such as `4.4.1`). The panel and the kernel share one container, and all data lives in `./data`.
+
+Start it with compose in an empty directory:
 
 ```bash
 mkdir kixdns-panel && cd kixdns-panel
@@ -66,7 +68,19 @@ curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/doc
 docker compose up -d
 ```
 
-Then open `http://<host address>:5738` to create the administrator. Host networking is the default (only then does the kernel see the real client IPs); KixDNS starts with the container and listens on the host's port 53. On hosts where systemd-resolved holds port 53, such as Ubuntu, read the [Docker section of the deployment guide](docs/deployment.en.md#docker) first. The panel and the kernel both update online from the 系统 (System) page; only `./data/config` needs a backup.
+Without compose:
+
+```bash
+mkdir kixdns-panel && cd kixdns-panel
+docker run -d --name kixdns-panel --network host --restart unless-stopped \
+  -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
+```
+
+Then open `http://<host address>:5738` to create the administrator. Host networking is the default (only then does the kernel see the real client IPs); KixDNS starts with the container and listens on the host's port 53. On hosts where systemd-resolved holds port 53, such as Ubuntu, read the [Docker section of the deployment guide](docs/deployment.en.md#docker) first.
+
+- **Updates**: the panel and the kernel both update online from the 系统 (System) page, with no new image needed; pulling a new image works too: `docker compose pull && docker compose up -d`
+- **Backup**: only `./data/config` (the kernel config and the panel database)
+- Moving an existing install, bridge networking, environment variables and the data directory are covered in the [deployment guide](docs/deployment.en.md#docker)
 
 What changed in each version is in [Releases](https://github.com/tuoro/kixdns-panel/releases).
 
