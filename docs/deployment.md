@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
-  | sudo bash -s -- --version v4.4.1
+  | sudo bash -s -- --version v4.4.2
 ```
 
 - [安装参数](#安装参数)同样写在 `| sudo bash -s --` 之后
@@ -48,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 ```bash
 # ARM64 把 x86_64 换成 arm64
 curl -fL -o kixdns-panel.zip \
-  https://github.com/tuoro/kixdns-panel/releases/download/v4.4.1/kixdns-panel-linux-x86_64.zip
+  https://github.com/tuoro/kixdns-panel/releases/download/v4.4.2/kixdns-panel-linux-x86_64.zip
 mkdir kixdns-panel && unzip kixdns-panel.zip -d kixdns-panel
 cd kixdns-panel
 sudo bash ./scripts/install.sh
@@ -154,7 +154,7 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 ### Docker
 
-镜像是 [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel)，amd64 和 arm64，随每个正式版发布，标签有 `latest`、主次版本（如 `4.4`）和完整版本（如 `4.4.1`）。面板和内核在一个容器里，只映射一个数据目录 `/data`：配置、数据库、在线装的内核和面板都在里面。下面把它放在主机的 `/opt/kixdns-panel/data`，两种启动方式任选一种。
+镜像是 [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel)，amd64 和 arm64，随每个正式版发布，标签有 `latest`、主次版本（如 `4.4`）和完整版本（如 `4.4.2`）。面板和内核在一个容器里，只映射一个数据目录 `/data`：配置、数据库、在线装的内核和面板都在里面。下面把它放在主机的 `/opt/kixdns-panel/data`，两种启动方式任选一种。
 
 **用 docker run**：
 

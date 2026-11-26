@@ -58,7 +58,7 @@ Then open `http://<router LAN address>:5738`. Starting KixDNS from the 系统 (S
 
 ### Docker
 
-You need an x86_64 or arm64 Linux host with Docker Engine. The image is [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel), published with every stable release: `latest` is the newest stable release, and version tags such as `4.4` and `4.4.1` exist too. The panel and the kernel share one container. Pick either way below.
+You need an x86_64 or arm64 Linux host with Docker Engine. The image is [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel), published with every stable release: `latest` is the newest stable release, and version tags such as `4.4` and `4.4.2` exist too. The panel and the kernel share one container. Pick either way below.
 
 #### With docker run
 

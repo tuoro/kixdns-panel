@@ -26,7 +26,7 @@ Pinned version:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
-  | sudo bash -s -- --version v4.4.1
+  | sudo bash -s -- --version v4.4.2
 ```
 
 - [Install options](#install-options) also go after `| sudo bash -s --`
@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 ```bash
 # For ARM64, replace x86_64 with arm64
 curl -fL -o kixdns-panel.zip \
-  https://github.com/tuoro/kixdns-panel/releases/download/v4.4.1/kixdns-panel-linux-x86_64.zip
+  https://github.com/tuoro/kixdns-panel/releases/download/v4.4.2/kixdns-panel-linux-x86_64.zip
 mkdir kixdns-panel && unzip kixdns-panel.zip -d kixdns-panel
 cd kixdns-panel
 sudo bash ./scripts/install.sh
@@ -152,7 +152,7 @@ Differences from the systemd version: the panel listens only on the LAN interfac
 
 ### Docker
 
-The image is [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel), amd64 and arm64, published with every stable release and tagged `latest`, the major.minor version (such as `4.4`) and the full version (such as `4.4.1`). The panel and the kernel share one container that maps a single data directory, `/data`: the configuration, the database and the kernels and panels installed online all live there. Below it sits at `/opt/kixdns-panel/data` on the host; start it either way.
+The image is [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel), amd64 and arm64, published with every stable release and tagged `latest`, the major.minor version (such as `4.4`) and the full version (such as `4.4.2`). The panel and the kernel share one container that maps a single data directory, `/data`: the configuration, the database and the kernels and panels installed online all live there. Below it sits at `/opt/kixdns-panel/data` on the host; start it either way.
 
 **With docker run**:
 
