@@ -443,10 +443,20 @@ jobs:
             target: aarch64-unknown-linux-gnu
 
     steps:
+      # Ubuntu 的源在同步时会短暂给出大小对不上的索引（v4.4.1 发版时 security.ubuntu.com 就让这一步连败两次，「Mirror sync
+      # in progress?」），几分钟后自己好：update 失败隔一分钟再来，最多三次；下载包的网络抖动交给 apt 自己重试。
+      # Ubuntu mirrors briefly serve index files of the wrong size while they sync (security.ubuntu.com failed this step twice in a
+      # row during the v4.4.1 release, "Mirror sync in progress?") and recover within minutes: a failed update waits a minute and
+      # tries again, three times at most; network blips while downloading packages are left to apt's own retries.
       - name: Install build dependencies
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          for attempt in 1 2 3; do
+            apt-get update && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "apt-get update failed (attempt $attempt), retrying in 60 s"
+            sleep 60
+          done
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
             binutils build-essential ca-certificates cmake curl gh git jq perl pkg-config python3 unzip zip zstd
           rm -rf /var/lib/apt/lists/*
 
@@ -582,10 +592,16 @@ jobs:
             target: aarch64-unknown-linux-musl
 
     steps:
+      # 源同步时的索引错误同上面 glibc 构建，一样隔一分钟重试 / Mirror-sync index errors as in the glibc build above, retried a minute apart
       - name: Install musl toolchain
         run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends musl-tools
+          for attempt in 1 2 3; do
+            sudo apt-get update && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "apt-get update failed (attempt $attempt), retrying in 60 s"
+            sleep 60
+          done
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Acquire::Retries=3 musl-tools
 
       - name: Checkout panel repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
