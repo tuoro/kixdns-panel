@@ -738,6 +738,9 @@ jobs:
     name: Accept OpenWrt ${{ matrix.arch }} on ${{ matrix.release }}
     needs: package-openwrt
     runs-on: ${{ matrix.runner }}
+    # 平时一分半钟；容器里有东西卡住时不要挂到 GitHub 的六小时上限 / Usually a minute and a half; something stuck in the
+    # container must not hang on until GitHub's six-hour limit
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -788,6 +791,8 @@ jobs:
     name: Accept Docker image ${{ matrix.arch }}
     needs: package-openwrt
     runs-on: ${{ matrix.runner }}
+    # 平时不到一分钟，理由同上面 OpenWrt 的验收 / Usually under a minute; same reason as the OpenWrt acceptance above
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

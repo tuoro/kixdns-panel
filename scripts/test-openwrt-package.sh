@@ -33,12 +33,18 @@ fail() {
 }
 
 cleanup() {
-  local status=$?
+  local status=$? part
   if ((status != 0)) && docker inspect "${NAME}" >/dev/null 2>&1; then
     printf '\n---- 容器里的日志 / logs from the container ----\n' >&2
-    docker exec "${NAME}" sh -c 'logread | tail -80; echo; tail -40 /var/log/kixdns.log 2>/dev/null
-      echo; ip addr; ip route; netstat -lnt; nft list ruleset 2>/dev/null | head -60' >&2 || true
-    docker inspect -f '{{json .NetworkSettings.Networks}}' "${NAME}" >&2 || true
+    # 一条一条打，每条最多 20 秒：以前一口气打完，有一次卡在中间半个多小时，任务一直挂着，后面的也没打出来
+    # One command at a time, twenty seconds each: the dump used to run in one go, and once it stuck halfway for over half an
+    # hour, holding the job and hiding everything after it
+    for part in 'logread | tail -80' 'tail -40 /var/log/kixdns.log' 'ip addr; ip route' 'netstat -lntup' \
+      'nft list ruleset | head -60'; do
+      printf '\n$ %s\n' "${part}" >&2
+      timeout 20 docker exec "${NAME}" sh -c "${part}" >&2 || printf '（没有打完 / did not finish: exit %s）\n' "$?" >&2
+    done
+    timeout 20 docker inspect -f '{{json .NetworkSettings.Networks}}' "${NAME}" >&2 || true
   fi
   [[ -z ${SERVER_PID} ]] || kill "${SERVER_PID}" 2>/dev/null || true
   docker rm -f "${NAME}" >/dev/null 2>&1 || true
