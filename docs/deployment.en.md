@@ -152,26 +152,44 @@ Differences from the systemd version: the panel listens only on the LAN interfac
 
 ### Docker
 
-The image is `ghcr.io/tuoro/kixdns-panel`, amd64 and arm64, published with every stable release and tagged `latest`, the major.minor version (such as `4.4`) and the full version (such as `4.4.0`). The panel and the kernel share one container that maps a single data directory, `/data`: the configuration, the database and the kernels and panels installed online all live there.
+The image is [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel), amd64 and arm64, published with every stable release and tagged `latest`, the major.minor version (such as `4.4`) and the full version (such as `4.4.1`). The panel and the kernel share one container that maps a single data directory, `/data`: the configuration, the database and the kernels and panels installed online all live there. Below it sits at `/opt/kixdns-panel/data` on the host; start it either way.
 
-1. Create a directory, fetch the compose example and start it:
+**With docker run**:
 
-   ```bash
-   mkdir kixdns-panel && cd kixdns-panel
-   curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/docker/compose.yaml
-   docker compose up -d
-   ```
+```bash
+docker run -d --name kixdns-panel \
+  --restart unless-stopped \
+  --network host \
+  -e TZ=Asia/Shanghai \
+  -v /opt/kixdns-panel/data:/data \
+  ghcr.io/tuoro/kixdns-panel:latest
+```
 
-   Without compose:
+**With Docker Compose**: the same as the command above. Create `/opt/kixdns-panel/compose.yaml`:
 
-   ```bash
-   docker run -d --name kixdns-panel --network host --restart unless-stopped \
-     -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
-   ```
+```yaml
+services:
+  kixdns-panel:
+    image: ghcr.io/tuoro/kixdns-panel:latest
+    container_name: kixdns-panel
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/data
+```
 
-2. Open `http://<host address>:5738` to create the administrator. KixDNS starts with the container; the default config listens on `0.0.0.0:53` and forwards to `1.1.1.1`, and, as on a fresh systemd install, the panel's first start imports the image's GeoSite once. Once stopped on the 系统 (System) page it stays stopped across restarts and rebuilt containers until 启动 (Start) is pressed.
+Start it in that directory, where `./data` is `/opt/kixdns-panel/data`:
 
-**Moving an existing install**: before the first start, put the existing `pipeline.json` at `./data/config/pipeline.json`; on its first start the panel imports it as the first version (the file is handed to the container's panel user, its content untouched). The panel's accounts and version history do not move with it, and the bundled GeoSite is not imported by itself (the existing config may leave it out on purpose): to use it, press 导入 (Import) under Geo 数据 (Geo data).
+```bash
+cd /opt/kixdns-panel
+docker compose up -d
+```
+
+Once it is up, open `http://<host address>:5738` to create the administrator. KixDNS starts with the container; the default config listens on `0.0.0.0:53` and forwards to `1.1.1.1`, and, as on a fresh systemd install, the panel's first start imports the image's GeoSite once. Once stopped on the 系统 (System) page it stays stopped across restarts and rebuilt containers until 启动 (Start) is pressed.
+
+**Moving an existing install**: before the first start, put the existing `pipeline.json` at `/opt/kixdns-panel/data/config/pipeline.json`; on its first start the panel imports it as the first version (the file is handed to the container's panel user, its content untouched). The panel's accounts and version history do not move with it, and the bundled GeoSite is not imported by itself (the existing config may leave it out on purpose): to use it, press 导入 (Import) under Geo 数据 (Geo data).
 
 **systemd-resolved holds the host's port 53** (the Ubuntu default, listening on `127.0.0.53:53`): with host networking the kernel cannot listen on `0.0.0.0:53`, the 系统 (System) page says it failed to start, and the runtime log says `Address in use`. Turn its local listener off, then start KixDNS on the 系统 (System) page:
 
@@ -184,9 +202,9 @@ sudo systemctl restart systemd-resolved
 
 To leave systemd-resolved alone, set the listen address under 配置 → 基础设置 (Config → Basic settings) to the host's LAN address (such as `192.168.1.20:53`), which does not clash with `127.0.0.53`; save, then start KixDNS on the 系统 (System) page.
 
-**Networking**: host networking is recommended, as only then does the kernel see the real client IPs, so per-client rules, the query log and flow control count per device. The panel listens on `5738` on every interface by default: **do not expose it to the internet**; for a local reverse proxy only, set `KIXDNS_PANEL_BIND=127.0.0.1:5738`. Bridge networking works too: drop `network_mode: host` and map `53/udp`, `53/tcp` and `5738` as the comments in compose show. The real client IPs may then be hidden, depending on Docker's network setup (Docker Desktop, rootless and the userland proxy show the gateway's address); mapping the host's port 53 runs into systemd-resolved just the same, handled as above or by mapping to the LAN address only (`192.168.1.20:53:53/udp`).
+**Networking**: host networking is recommended, as only then does the kernel see the real client IPs, so per-client rules, the query log and flow control count per device. The panel listens on `5738` on every interface by default: **do not expose it to the internet**; for a local reverse proxy only, set `KIXDNS_PANEL_BIND=127.0.0.1:5738`. Bridge networking works too: replace `--network host` with `-p 53:53/udp -p 53:53/tcp -p 5738:5738` (in compose, drop `network_mode: host` and list the same three under `ports`). The real client IPs may then be hidden, depending on Docker's network setup (Docker Desktop, rootless and the userland proxy show the gateway's address); mapping the host's port 53 runs into systemd-resolved just the same, handled as above or by mapping to the LAN address only (`192.168.1.20:53:53/udp`).
 
-**The panel's settings** go under `environment` in compose, with the same names as in the systemd `panel.env`:
+**The panel's settings** are set with `-e` on `docker run` (under `environment` in compose), with the same names as in the systemd `panel.env`:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -194,13 +212,13 @@ To leave systemd-resolved alone, set the listen address under 配置 → 基础�
 | `KIXDNS_PANEL_SECURE_COOKIE` | `false` | Set to `true` behind an HTTPS reverse proxy |
 | `KIXDNS_TRUSTED_PROXIES` | empty | CIDRs of the reverse proxies allowed to send `X-Forwarded-For` |
 | `KIXDNS_GITHUB_TOKEN_FILE` | `/data/config/github-token` | The GitHub token file (a path in the container); a token entered on the 系统 (System) page is stored there too |
-| `KIXDNS_QUERYLOG_DIR` | `/data/logs/querylog` | The query log directory; mount a tmpfs and point it there to keep it in memory (see the comments in compose) |
+| `KIXDNS_QUERYLOG_DIR` | `/data/logs/querylog` | The query log directory; mount a tmpfs and point it there to keep it in memory: `--tmpfs /querylog -e KIXDNS_QUERYLOG_DIR=/querylog` |
 | `RUST_LOG` | panel `info`, kernel `info,kixdns::engine::phases=warn` | Log level; when set, the panel and the kernel both use it |
 | `TZ` | UTC | Time zone |
 
 Every other path is fixed by the container's layout and setting it has no effect.
 
-**Data directory**:
+**Data directory** (paths in the container; on the host they sit under `/opt/kixdns-panel/data`):
 
 | Path | Content |
 | --- | --- |
@@ -213,10 +231,10 @@ Every other path is fixed by the container's layout and setting it has no effect
 
 **Updates**:
 
-- Panel: press 在线更新 (Online update) on the 系统 (System) page. The panel downloads this release's OpenWrt package (the same musl programs), checks its SHA-256, installs the panel, web pages and GeoSite into `/data/panel/<version>/` and switches to it; the kernel keeps running, so DNS never stops. A new version that exits 3 times in a row within 60 seconds of starting gives way to the copy before, and the 系统 (System) page says why. Pulling a new image works too: `docker compose pull && docker compose up -d`; whichever of the image's and the online copy is newer runs, and the online copy keeps running when they are equally new
+- Panel: press 在线更新 (Online update) on the 系统 (System) page. The panel downloads this release's OpenWrt package (the same musl programs), checks its SHA-256, installs the panel, web pages and GeoSite into `/data/panel/<version>/` and switches to it; the kernel keeps running, so DNS never stops. A new version that exits 3 times in a row within 60 seconds of starting gives way to the copy before, and the 系统 (System) page says why. A new image works too: `docker pull ghcr.io/tuoro/kixdns-panel:latest`, then `docker rm -f kixdns-panel` and the same `docker run` again (with compose, `docker compose pull && docker compose up -d`), and the data is all still there; whichever of the image's and the online copy is newer runs, and the online copy keeps running when they are equally new
 - Kernel: updated and rolled back on the 系统 (System) page as with systemd. After pulling an image whose kernel is newer, the panel switches to the image's kernel once it starts (with the same config compatibility check and switch back on failure, recorded in the audit log); a newer kernel installed online is never replaced by an older one
 
-**Logs and troubleshooting**: `docker logs kixdns-panel` shows the container's main process and the panel: the kernel starting and stopping, the panel switching versions and why one was rolled back. The kernel's own log is on the 日志 (Logs) page and in `./data/logs/kixdns.log`. The health state in `docker ps` is healthy while the panel answers and the kernel has not crashed so often that it is no longer brought back; a kernel you stopped does not make it unhealthy.
+**Logs and troubleshooting**: `docker logs kixdns-panel` shows the container's main process and the panel: the kernel starting and stopping, the panel switching versions and why one was rolled back. The kernel's own log is on the 日志 (Logs) page and in `/opt/kixdns-panel/data/logs/kixdns.log`. The health state in `docker ps` is healthy while the panel answers and the kernel has not crashed so often that it is no longer brought back; a kernel you stopped does not make it unhealthy.
 
 **Forgotten administrator password**:
 
@@ -228,7 +246,7 @@ After an online panel update, replace `/opt/kixdns-panel/bin` with `/data/panel/
 
 **Permissions**: the container's main process (the service helper's supervise mode, `kixdns-panel-helper supervise`) runs as root and only starts and stops; the kernel runs as `kixdns` (5533) holding only `CAP_NET_BIND_SERVICE` with 65536 file descriptors; the panel runs as `kixdns-panel` (5738); the two share group 5533, as on systemd. Root never executes a file under `/data`.
 
-**Uninstall**: `docker compose down`; the data stays in `./data`, and removing that directory removes it too.
+**Uninstall**: `docker rm -f kixdns-panel` (with compose, `docker compose down`); the data stays in `/opt/kixdns-panel/data`, and removing that directory removes it too.
 
 ## First access
 

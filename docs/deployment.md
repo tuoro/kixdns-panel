@@ -154,26 +154,44 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 ### Docker
 
-镜像是 `ghcr.io/tuoro/kixdns-panel`，amd64 和 arm64，随每个正式版发布，标签有 `latest`、主次版本（如 `4.4`）和完整版本（如 `4.4.0`）。面板和内核在一个容器里，只映射一个数据目录 `/data`：配置、数据库、在线装的内核和面板都在里面。
+镜像是 [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel)，amd64 和 arm64，随每个正式版发布，标签有 `latest`、主次版本（如 `4.4`）和完整版本（如 `4.4.1`）。面板和内核在一个容器里，只映射一个数据目录 `/data`：配置、数据库、在线装的内核和面板都在里面。下面把它放在主机的 `/opt/kixdns-panel/data`，两种启动方式任选一种。
 
-1. 新建一个目录，取 compose 示例并启动：
+**用 docker run**：
 
-   ```bash
-   mkdir kixdns-panel && cd kixdns-panel
-   curl -fsSLO https://raw.githubusercontent.com/tuoro/kixdns-panel/main/deploy/docker/compose.yaml
-   docker compose up -d
-   ```
+```bash
+docker run -d --name kixdns-panel \
+  --restart unless-stopped \
+  --network host \
+  -e TZ=Asia/Shanghai \
+  -v /opt/kixdns-panel/data:/data \
+  ghcr.io/tuoro/kixdns-panel:latest
+```
 
-   不用 compose 时：
+**用 Docker Compose**：和上面那条等价。新建 `/opt/kixdns-panel/compose.yaml`：
 
-   ```bash
-   docker run -d --name kixdns-panel --network host --restart unless-stopped \
-     -v "$PWD/data:/data" ghcr.io/tuoro/kixdns-panel:latest
-   ```
+```yaml
+services:
+  kixdns-panel:
+    image: ghcr.io/tuoro/kixdns-panel:latest
+    container_name: kixdns-panel
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/data
+```
 
-2. 打开 `http://<主机地址>:5738` 创建管理员。KixDNS 随容器启动，默认配置听 `0.0.0.0:53`、转给 `1.1.1.1`；和 systemd 版的全新安装一样，面板第一次启动时导入一次镜像自带的 GeoSite。在「系统」页停止以后，重启、重建容器都还停着，点「启动」才再起来。
+在这个目录里启动，`./data` 就是 `/opt/kixdns-panel/data`：
 
-**从现有安装搬过来**：第一次启动之前把原来的 `pipeline.json` 放到 `./data/config/pipeline.json`，面板首次启动时把它导入成第一个版本（文件会改给容器里的面板用户，内容不动）。面板的账号和版本历史不跟着搬；自带的 GeoSite 不自动导入（原来的配置可能有意不用它），要用就在「Geo 数据」里点「导入」。
+```bash
+cd /opt/kixdns-panel
+docker compose up -d
+```
+
+启动以后打开 `http://<主机地址>:5738` 创建管理员。KixDNS 随容器启动，默认配置听 `0.0.0.0:53`、转给 `1.1.1.1`；和 systemd 版的全新安装一样，面板第一次启动时导入一次镜像自带的 GeoSite。在「系统」页停止以后，重启、重建容器都还停着，点「启动」才再起来。
+
+**从现有安装搬过来**：第一次启动之前把原来的 `pipeline.json` 放到 `/opt/kixdns-panel/data/config/pipeline.json`，面板首次启动时把它导入成第一个版本（文件会改给容器里的面板用户，内容不动）。面板的账号和版本历史不跟着搬；自带的 GeoSite 不自动导入（原来的配置可能有意不用它），要用就在「Geo 数据」里点「导入」。
 
 **主机的 53 端口被 systemd-resolved 占着**（Ubuntu 默认，它听 `127.0.0.53:53`）：host 网络下内核听不上 `0.0.0.0:53`，「系统」页显示启动失败，运行日志里是 `Address in use`。关掉它的本机监听，再到「系统」页启动：
 
@@ -186,9 +204,9 @@ sudo systemctl restart systemd-resolved
 
 不想动 systemd-resolved 的，在「配置 → 基础设置」把监听地址改成主机的局域网地址（如 `192.168.1.20:53`），它和 `127.0.0.53` 不冲突；保存以后再到「系统」页启动。
 
-**网络**：推荐 host 网络，内核才看得到真实的客户端 IP，按客户端分流、查询日志和智能流控才按设备算。面板默认听所有网卡的 `5738`，**不要把它暴露到公网**；只给本机反向代理用时设 `KIXDNS_PANEL_BIND=127.0.0.1:5738`。桥接网络也能用：去掉 `network_mode: host`，按 compose 里的注释映射 `53/udp`、`53/tcp` 和 `5738`。这样可能看不到真实的客户端 IP，取决于 Docker 的网络设置（Docker Desktop、rootless、userland-proxy 时都是网关的地址）；映射主机的 53 一样会碰上 systemd-resolved，处理同上，或者只映射到局域网地址（`192.168.1.20:53:53/udp`）。
+**网络**：推荐 host 网络，内核才看得到真实的客户端 IP，按客户端分流、查询日志和智能流控才按设备算。面板默认听所有网卡的 `5738`，**不要把它暴露到公网**；只给本机反向代理用时设 `KIXDNS_PANEL_BIND=127.0.0.1:5738`。桥接网络也能用：把 `--network host` 换成 `-p 53:53/udp -p 53:53/tcp -p 5738:5738`（compose 里去掉 `network_mode: host`，在 `ports` 下写同样的三条）。这样可能看不到真实的客户端 IP，取决于 Docker 的网络设置（Docker Desktop、rootless、userland-proxy 时都是网关的地址）；映射主机的 53 一样会碰上 systemd-resolved，处理同上，或者只映射到局域网地址（`192.168.1.20:53:53/udp`）。
 
-**面板的运行参数**写在 compose 的 `environment` 里，名字和 systemd 版 `panel.env` 的一样：
+**面板的运行参数**用 `docker run` 的 `-e` 设（compose 写在 `environment` 下），名字和 systemd 版 `panel.env` 的一样：
 
 | 变量 | 默认 | 用途 |
 | --- | --- | --- |
@@ -196,13 +214,13 @@ sudo systemctl restart systemd-resolved
 | `KIXDNS_PANEL_SECURE_COOKIE` | `false` | 在 HTTPS 反向代理后面时设成 `true` |
 | `KIXDNS_TRUSTED_PROXIES` | 空 | 可以提供 `X-Forwarded-For` 的反向代理 CIDR |
 | `KIXDNS_GITHUB_TOKEN_FILE` | `/data/config/github-token` | GitHub Token 文件（容器里的路径）；在「系统」页填的也存在这里 |
-| `KIXDNS_QUERYLOG_DIR` | `/data/logs/querylog` | 查询日志目录；要放内存就挂一个 tmpfs 指过去（compose 里有注释） |
+| `KIXDNS_QUERYLOG_DIR` | `/data/logs/querylog` | 查询日志目录；要放内存就挂一个 tmpfs 指过去：`--tmpfs /querylog -e KIXDNS_QUERYLOG_DIR=/querylog` |
 | `RUST_LOG` | 面板 `info`，内核 `info,kixdns::engine::phases=warn` | 日志级别，设了面板和内核都用 |
 | `TZ` | UTC | 时区 |
 
 别的路径都由容器的布局定，设了也不算。
 
-**数据目录**：
+**数据目录**（容器里的路径，在主机上就是 `/opt/kixdns-panel/data` 下面）：
 
 | 路径 | 内容 |
 | --- | --- |
@@ -215,10 +233,10 @@ sudo systemctl restart systemd-resolved
 
 **更新**：
 
-- 面板：在「系统」页点「在线更新」。面板下载这一版的 OpenWrt 安装包（同一批 musl 程序），核对 SHA-256，把面板、网页和 GeoSite 装进 `/data/panel/<版本>/` 再换上；内核一直跑着，DNS 不断。新版起来以后 60 秒内连着退出 3 次，就退回上一份，「系统」页说为什么。也可以拉新镜像：`docker compose pull && docker compose up -d`；镜像里的和在线装的哪个新就跑哪个，一样新时接着跑在线装的那份
+- 面板：在「系统」页点「在线更新」。面板下载这一版的 OpenWrt 安装包（同一批 musl 程序），核对 SHA-256，把面板、网页和 GeoSite 装进 `/data/panel/<版本>/` 再换上；内核一直跑着，DNS 不断。新版起来以后 60 秒内连着退出 3 次，就退回上一份，「系统」页说为什么。也可以换新镜像：`docker pull ghcr.io/tuoro/kixdns-panel:latest`，再 `docker rm -f kixdns-panel`，用同一条 `docker run` 重建（compose 是 `docker compose pull && docker compose up -d`），数据都在；镜像里的和在线装的哪个新就跑哪个，一样新时接着跑在线装的那份
 - 内核：和 systemd 版一样在「系统」页更新、回退。拉了带更新内核的镜像时，面板启动后自动换成镜像带的那个（同样先查配置兼容、失败换回，记进操作审计）；在线装上的更新的内核不会被换成旧的
 
-**日志和排查**：`docker logs kixdns-panel` 是容器主进程和面板的输出，内核的起停、面板换版本、退回的原因都在这里；内核自己的日志在「日志」页，也在 `./data/logs/kixdns.log`。`docker ps` 里的健康状态：面板答得上、内核没有连着崩到不再拉起，就是 healthy；自己停了内核不算不健康。
+**日志和排查**：`docker logs kixdns-panel` 是容器主进程和面板的输出，内核的起停、面板换版本、退回的原因都在这里；内核自己的日志在「日志」页，也在 `/opt/kixdns-panel/data/logs/kixdns.log`。`docker ps` 里的健康状态：面板答得上、内核没有连着崩到不再拉起，就是 healthy；自己停了内核不算不健康。
 
 **忘记管理员密码**：
 
@@ -230,7 +248,7 @@ docker exec -u kixdns-panel kixdns-panel /opt/kixdns-panel/bin/kixdns-panel-serv
 
 **权限**：容器的主进程（服务助手的看管模式 `kixdns-panel-helper supervise`）以 root 运行，只管起停；内核以 `kixdns`（5533）运行，只带 `CAP_NET_BIND_SERVICE`，描述符上限 65536；面板以 `kixdns-panel`（5738）运行；两者共用组 5533，和 systemd 版一样。root 从不执行 `/data` 里的文件。
 
-**卸载**：`docker compose down`，数据还在 `./data`；连数据一起删就再删掉这个目录。
+**卸载**：`docker rm -f kixdns-panel`（compose 是 `docker compose down`），数据还在 `/opt/kixdns-panel/data`；连数据一起删就再删掉这个目录。
 
 ## 首次访问
 
