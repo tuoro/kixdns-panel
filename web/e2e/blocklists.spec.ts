@@ -202,11 +202,12 @@ test('白名单：粘贴链接加在白名单那张卡片上，同一个链接�
   const allowCard = page.locator('.bl__card', { has: page.getByRole('heading', { name: '白名单', exact: true }) })
   const blockCard = page.locator('.bl__card', { has: page.getByRole('heading', { name: '订阅的列表', exact: true }) })
   await expect(allowCard).toContainText('还没有白名单')
-  const link = 'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/whitelist-referral.txt'
+  // 不用推荐的白名单的链接：那样名字是推荐的名字，看不出粘贴的默认名 / Not a suggested allowlist's link, whose name would be the suggested one
+  const link = 'https://lists.example.org/allow/allowlist.txt'
   await page.getByLabel('白名单的链接').fill(link)
   await page.getByRole('button', { name: '添加白名单', exact: true }).click()
   await expect(allowCard.locator('.bl__row')).toHaveCount(1)
-  await expect(allowCard.locator('.bl__row')).toContainText('whitelist-referral.txt')
+  await expect(allowCard.locator('.bl__row')).toContainText('allowlist.txt')
   await expect(blockCard.locator('.bl__row')).toHaveCount(0)
   await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
   await expect(allowCard.locator('.bl__row')).toContainText('刚刚')
@@ -219,7 +220,7 @@ test('白名单：粘贴链接加在白名单那张卡片上，同一个链接�
   await expect(page.locator('.cfg__savebar')).toContainText('已修改 1 处')
   await page.locator('.cfg__savebar').getByRole('button', { name: /已修改/ }).click()
   const review = page.getByRole('dialog', { name: '改了哪些' })
-  await expect(review).toContainText('白名单「whitelist-referral.txt」')
+  await expect(review).toContainText('白名单「allowlist.txt」')
   await expect(review).not.toContainText('拦截列表「')
 })
 
