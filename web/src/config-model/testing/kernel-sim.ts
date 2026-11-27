@@ -14,7 +14,8 @@ import { effectiveOps, foldChain, forwardsOf, forwardTarget, mergedForward, norm
 export { effectiveOps, foldChain, mergedForward, normalizeAddress }
 export type { KAction, KConfigLike, KMatcher, KPipelineLike, KRuleLike, KSelectorLike } from '../kernel'
 
-export interface SimQuery { domain: string; client: string; qtype: string; qclass?: string; listener?: string; edns?: boolean }
+// mac：内核在邻居表里查到的客户端 MAC，查不到（不在同一个局域网）时没有 / mac: the client MAC the kernel finds in the neighbour table, none when not found (not on the LAN)
+export interface SimQuery { domain: string; client: string; qtype: string; qclass?: string; listener?: string; edns?: boolean; mac?: string }
 export interface UpstreamReply { rcode: string; answers: string[]; upstream: string }
 // 上游怎么回答由测试给：参数是问了哪组上游（归一化后）和带的子网 / The test decides upstream replies, given the normalized upstream set and the subnet sent
 export type Responder = (upstreams: string[], ecs: string, q: SimQuery) => UpstreamReply
@@ -34,6 +35,8 @@ export const SIM_GEOSITE: Record<string, string[]> = {
   'kixdns-panel-allow': ['ok.ads.example.net', 'force.example'],
   'kixdns-panel-block-important': ['force.example'],
   'kixdns-panel-allow-important': ['vip.force.example'],
+  'kixdns-panel-block-g1': ['skipped.example', 'shared.example'],
+  'kixdns-panel-block-important-g1': [],
 }
 const exactOf = (domain: string, name: string) => domain === name.toLowerCase().replace(/\.$/, '')
 const suffixOf = (domain: string, suffix: string) => { const s = suffix.toLowerCase().replace(/^\./, '').replace(/\.$/, ''); return domain === s || domain.endsWith(`.${s}`) }
@@ -62,6 +65,9 @@ const refuse = (why: string): never => { throw new Error(`内核不收这份配�
 // A rule's or entry's client_ip takes one network (client_net); the answer phase's are comma-separated lists, each item a network (cidr_list)
 const oneNet = (m: KMatcher): string => { const c = String(m.cidr ?? ''); return isNet(c) ? c : refuse(`client_ip「${c}」不是一个网段`) }
 const netList = (m: KMatcher): string[] => String(m.cidr ?? '').split(',').map((c) => c.trim()).filter(Boolean).map((c) => (isNet(c) ? c : refuse(`${m.type}「${c}」不是网段`)))
+// MAC 写成冒号或横线隔开的六段十六进制，不分大小写；别的写法内核不收 / A MAC is six hex pairs split by colons or dashes, any case; the kernel takes no
+// other form
+const macOf = (v: string): string => (/^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$/i.test(v) ? v.toLowerCase().replace(/-/g, ':') : refuse(`client_mac「${v}」不是 MAC 地址`))
 const regexOf = (v: string) => { const ci = v.startsWith('(?i)'); try { return new RegExp(ci ? v.slice(4) : v, ci ? 'i' : '') } catch { return null } }
 
 // 内核认的类型名，照 config.rs 的 serde 名字抄（PipelineSelectorMatcher、Matcher、ResponseMatcher、Action）。名字不在里面的配置内核读都读不进来，
@@ -69,7 +75,7 @@ const regexOf = (v: string) => { const ci = v.startsWith('(?i)'); try { return n
 // The type names the kernel knows, copied from config.rs's serde names (PipelineSelectorMatcher, Matcher, ResponseMatcher, Action). A config
 // with any other name does not even parse in the kernel, so it throws here at load rather than matching nothing: when the panel and this
 // executor share a misspelt name the two agree while the kernel refuses the config outright (the answer check's GeoSite slipped through so)
-const REQUEST_MATCHERS = ['any', 'domain_suffix', 'domain_exact', 'domain_regex', 'client_ip', 'geoip_country', 'geoip_private', 'qclass', 'edns_present', 'geo_site', 'geo_site_not', 'qtype']
+const REQUEST_MATCHERS = ['any', 'domain_suffix', 'domain_exact', 'domain_regex', 'client_ip', 'client_mac', 'geoip_country', 'geoip_private', 'qclass', 'edns_present', 'geo_site', 'geo_site_not', 'qtype']
 export const KERNEL_TYPES = {
   entry: new Set([...REQUEST_MATCHERS, 'listener_label']),
   request: new Set(REQUEST_MATCHERS),
@@ -116,6 +122,7 @@ function requestMatch(m: KMatcher, q: SimQuery): boolean {
     case 'domain_exact': return exactOf(domain, value)
     case 'domain_regex': return regexOf(value)?.test(domain) ?? false
     case 'client_ip': return ipInCidr(q.client, oneNet(m))
+    case 'client_mac': return q.mac !== undefined && macOf(String(m.mac ?? '')) === macOf(q.mac)
     case 'geoip_country': return codes(m).includes(countryOf(q.client))
     case 'geoip_private': return isPrivateIp(q.client) === Boolean(m.expect)
     case 'qclass': return value.toUpperCase() === (q.qclass ?? 'IN')

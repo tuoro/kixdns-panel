@@ -133,6 +133,7 @@ export const SAYINGS: Readonly<Record<string, Saying>> = {
   // 编译不了的条件 / Conditions that do not compile
   listener_label_outside_select: saying({}, () => `${matcher('listener_label')}只能用在入口上，规则里用不了`),
   network_invalid: saying({ value: 'text', error: 'text' }, (a) => `「${a.value}」不是网段，网段写成 192.168.1.0/24 这样${because(a.error)}`),
+  mac_invalid: saying({ value: 'text' }, (a) => `「${a.value}」不是 MAC 地址，MAC 写成 aa:bb:cc:dd:ee:ff 这样`),
   regex_too_long: saying({ bytes: 'number', most: 'number' }, (a) => `正则最长 ${a.most} 字节，这个有 ${a.bytes} 字节`),
   regex_invalid: saying({ error: 'text' }, (a) => `正则写得不对，或者编译出来太大${because(a.error)}`),
   txt_regex_invalid: saying({ error: 'text' }, (a) => `${matcher('response_txt_content')}的正则写得不对，或者编译出来太大${because(a.error)}`),

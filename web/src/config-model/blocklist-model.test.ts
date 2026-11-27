@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { BLOCKLIST_PIPELINE, TAG_BLOCK_IMPORTANT } from './blocklist'
+import { BLOCKLIST_PIPELINE, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { exportConfig, readConfig } from './document'
 import { importKernel } from './importer'
-import { blocklistKey, compile, emptyBlocklists, type Model, type Subscription } from './model'
+import { blocklistGroups, blocklistKey, compile, emptyBlocklists, type BlockDevice, type Model, type Subscription } from './model'
 import { behaviourCheck, checkResponder, simulate, type KConfigLike } from './testing/kernel-sim'
 import { sampleModel } from './testing/samples'
 
@@ -74,6 +74,73 @@ describe('拦截列表写进配置 / blocklists in the config', () => {
     expect(blocklistKey({ subscriptions: [list(a, true, true)] })).not.toBe(blocklistKey({ subscriptions: [list(a, true)] }))
     expect(blocklistKey({ subscriptions: [list(a, true), list(b, true, true)] })).toBe(blocklistKey({ subscriptions: [list(b, true, true), list(a, true)] }))
     expect(blocklistKey({ subscriptions: [list(a, true), list(b, false, true)] })).toBe(a)
+  })
+})
+
+// 不拦截的设备：withLists 里两个列表都开着，设备只跳过 AdGuard DNS filter（分组 g1，模拟数据里有 skipped.example）；lists.example 不分组
+// Devices left unblocked: both lists in withLists switched on, the device skipping AdGuard DNS filter only (group g1, holding skipped.example in the
+// simulated data); lists.example is not grouped
+const ADGUARD = 'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt'
+function withDevice(device: Partial<BlockDevice> = {}): Model {
+  const model = withLists()
+  model.blocklists.subscriptions.forEach((s) => { s.enabled = true })
+  model.blocklists.devices = [{ id: 960, name: '老人的手机', ips: ['192.168.1.30'], macs: ['aa:bb:cc:dd:ee:ff'], skip: [ADGUARD], ...device }]
+  model.blocklists.builtFor = blocklistKey(model.blocklists)
+  return model
+}
+
+describe('不拦截的设备 / devices left unblocked', () => {
+  it('跳过同一组列表的设备分在一组，没人跳过的不分组 / devices skipping the same lists share a group; lists nobody skips have none', () => {
+    const list = (id: number, url: string): Subscription => ({ id, name: url, url, enabled: true })
+    const device = (id: number, skip: string[]): BlockDevice => ({ id, name: `d${id}`, ips: [`10.0.0.${id}`], macs: [], skip })
+    const [a, b, c] = ['https://a.example/x.txt', 'https://b.example/x.txt', 'https://c.example/x.txt']
+    const subscriptions = [list(1, a), list(2, b), list(3, c), { ...list(4, 'https://d.example/allow.txt'), allow: true as const }]
+    const groups = blocklistGroups({ subscriptions, devices: [device(7, [a, b]), device(8, [a, b]), device(9, [b])] })
+    expect(Object.fromEntries(groups)).toEqual({ [a]: 'g1', [b]: 'g2', [c]: '' })
+    // 认不出来的设备（没有 IP 也没有 MAC）不算 / A device that cannot be told (no IP, no MAC) does not count
+    expect(blocklistGroups({ subscriptions, devices: [{ ...device(7, [a]), ips: [] }] }).get(a)).toBe('')
+    expect(blocklistKey({ subscriptions, devices: [device(7, [a])] })).toContain(`${a}\tg1`)
+    expect(blocklistKey({ subscriptions })).toBe(blocklistKey({ subscriptions, devices: [] }))
+  })
+
+  it('设备按 IP 或 MAC 跳过它勾的列表，别的列表和自己写的规则照常拦 / a device known by IP or MAC skips the lists it ticks; other lists and own rules still block', () => {
+    const cfg = compile(withDevice()) as KConfigLike
+    const blocked = (domain: string, client: string, mac?: string) => simulate(cfg, { domain, client, qtype: 'A', ...(mac ? { mac } : {}) }, checkResponder).steps.some((s) => s.pipeline === BLOCKLIST_PIPELINE)
+    expect(blocked('skipped.example', '192.168.1.20'), 'other devices still blocked').toBe(true)
+    expect(blocked('skipped.example', '192.168.1.30'), 'by IP').toBe(false)
+    expect(blocked('skipped.example', '192.168.1.99', 'AA-BB-CC-DD-EE-FF'), 'by MAC, whatever its IP').toBe(false)
+    expect(blocked('skipped.example', '192.168.1.99', '11:22:33:44:55:66')).toBe(true)
+    expect(blocked('ads.example.net', '192.168.1.30'), 'a list it does not skip').toBe(true)
+    expect(blocked('nas-ads.lan', '192.168.1.30'), 'own rules hold for every device').toBe(true)
+    expect(blocked('shared.example', '192.168.1.20'), 'own allows still beat the grouped lists').toBe(false)
+  })
+
+  it('分组的入口跟在后面，减掉设备的 IP 和 MAC / grouped entries follow, taking off the device\'s IPs and MACs', () => {
+    const cfg = compile(withDevice()) as KConfigLike
+    const blocking = (cfg.pipeline_select ?? []).filter((e) => e.pipeline === BLOCKLIST_PIPELINE)
+    expect(blocking.map((e) => String((e.matchers ?? [])[0]?.value ?? (e.matchers ?? [])[0]?.type))).toEqual([
+      'ok.ads.example.net', TAG_BLOCK_IMPORTANT, TAG_BLOCK, `${TAG_BLOCK_IMPORTANT}-g1`, `${TAG_BLOCK}-g1`,
+    ])
+    expect(blocking.at(-1)!.matchers).toContainEqual({ type: 'client_ip', cidr: '192.168.1.30/32', operator: 'and_not' })
+    expect(blocking.at(-1)!.matchers).toContainEqual({ type: 'client_mac', mac: 'aa:bb:cc:dd:ee:ff', operator: 'and_not' })
+    // 没有设备时和以前一模一样 / Without devices it is exactly as before
+    const plain = withLists()
+    plain.blocklists.subscriptions.forEach((s) => { s.enabled = true })
+    expect(compile({ ...plain, blocklists: { ...plain.blocklists, devices: [] } })).toEqual(compile(plain))
+  })
+
+  it('原样读回；手改过别处时设备接回来，分组对不上时认不出 / read back as written; after a hand edit elsewhere the devices come back, and mismatched groups are not recognised', () => {
+    const model = withDevice()
+    const back = readConfig(JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown>)
+    expect(back.model.blocklists).toEqual(model.blocklists)
+    const cfg = compile(model) as KConfigLike
+    expect(importKernel(cfg, model).model.blocklists.devices).toEqual(model.blocklists.devices)
+    // 上一份的设备换了 IP：入口里的排除条件对不上，拦截列表的入口原样留成高级入口 / The previous model's device changed IP: the entries' exclusions
+    // disagree, so the blocklist entries stay as advanced entries
+    const moved = withDevice({ ips: ['192.168.1.31'] })
+    const again = importKernel(cfg, moved).model
+    expect(again.blocklists.devices).toBeUndefined()
+    expect(again.entries?.length).toBeGreaterThan(0)
   })
 })
 

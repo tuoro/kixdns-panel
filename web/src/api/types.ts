@@ -451,7 +451,7 @@ export interface BlocklistSource {
   rejected_sha256: string | null
 }
 export interface BlocklistState { sources: Record<string, BlocklistSource>; schedule: GeoDataSchedule }
-export interface BlocklistBuildRequest { subscriptions: { url: string; enabled: boolean; allow?: boolean }[]; refresh: string[] }
+export interface BlocklistBuildRequest { subscriptions: { url: string; enabled: boolean; allow?: boolean; group?: string }[]; refresh: string[] }
 export interface BlocklistBuildResult {
   /** 合并出的文件；启用的列表一个都还没有、或者合起来没有要拦截的时为 null / The merged file; null while no enabled list has a copy, or when they block nothing together */
   path: string | null

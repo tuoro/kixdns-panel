@@ -66,6 +66,7 @@ const CASES: Record<string, [Record<string, KernelArg>, string]> = {
 
   listener_label_outside_select: [{}, '「监听标签」只能用在入口上，规则里用不了'],
   network_invalid: [{ value: '10.0.0.0/33', error: 'invalid IP address syntax' }, '「10.0.0.0/33」不是网段，网段写成 192.168.1.0/24 这样（原因：invalid IP address syntax）'],
+  mac_invalid: [{ value: 'aa:bb:cc:dd:ee' }, '「aa:bb:cc:dd:ee」不是 MAC 地址，MAC 写成 aa:bb:cc:dd:ee:ff 这样'],
   regex_too_long: [{ bytes: 20000, most: 16384 }, '正则最长 16384 字节，这个有 20000 字节'],
   regex_invalid: [{ error: 'look-around is not supported' }, '正则写得不对，或者编译出来太大（原因：look-around is not supported）'],
   txt_regex_invalid: [{ error: 'unclosed group' }, '「TXT 内容」的正则写得不对，或者编译出来太大（原因：unclosed group）'],

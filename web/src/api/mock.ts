@@ -47,7 +47,7 @@ import { demoBlocklists, demoBuildBlocklists, setDemoBlocklistSchedule } from '.
 const now = Math.floor(Date.now() / 1000)
 // 演示里在跑的内核报的配置能力：最新的 fork 内核都有的那几项 / The config capabilities the demo's running kernel reports: all those
 // the latest fork kernel has
-const demoConfigCapabilities = ['config_bootstrap_v1', 'config_panel_block_v1', 'config_qtype_names_v1', 'config_query_stats_v1', 'config_serve_stale_ttl_reset_v2', 'config_static_cname_response_v1']
+const demoConfigCapabilities = ['config_bootstrap_v1', 'config_client_mac_v1', 'config_panel_block_v1', 'config_qtype_names_v1', 'config_query_stats_v1', 'config_serve_stale_ttl_reset_v2', 'config_static_cname_response_v1']
 // 演示里已经「到来」的新日志行数，只在 kixdns:demo-log-growing 下增长。
 // New log lines that have "arrived" in the demo; grows only under kixdns:demo-log-growing.
 let demoLogArrivals = 0

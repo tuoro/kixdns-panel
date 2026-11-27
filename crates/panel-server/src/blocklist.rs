@@ -8,7 +8,7 @@
 //! important allow. The page parses one's own rules by the same rules in `web/src/config-model/blocklist.ts`, and
 //! both sides are tested on the cases in `testdata/blocklist-syntax.json`.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
@@ -609,6 +609,34 @@ pub struct SourceRef {
     /// the same blocklists still merge into the same bytes, with no file swapped for nothing after an upgrade
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow: bool,
+    /// 拦截列表的分组（见 [`group_tags`]）：有设备跳过的列表按跳过它的设备分组，各组的拦截另放。没有设备跳过的不写这一项，
+    /// 文件和以前一样
+    /// The blocklist's group (see [`group_tags`]): lists some devices skip are grouped by the devices skipping them, each
+    /// group's blocks kept apart. A list no device skips leaves it out, and the file reads as before
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+}
+
+/// 分组的写法：`g` 加 1 到 99 / How a group is written: `g` and 1 to 99
+#[must_use]
+pub fn valid_group(group: &str) -> bool {
+    group
+        .strip_prefix('g')
+        .is_some_and(|n| matches!(n.parse::<u8>(), Ok(1..=99)) && !n.starts_with('0'))
+}
+
+/// 一个分组的两个拦截分类：普通的和带 `$important` 的。没有分组（`""`）的就是原来的两个
+/// A group's two block categories: plain and `$important`. No group (`""`) gives the original two
+#[must_use]
+pub fn group_tags(group: &str) -> (String, String) {
+    if group.is_empty() {
+        (TAG_BLOCK.to_owned(), TAG_BLOCK_IMPORTANT.to_owned())
+    } else {
+        (
+            format!("{TAG_BLOCK}-{group}"),
+            format!("{TAG_BLOCK_IMPORTANT}-{group}"),
+        )
+    }
 }
 
 /// 读出合并文件里记的来源；不是合并文件、或者读不懂时为 None / Reads the sources a merged file records; None when the
@@ -637,13 +665,30 @@ pub struct Merged {
     allow: BTreeSet<String>,
     block_important: BTreeSet<String>,
     allow_important: BTreeSet<String>,
+    /// 有设备跳过的拦截列表，按分组另放的拦截：`(普通的, 带 $important 的)`。放行不分组，对所有设备都管用
+    /// The blocks of lists some devices skip, kept apart by group as `(plain, $important)`. Allows are not grouped and
+    /// hold for every device
+    groups: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>,
 }
 
 impl Merged {
-    /// 加进一个列表的内容；写法和 `badfilters` 里某条一模一样的规则不算 / Adds one list's content; rules written exactly
-    /// like one in `badfilters` do not count
+    /// 加进一个不分组的列表；写法和 `badfilters` 里某条一模一样的规则不算（测试用，合并时走 [`Self::add_to_group`]）
+    /// Adds an ungrouped list; rules written exactly like one in `badfilters` do not count (for tests: merging goes
+    /// through [`Self::add_to_group`])
+    #[cfg(test)]
     pub fn add(&mut self, text: &str, badfilters: &HashSet<String>) -> ListSummary {
-        scan(text, badfilters, |rule| self.insert(rule))
+        self.add_to_group("", text, badfilters)
+    }
+
+    /// 加进一个拦截列表，拦截放进分组 `group`（`""` 是不分组）；放行照旧不分组
+    /// Adds a blocklist whose blocks go into group `group` (`""` for none); its allows stay ungrouped as before
+    pub fn add_to_group(
+        &mut self,
+        group: &str,
+        text: &str,
+        badfilters: &HashSet<String>,
+    ) -> ListSummary {
+        scan(text, badfilters, |rule| self.insert(group, rule))
     }
 
     /// 加进一个白名单：里面的每一条都当放行，写成拦截的（`||域名^`、hosts 的一行、只写域名）也一样，和 `AdGuard Home` 的
@@ -653,25 +698,32 @@ impl Merged {
     /// cannot hold the name; one's own blocks are not in the merged file and still block
     pub fn add_allowlist(&mut self, text: &str, badfilters: &HashSet<String>) -> ListSummary {
         scan(text, badfilters, |rule| {
-            self.insert(Rule {
-                allow: true,
-                important: true,
-                ..rule
-            });
+            self.insert(
+                "",
+                Rule {
+                    allow: true,
+                    important: true,
+                    ..rule
+                },
+            );
         })
     }
 
-    fn insert(&mut self, rule: Rule) {
+    fn insert(&mut self, group: &str, rule: Rule) {
         let entry = match rule.matcher {
             Match::Suffix(name) => format!("domain:{name}"),
             Match::Exact(name) => format!("full:{name}"),
             Match::Regex(regex) => format!("regexp:{regex}"),
         };
-        let set = match (rule.allow, rule.important) {
-            (false, false) => &mut self.block,
-            (true, false) => &mut self.allow,
-            (false, true) => &mut self.block_important,
-            (true, true) => &mut self.allow_important,
+        let set = match (rule.allow, rule.important, group.is_empty()) {
+            (false, false, true) => &mut self.block,
+            (false, true, true) => &mut self.block_important,
+            (false, important, false) => {
+                let (plain, marked) = self.groups.entry(group.to_owned()).or_default();
+                if important { marked } else { plain }
+            }
+            (true, false, _) => &mut self.allow,
+            (true, true, _) => &mut self.allow_important,
         };
         set.insert(entry);
     }
@@ -679,16 +731,22 @@ impl Merged {
     /// 合并后一条拦截也没有 / Nothing to block after merging
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.block.is_empty() && self.block_important.is_empty()
+        self.block.is_empty()
+            && self.block_important.is_empty()
+            && self
+                .groups
+                .values()
+                .all(|(plain, marked)| plain.is_empty() && marked.is_empty())
     }
 
     /// 内核读的 `GeoSite` JSON：同样的内容总是同样的字节，按内容命名的文件因此不会白换。四个分类总是都写上，空的写成
     /// 空列表：配置里拦截列表的入口总是用到这四个（见前端的 blocklistEntries），文件里没有的分类内核会报「哪个文件里都没有」，
-    /// 空的分类照样一个域名也不命中
+    /// 空的分类照样一个域名也不命中。有分组时每组的两个拦截分类排在后面，也总是都写上
     /// The `GeoSite` JSON the kernel reads: the same content always gives the same bytes, so a file named by its
     /// content is never replaced for nothing. All four categories are always written, an empty one as an empty list:
     /// the blocklists' entries in the config always use these four (see blocklistEntries in the web console), the
-    /// kernel reports a category no file has as missing, and an empty one matches no domain all the same
+    /// kernel reports a category no file has as missing, and an empty one matches no domain all the same. With groups,
+    /// each group's two block categories follow, always both written too
     ///
     /// # Panics
     ///
@@ -697,7 +755,7 @@ impl Merged {
     pub fn geosite_json(&self, sources: &[SourceRef]) -> String {
         #[derive(Serialize)]
         struct Entry<'a> {
-            tag: &'a str,
+            tag: String,
             domains: &'a BTreeSet<String>,
         }
         #[derive(Serialize)]
@@ -710,15 +768,31 @@ impl Merged {
             entries: Vec<Entry<'a>>,
             kixdns_panel: Panel<'a>,
         }
-        let entries = [
+        let base = [
             (TAG_BLOCK, &self.block),
             (TAG_ALLOW, &self.allow),
             (TAG_BLOCK_IMPORTANT, &self.block_important),
             (TAG_ALLOW_IMPORTANT, &self.allow_important),
         ]
         .into_iter()
-        .map(|(tag, domains)| Entry { tag, domains })
-        .collect();
+        .map(|(tag, domains)| Entry {
+            tag: tag.to_owned(),
+            domains,
+        });
+        let grouped = self.groups.iter().flat_map(|(group, (plain, marked))| {
+            let (tag, important) = group_tags(group);
+            [
+                Entry {
+                    tag,
+                    domains: plain,
+                },
+                Entry {
+                    tag: important,
+                    domains: marked,
+                },
+            ]
+        });
+        let entries = base.chain(grouped).collect();
         serde_json::to_string(&File {
             entries,
             kixdns_panel: Panel { sources },
@@ -946,6 +1020,7 @@ mod tests {
             url: "https://lists.example/a.txt".to_owned(),
             sha256: "ab".repeat(32),
             allow: false,
+            group: String::new(),
         }];
         let json = merged.geosite_json(&sources);
         assert_eq!(read_sources(json.as_bytes()), Some(sources.to_vec()));

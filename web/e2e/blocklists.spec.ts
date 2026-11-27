@@ -197,6 +197,37 @@ test('自己粘贴的列表先叫「文件名 · 主机」，下载下来带着�
 // 白名单是下面一样的一张卡片：粘贴链接就订阅、下载；一个链接只能是拦截列表或白名单中的一个；改了哪些里写的是「白名单」
 // The allowlists are a card just like it below: pasting a link subscribes and downloads; one link is either a blocklist or an allowlist; the
 // review says 白名单
+// 不拦截的设备：按 IP 和 MAC 认，只跳过勾上的列表；写错的地址当场说，改动里写明跳过哪些
+// Devices left unblocked: known by IP and MAC, skipping only the lists ticked; a bad address is said at once, and the review names the lists skipped
+test('不拦截的设备：勾上要跳过的列表，写错的 MAC 当场指出 @responsive', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter', 'anti-AD'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const card = page.locator('.bl__card', { has: page.getByRole('heading', { name: '不拦截的设备', exact: true }) })
+  await expect(card).toContainText('还没有不拦截的设备')
+  await card.getByRole('button', { name: '添加设备', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '添加设备' })
+  await dialog.getByPlaceholder('比如：老人的手机').fill('老人的手机')
+  await dialog.getByPlaceholder('192.168.1.30').fill('192.168.1.30')
+  await dialog.getByPlaceholder('aa:bb:cc:dd:ee:ff').fill('AA-BB-CC-DD-EE')
+  await dialog.locator('.blp__item', { hasText: 'anti-AD' }).click()
+  await dialog.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('「AA-BB-CC-DD-EE」不是 MAC 地址')
+  await dialog.getByPlaceholder('aa:bb:cc:dd:ee:ff').fill('AA-BB-CC-DD-EE-FF')
+  await dialog.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  const row = card.locator('.bl__device')
+  await expect(row).toHaveCount(1)
+  await expect(row).toContainText('192.168.1.30 · aa:bb:cc:dd:ee:ff')
+  await expect(row).toContainText('跳过 anti-AD')
+  await expect(row.locator('.bl__changed')).toBeVisible()
+  await expect(page.locator('.cfg__savebar')).toContainText('已修改 3 处')
+  await page.locator('.cfg__savebar').getByRole('button', { name: /已修改/ }).click()
+  const review = page.getByRole('dialog', { name: '改了哪些' })
+  await expect(review).toContainText('不拦截的设备「老人的手机」')
+  await expect(review).toContainText('跳过：anti-AD')
+})
+
 test('白名单：粘贴链接加在白名单那张卡片上，同一个链接不能两边都订阅 @responsive', async ({ page }) => {
   await open(page)
   const allowCard = page.locator('.bl__card', { has: page.getByRole('heading', { name: '白名单', exact: true }) })

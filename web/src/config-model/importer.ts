@@ -1,7 +1,7 @@
-import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, mergedFileIn, ownMatcher, ownRuleText, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
+import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, groupTags, mergedFileIn, ownMatcher, ownRuleText, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { effectiveOps, forwardTarget, kernelKey, normalizeAddress, sameKernel, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
 import {
-  blocklistEntries, blocklistKey, compileNamed, emptyBlocklists, FIELD, groupPipeline, isIp, kernelUpstream, mainPipelineId, mappingKernelDomain, mappingLive, mappingRule, POLLUTED_CIDRS,
+  blocklistEntries, blocklistGroups, blocklistKey, compileNamed, deviceExclusions, groupDevices, emptyBlocklists, FIELD, groupPipeline, isIp, kernelUpstream, mainPipelineId, mappingKernelDomain, mappingLive, mappingRule, POLLUTED_CIDRS,
   RESPONSE_FIELD, ruleGroupPipelineId, ruleKernel, settingsFromKernel, splitList,
   type Blocklists, type BlockResponse, type Condition, type Defaults, type Ecs, type FieldDef, type Mapping, type Model, type Outcome, type Protocol, type Remedy,
   type ResponseCondition, type ResponseHandling, type Rule, type RuleGroup, type UpstreamAddress, type UpstreamGroup, nextId as nextFreeId } from './model'
@@ -989,15 +989,27 @@ function readBlocklistEntries(entries: KSelectorLike[], settings: Record<string,
   const bare = ({ operator: _op, ...m }: KMatcher) => m as KMatcher
   const isOwn = (m: KMatcher) => (m.type === 'domain_suffix' || m.type === 'domain_regex') && typeof m.value === 'string' && Boolean(m.value)
   const isTag = (m: KMatcher | undefined, value: string) => m?.type === 'geo_site' && m.value === value
+  // 分组的拦截分类（kixdns-panel-block-g1 这样，见 blocklist.ts 的 groupTags）；不是时为 null / A group's block category (kixdns-panel-block-g1 and
+  // the like, see groupTags in blocklist.ts); null when it is not one
+  const groupOf = (m: KMatcher | undefined, important: boolean): string | null => {
+    if (m?.type !== 'geo_site' || typeof m.value !== 'string') return null
+    const group = /^g([1-9]\d?)$/.exec(m.value.slice(`${important ? TAG_BLOCK_IMPORTANT : TAG_BLOCK}-`.length))?.[0]
+    return group && m.value === groupTags(group)[important ? 1 : 0] ? group : null
+  }
   let ownBlocks: KMatcher[] = []
   let ownAllows: KMatcher[] | null = null
   const kinds: string[] = []
+  // 分组的入口减掉的设备：分组对它的排除条件 / The devices grouped entries take off: group to its exclusions
+  const grouped = new Map<string, string>()
   for (const e of entries) {
     const ms = e.matchers ?? []
     const ops = effectiveOps(ms, e.matcher_operator)
     let head: number
+    let group = ''
     if (isTag(ms[0], TAG_BLOCK_IMPORTANT) && isTag(ms[1], TAG_ALLOW_IMPORTANT) && ops[1] === 'and_not') { kinds.push('important'); head = 2 }
     else if (isTag(ms[0], TAG_BLOCK) && isTag(ms[1], TAG_ALLOW) && isTag(ms[2], TAG_ALLOW_IMPORTANT) && ops[1] === 'and_not' && ops[2] === 'and_not') { kinds.push('list'); head = 3 }
+    else if ((group = groupOf(ms[0], true) ?? '') && isTag(ms[1], TAG_ALLOW_IMPORTANT) && ops[1] === 'and_not') { kinds.push(`important:${group}`); head = 2 }
+    else if ((group = groupOf(ms[0], false) ?? '') && isTag(ms[1], TAG_ALLOW) && isTag(ms[2], TAG_ALLOW_IMPORTANT) && ops[1] === 'and_not' && ops[2] === 'and_not') { kinds.push(`list:${group}`); head = 3 }
     else {
       head = ms.findIndex((_, i) => i > 0 && ops[i] !== 'or')
       if (head < 0) head = ms.length
@@ -1005,14 +1017,27 @@ function readBlocklistEntries(entries: KSelectorLike[], settings: Record<string,
       kinds.push('own')
       ownBlocks = ms.slice(0, head).map(bare)
     }
+    // 分组的入口在列表的分类后面先减掉设备，再减自己写的放行 / A grouped entry takes off the devices right after the list categories, then one's own allows
+    if (group) {
+      let end = head
+      while (end < ms.length && (ms[end]!.type === 'client_ip' || ms[end]!.type === 'client_mac') && ops[end] === 'and_not') end++
+      const off = JSON.stringify(ms.slice(head, end).map(bare))
+      if (end === head || (grouped.has(group) && grouped.get(group) !== off)) return null
+      grouped.set(group, off)
+      head = end
+    }
     const allows = ms.slice(head)
     if (!allows.every((m, i) => isOwn(m) && ops[head + i] === 'and_not')) return null
     const plain = allows.map(bare)
     if (ownAllows && JSON.stringify(ownAllows) !== JSON.stringify(plain)) return null
     ownAllows = plain
   }
+  // 每个分组都是一对：重要拦截在前，普通拦截在后，跟在不分组的那一对后面 / Each group comes as a pair, the important block first, after the ungrouped pair
+  const groups = [...grouped.keys()]
   const order = kinds.join(',')
-  if (!['own', 'important,list', 'own,important,list'].includes(order)) return null
+  const base = order.replace(groups.map((g) => `,important:${g},list:${g}`).join(''), '')
+  if (!['own', 'important,list', 'own,important,list'].includes(base) || (groups.length && !base.endsWith('list'))) return null
+  if (kinds.filter((k) => k.includes(':')).length !== groups.length * 2) return null
   // 面板合成的文件总是排在最后（见 compile）；前面还有一个的话是认不出、照原样留下的旧文件 / The panel's file always comes last (see compile); one
   // before it is an old file that could not be recognised and was kept as it was
   const file = order.endsWith('list') ? mergedFileIn(settings) : null
@@ -1024,6 +1049,17 @@ function readBlocklistEntries(entries: KSelectorLike[], settings: Record<string,
     ? prev.blocklists.custom
     : [...ownBlocks.map((m) => ownRuleText(m, false)), ...(ownAllows ?? []).map((m) => ownRuleText(m, true))].join('\n')
   const subscriptions = clone(prev?.blocklists.subscriptions ?? [])
+  // 不拦截的设备只在上一份里有：上一份编出来的分组和排除条件和入口里的一样才接回；入口里有分组、却和上一份对不上时认不出
+  // The devices left unblocked live only in the previous model: they come back when its groups and exclusions match the entries'; grouped
+  // entries that do not match it are not recognised
+  const expected = (b: Blocklists) => {
+    const labels = [...new Set(blocklistGroups(b).values())].filter(Boolean)
+    return JSON.stringify(labels.sort().map((g) => [g, JSON.stringify(groupDevices(b, g).flatMap(deviceExclusions).map(bare))]))
+  }
+  const found = JSON.stringify([...grouped].sort(([a], [b]) => a.localeCompare(b)))
+  const devices = prev?.blocklists.devices?.length && expected(prev.blocklists) === found ? clone(prev.blocklists.devices) : undefined
+  if (groups.length && !devices) return null
   // 配置里的文件就是按这些订阅合成的（定时更新换的文件也一样） / The config's file was built for these subscriptions (so is one the scheduled update swapped in)
-  return { blocklists: { subscriptions, file: file ?? null, custom, builtFor: blocklistKey({ subscriptions }) }, file: file ?? null }
+  const blocklists: Blocklists = { subscriptions, file: file ?? null, custom, builtFor: blocklistKey({ subscriptions, devices }), ...(devices ? { devices } : {}) }
+  return { blocklists, file: file ?? null }
 }

@@ -6,7 +6,7 @@ import { movedIds, ruleShape } from '../config-model/diff'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { isDefaultName, normalUrl, uniqueSubscriptionName } from '../config-model/blocklist'
-import { emptyBlocklists, foreignRulePipelines, kernelRuleIndex, kernelUpstream, nextId, ruleTitle, type Model, type Outcome, type Protocol, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
+import { emptyBlocklists, foreignRulePipelines, kernelRuleIndex, kernelUpstream, nextId, ruleTitle, type BlockDevice, type Model, type Outcome, type Protocol, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
 import { findRuleByText as findTitledRule } from '../config-model/trace-names'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
@@ -92,8 +92,19 @@ function countChanges(before: Model, model: Model): number {
 function blocklistChanges(before: Model['blocklists'], after: Model['blocklists']): number {
   const now = new Set(after.subscriptions.map(subscriptionKey))
   const subscriptions = changedSubscriptions(before.subscriptions, after.subscriptions).length + before.subscriptions.filter((s) => !now.has(subscriptionKey(s))).length
-  return subscriptions + (before.custom !== after.custom ? 1 : 0) + (!subscriptions && before.file !== after.file ? 1 : 0)
+  return subscriptions + deviceChanges(before.devices ?? [], after.devices ?? []) + (before.custom !== after.custom ? 1 : 0) + (!subscriptions && before.file !== after.file ? 1 : 0)
 }
+// 不拦截的设备：按编号认，加、删、改各算一处 / Devices left unblocked: matched by id, each added, removed or edited one a place
+const deviceState = ({ id: _id, ...d }: BlockDevice) => JSON.stringify({ ...d, skip: d.skip.map(normalUrl).sort() })
+function deviceChanges(before: BlockDevice[], after: BlockDevice[]): number {
+  const was = new Map(before.map((d) => [d.id, deviceState(d)]))
+  return after.filter((d) => was.get(d.id) !== deviceState(d)).length + before.filter((d) => !after.some((x) => x.id === d.id)).length
+}
+/** 改过、还没保存的设备 / Devices edited and not yet saved */
+export const changedDeviceIds = computed(() => {
+  const was = new Map((appliedModel.value.blocklists.devices ?? []).map((d) => [d.id, deviceState(d)]))
+  return new Set((model.blocklists.devices ?? []).filter((d) => was.get(d.id) !== deviceState(d)).map((d) => d.id))
+})
 export const dirty = computed(() => changeCount.value > 0)
 // 还没进草稿的修改也算「没保存」：规则编辑里没点「完成」的、JSON 视图里还没读回的。离开、刷新、重新读取、导入、保存条都只看 unsaved 这一个值
 // Edits not yet in the draft count as unsaved too: a rule edit not yet 完成 and JSON text not yet read back. Leaving, reloading,
