@@ -974,19 +974,32 @@ onBeforeUnmount(() => {
             <span class="ui-tag" :class="flowTag.tone ? `ui-tag--${flowTag.tone}` : ''">{{ flowTag.label }}</span>
           </div>
           <div v-if="flow.on" class="overview-flow">
-            <div class="overview-rows">
+            <div class="overview-flow-block">
+              <h3 class="overview-flow-title">为什么拦下</h3>
+              <div class="overview-rows">
               <div v-for="row in flow.view.refused" :key="row.key" class="overview-row">
                 <span class="overview-row-name"><span>{{ row.label }}</span></span>
                 <span class="overview-row-value">{{ formatNumber(row.count) }} 次</span>
               </div>
-              <p v-if="!flow.view.refused.length" class="overview-empty">{{ flow.view.period }}一次都没拦过，各台设备都照常解析。</p>
+              <!-- 时段在宽屏上不写：卡片右上角的标签已经写着；手机上照旧写 / The period is left out on wide screens, where the tag at the top right gives it; phones keep it -->
+              <p v-if="!flow.view.refused.length" class="overview-empty"><span class="overview-flow-period">{{ flow.view.period }}</span>一次都没拦过，各台设备都照常解析。</p>
+              </div>
             </div>
-            <dl class="overview-flow-state">
-              <div><dt class="ui-lbl">内存</dt><dd><b v-if="flow.view.memory" :class="`overview-text--${flow.view.memory.tone === 'ok' ? 'healthy' : flow.view.memory.tone === 'warn' ? 'degraded' : 'unhealthy'}`">{{ flow.view.memory.label }}</b><template v-else>没吃紧</template></dd></div>
-              <div><dt class="ui-lbl">按设备轮流</dt><dd>{{ flow.view.turns ? `${formatNumber(flow.view.turns)} 次` : '没有' }}</dd></div>
-              <div><dt class="ui-lbl">卡住等上游</dt><dd>{{ flow.view.stuck ? `${formatNumber(flow.view.stuck)} 个` : '没有' }}</dd></div>
-            </dl>
-            <div v-if="flow.view.clients.length" class="overview-rows">
+            <div class="overview-flow-block">
+              <h3 class="overview-flow-title">运行情况</h3>
+              <dl class="overview-flow-state">
+                <div><dt class="ui-lbl">内存</dt><dd><b v-if="flow.view.memory" :class="`overview-text--${flow.view.memory.tone === 'ok' ? 'healthy' : flow.view.memory.tone === 'warn' ? 'degraded' : 'unhealthy'}`">{{ flow.view.memory.label }}</b><template v-else>没吃紧</template></dd></div>
+                <div><dt class="ui-lbl">按设备轮流</dt><dd>{{ flow.view.turns ? `${formatNumber(flow.view.turns)} 次` : '没有' }}</dd></div>
+                <div><dt class="ui-lbl">卡住等上游</dt><dd>{{ flow.view.stuck ? `${formatNumber(flow.view.stuck)} 个` : '没有' }}</dd></div>
+              </dl>
+            </div>
+            <!-- 没有设备被拦时，三块并排的宽屏上这一块也留着、写一句没有，不在右边空出一大片；不并排时（手机、两两并排、一栏到底）就不出，和以前一样
+                 With no device refused, this block stays on wide screens where the three stand side by side, with a line saying so, rather than leave the
+                 right third blank; where they do not (phones, pairs, one column) it is left out as before -->
+            <div class="overview-flow-block" :class="{ 'overview-flow-block--empty': !flow.view.clients.length }">
+              <h3 class="overview-flow-title">拦得最多的设备</h3>
+              <p v-if="!flow.view.clients.length" class="overview-empty">{{ flow.view.total ? '被拦的查询没有记到哪台设备上。' : '没有设备被拦过。' }}</p>
+              <div v-else class="overview-rows">
               <div v-for="client in flow.view.clients" :key="client.client" class="overview-row" :class="{ 'ov-jumps': logLinks }">
                 <RouterLink v-if="logLinks" class="ov-jump" :to="rankingLog('clients', client.client)" :aria-label="`在查询日志里看 ${client.client} 的查询`" />
                 <span class="overview-row-name ov-jump-name"><span class="ui-mono">{{ client.client }}</span></span>
@@ -994,6 +1007,7 @@ onBeforeUnmount(() => {
                      by period would go wrong as the table swaps devices), so it says 累计 when the period is not since the start -->
                 <span class="overview-row-value">{{ flow.view.period === '启动以来' ? '' : '累计 ' }}{{ formatNumber(client.refused) }} 次</span>
                 <p v-if="client.ago" class="overview-row-sub">最近一次 {{ client.ago }}</p>
+              </div>
               </div>
             </div>
           </div>
@@ -1158,13 +1172,32 @@ onBeforeUnmount(() => {
 .overview-grid.is-empty .overview-col { grid-template-rows: none; align-content: start; }
 @media (min-width: 1160px) { .overview-grid.is-empty > .overview-col--side { grid-template-rows: auto auto; align-content: stretch; } }
 .overview-trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap); }
-/* 智能流控：三块并排，和底下三张卡同一套列；窄了叠起来 / Flow control: three blocks side by side on the same columns as the three cards below; stacked when narrow */
-.overview-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap); align-items: start; }
+/* 智能流控：三块并排，和底下三张卡的内容对齐：列间距是卡片间距加上两侧的内边距，每块就和底下一张卡的内容一样宽、起点一样；窄了叠起来。
+   三块并排时每块顶上有一行小标题（第三块没有设备时也留着，见模板）；不并排时没有标题，样子和以前一样
+   Flow control: three blocks side by side, aligned with the content of the three cards below: the column gap is the card gap plus the padding on
+   both sides, so each block is as wide as a card's content and starts where it does; stacked when narrow. Side by side, each block has a small
+   heading (the third stays even without devices, see the template); otherwise there are no headings and it looks as before */
+.overview-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap) calc(var(--ov-gap) + 2 * var(--ov-pad)); align-items: start; }
+.overview-flow-block { min-width: 0; }
+.overview-flow-title { display: none; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-normal); line-height: var(--lh-base); }
 .overview-flow-state { display: grid; gap: 8px; margin: 0; }
 .overview-flow-state > div { display: flex; justify-content: space-between; gap: 12px; }
 .overview-flow-state dd { margin: 0; text-align: right; }
+/* 电脑宽屏（三块并排）：每块顶上一行小标题，中间那块和两边一样是一行行的名字和值（照 .overview-row 的样子），三块的行对得齐；手机和窄屏照旧
+   Wide desktop screens (three abreast): a small heading over each block, and the middle block in rows of name and value like the other two (styled as
+   .overview-row) so the three blocks' rows line up; phones and narrower screens keep the old look */
+@media (min-width: 1200px) {
+  .overview-flow { margin-top: var(--s-3); }
+  .overview-flow-title { display: block; }
+  .overview-flow-period { display: none; }
+  .overview-flow-state { gap: 0; margin-top: var(--s-1); }
+  .overview-flow-state > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1) var(--s-3); align-items: center; padding: var(--s-3) 0; border-top: 1px solid var(--l-hair); font-size: var(--t-3); }
+  .overview-flow-state > div:first-child { padding-top: var(--s-2); border-top: 0; }
+  .overview-flow-state > div:last-child { padding-bottom: 0; }
+  .overview-flow-state dt { display: flex; align-items: center; gap: var(--s-2); min-width: 0; color: var(--l-ink); font-size: inherit; font-weight: var(--w-medium); letter-spacing: normal; text-transform: none; }
+  .overview-flow-state dd { color: var(--l-ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+}
 .overview-flow-off { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
-@media (max-width: 899px) { .overview-flow { grid-template-columns: minmax(0, 1fr); } }
 .overview-trio > :only-child { grid-column: 1 / -1; }
 
 /* ---------- 卡片：小标签、右上角一句灰字、内容 ---------- */
@@ -1347,13 +1380,17 @@ onBeforeUnmount(() => {
 @media (max-width: 1279px) {
   .overview-grid, .overview-skeleton { grid-template-columns: minmax(0, 1fr) 360px; }
 }
+/* 智能流控的三块跟着底下三张卡排：卡片两两并排时它也两块并排、第三块占一整行，一栏到底时它也叠起来，各块始终和卡片的内容对齐
+   Flow control's three blocks follow the three cards below: paired when the cards pair, the third then taking a full row, and stacked when the cards
+   stack, so each block stays aligned with a card's content */
 @media (max-width: 1199px) {
-  .overview-trio { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .overview-trio > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .overview-trio, .overview-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-flow-block--empty { display: none; }
+  .overview-trio > :last-child:nth-child(odd), .overview-flow > :last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
 @media (max-width: 1159px) {
-  .overview-grid, .overview-col, .overview-trio, .overview-skeleton, .overview-skeleton-col { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
-  .overview-trio > :last-child:nth-child(odd) { grid-column: auto; }
+  .overview-grid, .overview-col, .overview-trio, .overview-flow, .overview-skeleton, .overview-skeleton-col { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .overview-trio > :last-child:nth-child(odd), .overview-flow > :last-child:nth-child(odd) { grid-column: auto; }
 }
 /* 768–860 和 960–1159：两张图卡照旧占满一行，下面的卡两两并排（上游状态挨着请求分布，响应码挨着缓存构成，运行配置占一整行），
    不再一张张拉满整行，让右端的数字离名字很远；每对卡等高。861–959 有侧栏，并排的卡不到 320，上游地址会折行，照旧一张一行
@@ -1361,8 +1398,8 @@ onBeforeUnmount(() => {
    beside cache composition, the running config on a full row) instead of each stretching across the row and stranding its right-hand figures; each pair is one
    height. At 861–959 the sidebar leaves paired cards under 320, where upstream addresses wrap, so the cards stay one per row */
 @media (min-width: 768px) and (max-width: 860px), (min-width: 960px) and (max-width: 1159px) {
-  .overview-col--side, .overview-trio, .overview-skeleton-col + .overview-skeleton-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .overview-trio > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .overview-col--side, .overview-trio, .overview-flow, .overview-skeleton-col + .overview-skeleton-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-trio > :last-child:nth-child(odd), .overview-flow > :last-child:nth-child(odd) { grid-column: 1 / -1; }
   /* 并排的两块骨架一样高，和读出来以后并排的两张卡一样（实测 247） / The paired skeleton blocks share one height, like the paired cards once loaded (measured 247) */
   .overview-page { --ov-sk-list: 247px; --ov-sk-list-2: 247px; }
 }
