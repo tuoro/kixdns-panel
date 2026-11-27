@@ -108,6 +108,9 @@ const demoOldKernel = () => typeof localStorage !== 'undefined' && localStorage.
 // kixdns:demo-kernel-notes: the kernel reports warnings, a config file it cannot watch, inbound DoH not started and Geo data problems, as a
 // real kernel (declaring message_codes_v1) does: each with its code and arguments, in its very words
 const demoKernelNotes = () => typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-kernel-notes') === 'true'
+// kixdns:demo-flow-quiet：智能流控开着、一次都没拦过（没有被拦的设备） / kixdns:demo-flow-quiet: flow control on and never refusing (no device refused)
+const demoFlowQuiet = () => typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-flow-quiet') === 'true'
+const NO_REFUSALS = { capacity: 0, memory: 0, connection: 0, queue: 0, stuck: 0, unanswered: 0 }
 // 内核报的一条：原话是位置、冒号和英文，没有位置时只有英文 / One notice of the kernel's: the words are the place, a colon and the English, or the
 // English alone without a place
 const notice = (place: string | null, code: string, args: KernelNotice['args'], english: string): KernelNotice => ({ place, code, args, text: place === null ? english : `${place}: ${english}` })
@@ -1058,7 +1061,10 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     // goes back: once the demo or a test changes it (stopped, turned into a snapshot), the next read still sees that
     const restartPending = restartPendingNow()
     const laid = { ...(restartPending.length ? { restart_pending: restartPending } : {}), ...(demoOldKernel() ? { problems: [PANEL_BLOCK_REFUSAL] } : {}), ...(demoKernelNotes() ? DEMO_STATUS : {}) }
-    return (Object.keys(laid).length ? { ...overview, active_config: { ...overview.active_config, ...laid } } : overview) as T
+    const quiet = demoFlowQuiet() && overview.metrics.flow
+      ? { ...overview, metrics: { ...overview.metrics, flow: { ...overview.metrics.flow, refused: NO_REFUSALS, turns: 0, stuck: 0, clients: [], recent: { refused: NO_REFUSALS, turns: 0 } } } }
+      : overview
+    return (Object.keys(laid).length ? { ...quiet, active_config: { ...quiet.active_config, ...laid } } : quiet) as T
   }
   // 查询日志：按当前演示配置生成（kixdns:demo-querylog-unsupported 演示内核太旧） / The query log, generated from the current demo config (kixdns:demo-querylog-unsupported plays a kernel too old)
   if (pathname === '/api/v1/querylog' && method === 'GET') return demoQueryLogPage(config.content as Record<string, unknown>, Date.now(), url.searchParams) as T
