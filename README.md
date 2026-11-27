@@ -56,7 +56,7 @@ uclient-fetch -qO- https://raw.githubusercontent.com/tuoro/kixdns-panel/main/dep
 
 ### Docker
 
-需要 x86_64 或 arm64 的 Linux 主机和 Docker Engine。镜像是 [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel)，随每个正式版发布：`latest` 是最新正式版，也有 `4.4`、`4.4.2` 这样的版本标签。面板和内核在一个容器里，两条路径任选一条。
+需要 x86_64 或 arm64 的 Linux 主机和 Docker Engine。镜像是 [`ghcr.io/tuoro/kixdns-panel`](https://github.com/tuoro/kixdns-panel/pkgs/container/kixdns-panel)，随每个正式版发布：`latest` 是最新正式版，也有 `4.4`、`4.4.3` 这样的版本标签。面板和内核在一个容器里，两条路径任选一条。
 
 #### 用 docker run
 
