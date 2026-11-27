@@ -981,7 +981,8 @@ onBeforeUnmount(() => {
                 <span class="overview-row-name"><span>{{ row.label }}</span></span>
                 <span class="overview-row-value">{{ formatNumber(row.count) }} 次</span>
               </div>
-              <p v-if="!flow.view.refused.length" class="overview-empty">{{ flow.view.period }}一次都没拦过，各台设备都照常解析。</p>
+              <!-- 时段在宽屏上不写：卡片右上角的标签已经写着；手机上照旧写 / The period is left out on wide screens, where the tag at the top right gives it; phones keep it -->
+              <p v-if="!flow.view.refused.length" class="overview-empty"><span class="overview-flow-period">{{ flow.view.period }}</span>一次都没拦过，各台设备都照常解析。</p>
               </div>
             </div>
             <div class="overview-flow-block">
@@ -1178,18 +1179,24 @@ onBeforeUnmount(() => {
    heading (the third stays even without devices, see the template); otherwise there are no headings and it looks as before */
 .overview-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap) calc(var(--ov-gap) + 2 * var(--ov-pad)); align-items: start; }
 .overview-flow-block { min-width: 0; }
-.overview-flow-title { display: none; margin: var(--s-2) 0 0; color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-normal); line-height: var(--lh-base); }
-/* 标题下面中间那块的行和两边第一行一样隔开 12（两边是行的上内边距或空态的上内边距） / Under the headings the middle block's rows keep the same 12 as the first
-   line on either side (a row's or the empty line's top padding there) */
-@media (min-width: 1200px) {
-  .overview-flow-title { display: block; }
-  .overview-flow-title + .overview-flow-state { margin-top: var(--s-3); }
-  .overview-flow-title + .overview-rows { margin-top: 0; }
-  .overview-flow-title + .overview-rows > .overview-row:first-child { padding-top: var(--s-3); }
-}
+.overview-flow-title { display: none; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-normal); line-height: var(--lh-base); }
 .overview-flow-state { display: grid; gap: 8px; margin: 0; }
 .overview-flow-state > div { display: flex; justify-content: space-between; gap: 12px; }
 .overview-flow-state dd { margin: 0; text-align: right; }
+/* 电脑宽屏（三块并排）：每块顶上一行小标题，中间那块和两边一样是一行行的名字和值（照 .overview-row 的样子），三块的行对得齐；手机和窄屏照旧
+   Wide desktop screens (three abreast): a small heading over each block, and the middle block in rows of name and value like the other two (styled as
+   .overview-row) so the three blocks' rows line up; phones and narrower screens keep the old look */
+@media (min-width: 1200px) {
+  .overview-flow { margin-top: var(--s-3); }
+  .overview-flow-title { display: block; }
+  .overview-flow-period { display: none; }
+  .overview-flow-state { gap: 0; margin-top: var(--s-1); }
+  .overview-flow-state > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1) var(--s-3); align-items: center; padding: var(--s-3) 0; border-top: 1px solid var(--l-hair); font-size: var(--t-3); }
+  .overview-flow-state > div:first-child { padding-top: var(--s-2); border-top: 0; }
+  .overview-flow-state > div:last-child { padding-bottom: 0; }
+  .overview-flow-state dt { display: flex; align-items: center; gap: var(--s-2); min-width: 0; color: var(--l-ink); font-size: inherit; font-weight: var(--w-medium); letter-spacing: normal; text-transform: none; }
+  .overview-flow-state dd { color: var(--l-ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+}
 .overview-flow-off { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
 .overview-trio > :only-child { grid-column: 1 / -1; }
 
