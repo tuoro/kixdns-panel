@@ -357,6 +357,33 @@ test('中等宽度：1160 时上游状态还在 360 宽的右栏、地址不挤�
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
 })
 
+// 智能流控的几块和底下三张卡的内容对齐；没触发过、没有被拦的设备时，三块并排的宽屏上第三块照样留着写「没有」，不并排时就不出
+// Flow control's blocks line up with the content of the three cards below; never triggered, with no device refused, the third block stays saying so where
+// the three stand side by side, and is left out where they do not
+test('智能流控：几块和底下的卡片对齐；没有被拦的设备时，宽屏上第三块照样留着，窄了不出', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-flow-quiet', 'true'))
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openOverview(page)
+  const card = page.getByRole('region', { name: '智能流控' })
+  await expect(card.locator('.overview-flow-block')).toHaveCount(3)
+  await expect(card.locator('.overview-flow-block').nth(2)).toContainText('没有设备被拦过。')
+  const lines = () => page.evaluate(() => {
+    const visible = [...document.querySelectorAll<HTMLElement>('.overview-card--flow .overview-flow-block')].filter((b) => b.getClientRects().length)
+    const blocks = visible.map((b) => { const r = b.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.width)] })
+    const cards = [...document.querySelector('.overview-trio')!.children].map((c) => { const r = c.getBoundingClientRect(); const pad = parseFloat(getComputedStyle(c).paddingLeft); return [Math.round(r.left + pad), Math.round(r.width - 2 * pad)] })
+    return { blocks, cards }
+  })
+  const wide = await lines()
+  expect(wide.blocks).toEqual(wide.cards)
+  // 两两并排时第三块不出，前两块对着底下前两张卡 / Paired, the third block is left out and the first two face the first two cards
+  await page.setViewportSize({ width: 1024, height: 900 })
+  const paired = await lines()
+  expect(paired.blocks).toEqual(paired.cards.slice(0, 2))
+  await page.setViewportSize({ width: 375, height: 812 })
+  await expect(card.getByText('没有设备被拦过。')).toBeHidden()
+  await expect(card.getByText('一次都没拦过，各台设备都照常解析。')).toBeVisible()
+})
+
 test('手机上窗口分段每格可点满 44：点按区域越过外框上下补齐 @responsive', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', '只量手机宽度 / Phone width only')
   await openOverview(page)
