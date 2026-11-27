@@ -88,9 +88,12 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
     }
     sources.set(url, { sha256: digest(`${url}@${now}`), downloaded_at: now, summary: summaryOf(url), last_error: null, retryable: false, last_attempt_at: now, rejected_sha256: null })
   }
-  const used = request.subscriptions.filter((s) => s.enabled).map((s) => s.url.trim()).sort().map((url) => sources.get(url)?.sha256).filter((sha): sha is string => Boolean(sha))
+  // 和服务端一样：白名单只抵消拦截，只有白名单时不合成文件 / As on the server: allowlists only offset blocks, so allowlists alone build no file
+  const held = request.subscriptions.filter((s) => s.enabled).map((s) => ({ allow: Boolean(s.allow), sha: sources.get(s.url.trim())?.sha256 }))
+    .filter((s): s is { allow: boolean; sha: string } => Boolean(s.sha))
+  const used = held.map((s) => `${s.allow ? '@@' : ''}${s.sha}`).sort()
   return {
-    path: used.length ? `/var/lib/kixdns-panel/geo/blocklist-${digest(used.join(','))}.json` : null,
+    path: held.some((s) => !s.allow) ? `/var/lib/kixdns-panel/geo/blocklist-${digest(used.join(','))}.json` : null,
     sources: Object.fromEntries(urls.flatMap((url) => { const s = sources.get(url); return s ? [[url, s] as const] : [] })),
     failed,
   }

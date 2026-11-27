@@ -92,6 +92,11 @@ pub struct SourceStatus {
 pub struct Subscription {
     pub url: String,
     pub enabled: bool,
+    /// 白名单：列表里的每一条都当放行（见 [`Merged::add_allowlist`]）；旧页面不带它，就是拦截列表
+    /// An allowlist: every rule in it allows (see [`Merged::add_allowlist`]); older pages leave it out, which makes a
+    /// blocklist
+    #[serde(default)]
+    pub allow: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,10 +109,11 @@ pub struct BuildRequest {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BuildResult {
-    /// 合并出的文件；启用的列表一个都还没有、或者合起来没有要拦截的（只有放行）时为 None。列表里的放行只抵消列表里的
-    /// 拦截，所以只有放行时文件没有用处
-    /// The merged file; None while no enabled list has a copy, or when together they block nothing (allows only).
-    /// A list's allows only offset lists' blocks, so with allows alone the file would do nothing
+    /// 合并出的文件；启用的列表一个都还没有、或者合起来没有要拦截的（只有放行，或者只有白名单）时为 None。列表里的放行
+    /// 和白名单只抵消列表里的拦截，所以只有放行时文件没有用处
+    /// The merged file; None while no enabled list has a copy, or when together they block nothing (allows or
+    /// allowlists only). Lists' allows and allowlists only offset lists' blocks, so with allows alone the file would
+    /// do nothing
     pub path: Option<String>,
     /// 请求里每个列表的情况 / How each list in the request stands
     pub sources: BTreeMap<String, SourceStatus>,
@@ -230,6 +236,7 @@ impl BlocklistManager {
             .map(|source| Subscription {
                 url: source.url,
                 enabled: true,
+                allow: source.allow,
             })
             .collect();
         let (path, failed) = self.update(&mut state, &subscriptions, |_| true).await?;
@@ -477,6 +484,7 @@ impl BlocklistManager {
                 Some(SourceRef {
                     url: subscription.url.clone(),
                     sha256,
+                    allow: subscription.allow,
                 })
             })
             .collect();
@@ -486,24 +494,31 @@ impl BlocklistManager {
         if sources.is_empty() {
             return Ok(None);
         }
-        let paths: Vec<PathBuf> = sources
+        let lists: Vec<(PathBuf, bool)> = sources
             .iter()
-            .map(|source| self.raw_path(&source.sha256))
+            .map(|source| (self.raw_path(&source.sha256), source.allow))
             .collect();
         let json = tokio::task::spawn_blocking(move || -> std::io::Result<Option<String>> {
             let read = |path: &PathBuf| {
                 std::fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             };
-            // `$badfilter` 对所有列表都管用，所以先读一遍收齐；一次只读一个列表，不同时占着所有列表的内存
-            // `$badfilter` applies across every list, so a first pass gathers them; one list is read at a time,
-            // never holding them all in memory at once
-            let mut disabled = HashSet::new();
-            for path in &paths {
-                disabled.extend(blocklist::badfilters(&read(path)?));
+            // `$badfilter` 管同一类的所有列表：拦截列表里的管所有拦截列表，白名单里的管所有白名单，和 AdGuard Home
+            // 分开的两套一样。所以先读一遍收齐；一次只读一个列表，不同时占着所有列表的内存
+            // `$badfilter` applies across every list of its kind: a blocklist's to all blocklists, an allowlist's to
+            // all allowlists, as in AdGuard Home's two separate sets. So a first pass gathers them; one list is read at
+            // a time, never holding them all in memory at once
+            let mut disabled = [HashSet::new(), HashSet::new()];
+            for (path, allow) in &lists {
+                disabled[usize::from(*allow)].extend(blocklist::badfilters(&read(path)?));
             }
             let mut merged = Merged::default();
-            for path in &paths {
-                merged.add(&read(path)?, &disabled);
+            for (path, allow) in &lists {
+                let text = read(path)?;
+                if *allow {
+                    merged.add_allowlist(&text, &disabled[1]);
+                } else {
+                    merged.add(&text, &disabled[0]);
+                }
             }
             Ok((!merged.is_empty()).then(|| merged.geosite_json(&sources)))
         })
@@ -649,6 +664,7 @@ fn normalize_subscriptions(
             normalized.push(Subscription {
                 url,
                 enabled: subscription.enabled,
+                allow: subscription.allow,
             });
         }
     }
@@ -709,6 +725,14 @@ mod tests {
         Subscription {
             url: url.to_owned(),
             enabled,
+            allow: false,
+        }
+    }
+
+    fn allowlist(url: &str, enabled: bool) -> Subscription {
+        Subscription {
+            allow: true,
+            ..subscription(url, enabled)
         }
     }
 
@@ -752,7 +776,8 @@ mod tests {
             blocklist::read_sources(&json),
             Some(vec![SourceRef {
                 url: A.to_owned(),
-                sha256: sha_a.clone()
+                sha256: sha_a.clone(),
+                allow: false,
             }])
         );
         let text = String::from_utf8(json).unwrap();
@@ -775,11 +800,13 @@ mod tests {
             vec![
                 SourceRef {
                     url: A.to_owned(),
-                    sha256: sha_a
+                    sha256: sha_a,
+                    allow: false,
                 },
                 SourceRef {
                     url: B.to_owned(),
-                    sha256: sha_b
+                    sha256: sha_b,
+                    allow: false,
                 }
             ]
         );
@@ -791,6 +818,104 @@ mod tests {
         // removing it is discarded
         assert!(manager.state().await.unwrap().sources.contains_key(B));
         assert_eq!(manager.state().await.unwrap().last_built, None);
+    }
+
+    /// 白名单里的每一条都当重要放行，写成拦截的、hosts 的一行也一样；`$badfilter` 只管同一类的列表。文件里记着哪个是
+    /// 白名单，定时更新照样按白名单合并；只有白名单时没有要拦截的，不合成文件
+    /// Every rule in an allowlist becomes an important allow, those written as blocks or as a hosts line too, and
+    /// `$badfilter` only reaches lists of its own kind. The file records which list is an allowlist, so the scheduled
+    /// update merges it as one again; allowlists alone block nothing and build no file
+    #[tokio::test]
+    async fn an_allowlist_allows_every_rule_it_holds() {
+        let directory = tempdir().unwrap();
+        let manager = manager(directory.path()).await;
+        let sha_a = manager
+            .hold_for_tests(
+                A,
+                "||ads.example^\n||vip.example^$important\n||kept.example^\n||both.example^$badfilter\n",
+            )
+            .await;
+        let sha_b = manager
+            .hold_for_tests(
+                B,
+                "||ads.example^\n0.0.0.0 tracker.example\n@@||cdn.example^\n||vip.example^\n||both.example^\n||kept.example^$badfilter\n",
+            )
+            .await;
+
+        let built = build(
+            &manager,
+            vec![subscription(A, true), allowlist(B, true)],
+            &[],
+        )
+        .await;
+        let path = built.path.unwrap();
+        let json = std::fs::read(&path).unwrap();
+        let file: Value = serde_json::from_slice(&json).unwrap();
+        let tag = |name: &str| {
+            file["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["tag"] == name)
+                .unwrap()["domains"]
+                .clone()
+        };
+        assert_eq!(
+            tag(blocklist::TAG_BLOCK),
+            json!(["domain:ads.example", "domain:kept.example"])
+        );
+        assert_eq!(
+            tag(blocklist::TAG_BLOCK_IMPORTANT),
+            json!(["domain:vip.example"])
+        );
+        assert_eq!(tag(blocklist::TAG_ALLOW), json!([]));
+        assert_eq!(
+            tag(blocklist::TAG_ALLOW_IMPORTANT),
+            json!([
+                "domain:ads.example",
+                "domain:both.example",
+                "domain:cdn.example",
+                "domain:vip.example",
+                "full:tracker.example"
+            ]),
+            "the blocklist's $badfilter leaves the allowlist's rule, and the allowlist's leaves the blocklist's"
+        );
+        assert_eq!(
+            blocklist::read_sources(&json),
+            Some(vec![
+                SourceRef {
+                    url: A.to_owned(),
+                    sha256: sha_a,
+                    allow: false,
+                },
+                SourceRef {
+                    url: B.to_owned(),
+                    sha256: sha_b,
+                    allow: true,
+                }
+            ])
+        );
+        let text = String::from_utf8(json).unwrap();
+        assert_eq!(text.matches("\"allow\"").count(), 1, "{text}");
+
+        // 两个都下载失败、照用原来那份：白名单还当白名单合并，合出的就是同一个文件 / Both downloads fail and keep their copies: the
+        // allowlist merges as one again, giving the same file
+        let config = json!({ "settings": { "geosite_data_paths": [path] } });
+        assert_eq!(
+            manager.refresh_running(&config).await.unwrap(),
+            Some(Refresh {
+                replaced: None,
+                failed: 2
+            })
+        );
+
+        let alone = build(
+            &manager,
+            vec![subscription(A, false), allowlist(B, true)],
+            &[],
+        )
+        .await;
+        assert_eq!(alone.path, None, "an allowlist alone blocks nothing");
     }
 
     /// 下载失败的列表照用上一份，原因记在它自己的情况里；从没下载成功过的不算进去
@@ -844,7 +969,8 @@ mod tests {
             blocklist::read_sources(&json),
             Some(vec![SourceRef {
                 url: A.to_owned(),
-                sha256: sha_a
+                sha256: sha_a,
+                allow: false,
             }])
         );
     }
@@ -914,6 +1040,7 @@ mod tests {
         let older_json = older.geosite_json(&[SourceRef {
             url: C.to_owned(),
             sha256: sha_c.clone(),
+            allow: false,
         }]);
         let retained_file = manager
             .geo
@@ -1147,6 +1274,7 @@ mod tests {
         let subscription = |url: &str, enabled| Subscription {
             url: url.to_owned(),
             enabled,
+            allow: false,
         };
         let normalized = normalize_subscriptions(vec![
             subscription(" https://lists.example/a.txt ", true),

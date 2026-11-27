@@ -66,6 +66,15 @@ describe('拦截列表写进配置 / blocklists in the config', () => {
     expect(blocklistKey({ subscriptions: [list(a, true), list(b, false)] })).toBe(blocklistKey({ subscriptions: [list(a, true)] }))
     expect(blocklistKey({ subscriptions: [list(a, true)] })).not.toBe(blocklistKey({ subscriptions: [list(a, false)] }))
   })
+
+  it('同一个链接当白名单和当拦截列表合出的文件不同；拦截列表的照旧只写链接 / one link as an allowlist and as a blocklist builds different files; a blocklist still reads as the bare link', () => {
+    const list = (url: string, enabled: boolean, allow = false): Subscription => ({ id: url.length, name: url, url, enabled, ...(allow ? { allow: true as const } : {}) })
+    const [a, b] = ['https://a.example/list.txt', 'https://b.example/allow.txt']
+    expect(blocklistKey({ subscriptions: [list(a, true)] })).toBe(a)
+    expect(blocklistKey({ subscriptions: [list(a, true, true)] })).not.toBe(blocklistKey({ subscriptions: [list(a, true)] }))
+    expect(blocklistKey({ subscriptions: [list(a, true), list(b, true, true)] })).toBe(blocklistKey({ subscriptions: [list(b, true, true), list(a, true)] }))
+    expect(blocklistKey({ subscriptions: [list(a, true), list(b, false, true)] })).toBe(a)
+  })
 })
 
 describe('拦截列表读回来 / blocklists read back', () => {

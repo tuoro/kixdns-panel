@@ -188,19 +188,20 @@ export function diffModels(now: Model, then: Model, toward: 'save' | 'restore' =
 // different merged file alone says the lists were downloaded again
 function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists, toward: 'save' | 'restore'): void {
   const facts = (x: Subscription) => ({ 链接: x.url, 状态: x.enabled ? '启用' : '已停用' })
+  const kind = (x: Subscription) => (x.allow ? '白名单' : '拦截列表')
   // 标题里默认名只写文件名：下一行就是完整链接 / A default name shows its file part in the title: the full link is on the next line
-  const title = (x: Subscription) => `拦截列表「${shortName(x.name, x.url)}」`
+  const title = (x: Subscription) => `${kind(x)}「${shortName(x.name, x.url)}」`
   const same = (a: Subscription, b: Subscription) => normalUrl(a.url) === normalUrl(b.url)
   for (const x of now.subscriptions) if (!then.subscriptions.some((y) => same(x, y))) blocks.push({ kind: '去掉', title: title(x), lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '-', text: `${k}：${v}` })) })
   for (const x of then.subscriptions) {
     const old = now.subscriptions.find((y) => same(x, y))
     if (!old) { blocks.push({ kind: '加上', title: title(x), lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '+', text: `${k}：${v}` })) }); continue }
-    // 两边都有的只比开关：链接写法不同（大小写、末尾的 /）还是同一个列表 / One on both sides compares on/off only: a link spelt differently (case, a
-    // trailing /) is still the same list
-    const lines = changed({ 状态: facts(old).状态 }, { 状态: facts(x).状态 })
+    // 两边都有的只比开关和类型：链接写法不同（大小写、末尾的 /）还是同一个列表 / One on both sides compares on/off and kind only: a link spelt
+    // differently (case, a trailing /) is still the same list
+    const lines = changed({ 类型: kind(old), 状态: facts(old).状态 }, { 类型: kind(x), 状态: facts(x).状态 })
     if (lines.length) blocks.push({ kind: '改了', title: title(x), lines })
   }
-  const links = (b: Blocklists) => b.subscriptions.map((x) => `${normalUrl(x.url)}${x.enabled}`).sort().join()
+  const links = (b: Blocklists) => b.subscriptions.map((x) => `${x.allow ? '@@' : ''}${normalUrl(x.url)}${x.enabled}`).sort().join()
   // 保存草稿时换上的是新下载的那份，恢复旧版本时换回的是那时下载的。订阅也变了时，恢复的方向照样说两边都启用的那几个换回当时的内容
   // Saving the draft brings in the newer download, restoring an old version brings back the one of its day. With the subscriptions changed too, the
   // restore direction still says the lists enabled on both sides go back to that day's contents

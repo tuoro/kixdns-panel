@@ -74,11 +74,14 @@ export interface Defaults { block: 'NXDOMAIN' | 'REFUSED' | 'zero' }
 // the GeoSite file the panel server builds from the enabled lists, rebuilt at the page's request whenever the subscriptions change.
 // builtFor records which lists file was built for (see blocklistKey): when it disagrees with the subscriptions the file is stale, the
 // page builds again and a save waits for it
-export interface Subscription { id: number; name: string; url: string; enabled: boolean }
+// allow 是白名单：列表里的每一条都当放行，写成拦截的也一样；拦截列表不写这一项（白名单以前的模型都是这样）
+// allow marks an allowlist: every rule in it allows, those written as blocks too; a blocklist leaves it out (as every model from before allowlists does)
+export interface Subscription { id: number; name: string; url: string; enabled: boolean; allow?: true }
 export interface Blocklists { subscriptions: Subscription[]; file: string | null; custom: string; builtFor: string }
 export const emptyBlocklists = (): Blocklists => ({ subscriptions: [], file: null, custom: '', builtFor: '' })
-/** 合成的文件取决于哪些列表：启用的链接，不论先后 / What the merged file depends on: the enabled links, in any order */
-export const blocklistKey = (b: Pick<Blocklists, 'subscriptions'>): string => b.subscriptions.filter((s) => s.enabled).map((s) => s.url).sort().join('\n')
+/** 合成的文件取决于哪些列表：启用的链接，不论先后；白名单的前面带 @@，拦截列表的照旧只写链接 / What the merged file depends on: the enabled links, in any
+ * order; an allowlist's carries a leading @@, a blocklist's is the bare link as before */
+export const blocklistKey = (b: Pick<Blocklists, 'subscriptions'>): string => b.subscriptions.filter((s) => s.enabled).map((s) => (s.allow ? `@@${s.url}` : s.url)).sort().join('\n')
 // settings 是内核的全局设置（监听、缓存、Geo 数据……），原样写进配置；只有 default_upstream 由「其余请求」决定
 // settings are the kernel's global settings (listeners, cache, Geo data…), written as they are; only default_upstream follows 其余请求
 export interface Model {

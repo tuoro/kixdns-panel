@@ -35,13 +35,14 @@ export const changedRuleIds = computed(() => {
 })
 export const changedGroupIds = computed(() => changedIn(appliedModel.value.groups, model.groups))
 export const changedMappingIds = computed(() => changedIn(appliedModel.value.mappings, model.mappings))
-// 订阅按规整后的链接认，只看在不在、开没开：编号和名字是面板起的，导入另一台面板导出的配置时会不同，和「改了哪些」一个口径
-// Subscriptions are matched by their normal link and judged only on presence and on/off: ids and names are the panel's own and differ in a config
-// exported by another panel, the same yardstick as the review
+// 订阅按规整后的链接认，只看在不在、开没开、是不是白名单：编号和名字是面板起的，导入另一台面板导出的配置时会不同，和「改了哪些」一个口径
+// Subscriptions are matched by their normal link and judged only on presence, on/off and whether they are allowlists: ids and names are the panel's
+// own and differ in a config exported by another panel, the same yardstick as the review
 const subscriptionKey = (s: Subscription) => normalUrl(s.url)
+const subscriptionState = (s: Subscription) => `${s.enabled}${Boolean(s.allow)}`
 function changedSubscriptions(before: Subscription[], after: Subscription[]): Subscription[] {
-  const was = new Map(before.map((s) => [subscriptionKey(s), s.enabled]))
-  return after.filter((s) => was.get(subscriptionKey(s)) !== s.enabled)
+  const was = new Map(before.map((s) => [subscriptionKey(s), subscriptionState(s)]))
+  return after.filter((s) => was.get(subscriptionKey(s)) !== subscriptionState(s))
 }
 export const changedSubscriptionIds = computed(() => new Set(changedSubscriptions(appliedModel.value.blocklists.subscriptions, model.blocklists.subscriptions).map((s) => s.id)))
 function settingKeysChanged(then: Model, now: Model): Set<string> {
