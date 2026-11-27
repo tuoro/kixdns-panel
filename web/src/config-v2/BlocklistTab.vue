@@ -215,9 +215,12 @@ const cards = computed(() => ([false, true] as const).map((allow) => {
 // 页面上的 id：拦截列表那张沿用原来的 / Ids on the page: the blocklist card keeps its old ones
 const headingId = (key: Kind) => (key === 'allow' ? 'bl-allow' : 'bl-subs')
 const errorId = (key: Kind) => (key === 'allow' ? 'bl-allow-err' : 'bl-add-err')
+// 手机上白名单那张只写「粘贴链接」：标题就在上面，页面的说明文字也要在 120 字以内（config-acceptance.spec.ts 的说明文字预算）
+// On phones the allowlist card says only 粘贴链接: its heading sits right above, and the page's notes must stay within 120 characters (the text
+// budget in config-acceptance.spec.ts)
 const placeholder = (key: Kind) => {
-  const what = key === 'allow' ? '添加白名单' : '添加列表'
-  return phone.value ? `${what}：粘贴链接` : `${what}：粘贴链接，如 https://example.com/${key === 'allow' ? 'allowlist' : 'filter'}.txt`
+  if (key === 'allow') return phone.value ? '粘贴链接' : '添加白名单：粘贴链接，如 https://example.com/allowlist.txt'
+  return phone.value ? '添加列表：粘贴链接' : '添加列表：粘贴链接，如 https://example.com/filter.txt'
 }
 
 // 立即更新、全部更新：草稿里没有别的修改时，新的一份下好就直接保存生效，和自动更新一样；草稿里有没保存的修改时，新的一份放进草稿，跟它一起保存。
