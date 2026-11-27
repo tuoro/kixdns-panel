@@ -335,6 +335,17 @@ export const PRESETS: Preset[] = [
   { name: 'StevenBlack hosts', url: 'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts', about: '广告和恶意网站，hosts 格式', rules: 73_633, memory: 9 },
   { name: 'AdAway', url: 'https://adaway.org/hosts.txt', about: '手机应用里的广告，hosts 格式', rules: 6_540, memory: 1 },
 ]
+/**
+ * 推荐的白名单：只收专门做来订阅的、一直有人维护的。条数是 2026-11-27 拿面板的解析器数的；只有几百条，内存按 AdAway 的实测（6540 条约 1 MiB）
+ * 算远不到 1 MiB，记作 0
+ * Suggested allowlists: only lists made for subscribing and still maintained. The count was taken with the panel's parser on 2026-11-27; at a
+ * few hundred rules the memory, scaled from AdAway's measurement (6,540 rules at about 1 MiB), is far under 1 MiB, recorded as 0
+ */
+export const ALLOW_PRESETS: Preset[] = [
+  { name: 'HaGeZi Allowlist Referral', url: 'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/whitelist-referral.txt', about: '邮件、搜索结果里的推广和返利链接', rules: 945, memory: 0 },
+]
+/** 推荐过的所有列表，拦截列表和白名单的都在 / Every suggested list, blocklists and allowlists alike */
+export const presetFor = (url: string): Preset | undefined => [...PRESETS, ...ALLOW_PRESETS].find((p) => p.url === url)
 
 /**
  * 订阅的名字：推荐的列表用它的名字，别的先用「文件名 · 主机」（链接没有路径时只用主机）；下载下来带着标题时页面再换成标题。
@@ -344,7 +355,7 @@ export const PRESETS: Preset[] = [
  * (「fail/hosts.txt · host」), more than the path has adds the query string. It goes up when the name is already taken
  */
 export function subscriptionName(url: string, depth = 1): string {
-  const preset = PRESETS.find((p) => p.url === url)
+  const preset = presetFor(url)
   if (preset) return preset.name
   try {
     const link = new URL(url)

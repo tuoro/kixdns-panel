@@ -90,6 +90,8 @@ it('says why a list line went unused', () => {
 
 it('names a subscription by the suggested list, or by file name and host', () => {
   expect(subscriptionName('https://big.oisd.nl/')).toBe('OISD big')
+  // 推荐的白名单也用它自己的名字 / A suggested allowlist goes by its own name too
+  expect(subscriptionName('https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/whitelist-referral.txt')).toBe('HaGeZi Allowlist Referral')
   expect(subscriptionName('https://lists.example.org/a/filter.txt')).toBe('filter.txt\u00a0·\u00a0lists.example.org')
   expect(subscriptionName('https://lists.example.org/a/%E5%B9%BF%E5%91%8A.txt')).toBe('广告.txt\u00a0·\u00a0lists.example.org')
   expect(subscriptionName('https://lists.example.org/')).toBe('lists.example.org')

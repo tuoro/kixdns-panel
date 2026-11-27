@@ -223,6 +223,30 @@ test('白名单：粘贴链接加在白名单那张卡片上，同一个链接�
   await expect(review).not.toContainText('拦截列表「')
 })
 
+// 推荐的白名单在白名单那张卡片上，订阅了的就是白名单；推荐的列表里没有它 / The suggested allowlists sit on the allowlist card and subscribe as
+// allowlists; the suggested blocklists leave them out
+test('推荐的白名单：勾上就订阅成白名单，推荐的列表里没有它 @responsive', async ({ page }) => {
+  await open(page)
+  const allowCard = page.locator('.bl__card', { has: page.getByRole('heading', { name: '白名单', exact: true }) })
+  const blockCard = page.locator('.bl__card', { has: page.getByRole('heading', { name: '订阅的列表', exact: true }) })
+  await allowCard.getByRole('button', { name: '推荐的白名单', exact: true }).click()
+  const dialog = page.locator('dialog[open]')
+  await expect(dialog.getByRole('heading', { name: '推荐的白名单' })).toBeVisible()
+  await expect(dialog.locator('.blp__item')).toHaveCount(1)
+  await expect(dialog.locator('.blp__item')).toContainText('945\u00a0条')
+  await dialog.locator('.blp__item', { hasText: 'HaGeZi Allowlist Referral' }).click()
+  await dialog.getByRole('button', { name: '订阅 1 个', exact: true }).click()
+  await expect(allowCard.locator('.bl__row')).toHaveCount(1)
+  await expect(allowCard.locator('.bl__row')).toContainText('HaGeZi Allowlist Referral')
+  await expect(blockCard.locator('.bl__row')).toHaveCount(0)
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await expect(allowCard.locator('.bl__row')).toContainText('945')
+
+  await page.getByRole('button', { name: '推荐的列表', exact: true }).first().click()
+  await expect(page.locator('dialog[open]').getByRole('heading', { name: '推荐的列表' })).toBeVisible()
+  await expect(page.locator('dialog[open]')).not.toContainText('HaGeZi Allowlist Referral')
+})
+
 test('连删两个再先后撤销，顺序照旧', async ({ page }) => {
   await open(page)
   const names = ['AdGuard DNS filter', 'HaGeZi Pro', 'OISD big', 'anti-AD']
