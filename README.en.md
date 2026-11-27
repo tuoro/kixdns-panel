@@ -12,7 +12,7 @@ A web panel for your own DNS server. Set up routing rules and blocklists with fo
 
 - **Overview**: query volume, success rate, cache hits, latency and hourly trends, upstream status, where requests went, rule hits and query rankings
 - **Configuration**: edit rules, upstream groups, domain mappings, blocklists and basic settings with forms, or edit the JSON directly; managed GeoIP/GeoSite data (the full package includes GeoSite); KixDNS itself validates a configuration before it is saved, a failed hot reload rolls back automatically, and version history is kept
-- **Blocklists**: subscribe to AdGuard and Adblock format lists and hosts files, or write your own rules; updates run daily or weekly, and if a download fails the last good version stays in use, marked with its date
+- **Blocklists**: subscribe to AdGuard and Adblock format lists and hosts files, and to allowlists too, or write your own rules; updates run daily or weekly, and if a download fails the last good version stays in use, marked with its date
 - **Query log**: for every query, which client sent it, which rule it matched, who answered and with what, step by step; search by domain or client, filter by destination, and download; how long it is kept and how much space it takes can be set, never beyond the room left on the device
 - **DNS diagnostics**: send a query to the local KixDNS, optionally as a given client IP, and see the rules, cache and upstreams it went through step by step; while editing rules you can try out an unsaved draft first
 - **Runtime logs and audit trail**: KixDNS's runtime log live, and a record of every action taken in the panel

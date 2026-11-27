@@ -3,7 +3,7 @@ import { diffModels, differences } from '../config-model/diff'
 import { blocklistKey, compile, ruleTitle, type Model, type Rule } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
-import { appliedModel, applyUpstreamStats, changeCount, groupHealth, changesBesidesFile, newId, placeBack, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
+import { appliedModel, applyUpstreamStats, changeCount, changedSubscriptionIds, groupHealth, changesBesidesFile, newId, placeBack, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
 import type { KernelNotice } from '../api/types'
 
 // 保存条数出来的每一处修改，「改了哪些」里都要看得到：以前改监听标签时保存条说改了 1 处，对比却说「一样」
@@ -213,6 +213,19 @@ describe('订阅的改动按链接认 / subscription changes go by link', () => 
     model.blocklists.subscriptions.push({ id: 3, name: 'AdAway', url: 'https://adaway.org/hosts.txt', enabled: true })
     expect(changeCount.value).toBe(2)
     expect(diffModels(appliedModel.value, model).map((b) => b.kind)).toEqual(['改了', '加上'])
+  })
+
+  it('加一个白名单算一处，标题写「白名单」；同一个链接从拦截列表换成白名单也算一处，写出类型变了', () => {
+    model.blocklists.subscriptions.push({ id: 3, name: 'allow.txt\u00a0·\u00a0lists.example.org', url: 'https://lists.example.org/allow.txt', enabled: true, allow: true })
+    expect(changeCount.value).toBe(1)
+    expect(changedSubscriptionIds.value).toEqual(new Set([3]))
+    expect(diffModels(appliedModel.value, model).map((b) => `${b.kind} ${b.title}`)).toEqual(['加上 白名单「allow.txt」'])
+    model.blocklists.subscriptions.pop()
+    model.blocklists.subscriptions[0] = { ...model.blocklists.subscriptions[0]!, allow: true }
+    expect(changeCount.value).toBe(1)
+    const [block] = diffModels(appliedModel.value, model)
+    expect(block?.title).toBe('白名单「OISD big」')
+    expect(block?.lines.map((line) => `${line.sign} ${line.text}`)).toEqual(['- 类型：拦截列表', '+ 类型：白名单'])
   })
 
   it('恢复方向：订阅也变了、文件不同时，说明不算一处不同 / restore direction: with subscriptions changed too the note is not a difference', () => {

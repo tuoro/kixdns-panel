@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ExternalLink, ListPlus, Plus, RefreshCw, ShieldBan, TriangleAlert, X } from '@lucide/vue'
-import { computed, onMounted, ref, shallowRef, watch, watchEffect } from 'vue'
+import { ExternalLink, ListPlus, Plus, RefreshCw, ShieldBan, ShieldCheck, TriangleAlert, X } from '@lucide/vue'
+import { computed, onMounted, reactive, ref, shallowRef, watch, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import type { BlocklistSkippedLine } from '../api/types'
 import UiDotText from '../components/ui/UiDotText.vue'
@@ -24,10 +24,10 @@ import { hasApplyFailure, hasPending } from './useConfigDocument'
 import { fmtCount } from './view'
 import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, panelBlockWords, saysPanelBlock } from '../kernel-problems'
 
-// 拦截列表：订阅的列表一行一个，像域名映射那样一张卡片；下面是自己写的规则和两项设置。订阅和自己写的规则都在草稿里，
+// 拦截列表：订阅的列表一行一个，像域名映射那样一张卡片；白名单是下面一样的一张；再下面是自己写的规则和两项设置。订阅和自己写的规则都在草稿里，
 // 保存以后生效；列表下载、合并由面板服务端做，自动更新也在服务端。订阅一变，useBlocklists 就请服务端重新合成。
-// Blocklists: one subscribed list per row, a card like the mapping list; under it the rules of one's own and two settings.
-// Subscriptions and own rules live in the draft and take effect on save; the panel server downloads, merges and updates the lists.
+// Blocklists: one subscribed list per row, a card like the mapping list; the allowlists are a card just like it below; under them the rules of one's
+// own and two settings. Subscriptions and own rules live in the draft and take effect on save; the panel server downloads, merges and updates the lists.
 // Whenever the subscriptions change, useBlocklists asks the server to build again.
 const router = useRouter()
 const phone = usePhone()
@@ -105,14 +105,15 @@ const spaced = (text: string) => (/^\d/.test(text) ? ` ${text}` : text)
 // stuck：重新下载也是一样的（链接失效、打开的是网页、文件太大或是空的），下载过的也算；规则少了一半那种不算，下次还是这样就会换上
 // stuck: downloading again gets the same (a dead link, a web page, a file too big or empty), held copies included; not a list that shrank by half,
 // which goes in if the next download looks the same
-const failures = computed(() => subscriptions.value.filter((s) => statusOf(s)?.last_error && !downloading(s)).map((s) => {
+const failuresOf = (list: Subscription[]) => list.filter((s) => statusOf(s)?.last_error && !downloading(s)).map((s) => {
   const status = statusOf(s)!
   const cause = status.last_error!.replace(/[。.]\s*$/, '')
   const short = shortName(s.name, s.url)
   const label = short !== s.name && cause.includes(host(s.url)) ? short : s.name
   const off = !s.enabled
   return { id: s.id, name: cause.includes(s.name) && !off ? '' : label, label, off, cause, held: held(s), retryable: Boolean(status.retryable), stuck: !status.retryable && !status.rejected_sha256 }
-}).sort((a, b) => Number(a.off) - Number(b.off)))
+}).sort((a, b) => Number(a.off) - Number(b.off))
+type Failure = ReturnType<typeof failuresOf>[number]
 // 末尾按怎么办分两句，可以同时出现：先说重下也没用、要换链接的那几个，再说一份都没有、重下可能就好的那几个（没下载成功的不会自己再下）。
 // 只有一个列表出错时说「这一行」「它」，五个以内点名，再多时说个数或者指那几行的标签。说到的列表都已停用时，这一句也淡下去
 // The end says what to do in two sentences that may both appear: first those downloading again will not fix, which need another link, then those
@@ -123,24 +124,24 @@ const failures = computed(() => subscriptions.value.filter((s) => statusOf(s)?.l
 const named = computed(() => (phone.value ? 2 : 5))
 // 两句都分成：名字前面的话、点到的名字（用 NameText 排，和上面各条一样折行）、名字后面的话 / Both sentences split into the words before the names, the
 // names (laid out by NameText, wrapping as the lines above do) and the words after
-const stuckLine = computed(() => {
-  const stuck = failures.value.filter((f) => f.stuck)
+function stuckLineOf(failures: Failure[]) {
+  const stuck = failures.filter((f) => f.stuck)
   if (!stuck.length) return null
   const them = stuck.length === 1 ? '它' : '它们'
-  const all = stuck.length === failures.value.length
+  const all = stuck.length === failures.length
   const naming = !all && stuck.length <= named.value
   return { before: all || naming ? '' : `其中 ${stuck.length}\u00a0个`, names: naming ? stuck.map((f) => f.label) : [], after: `重新下载也是一样：要换链接，先删掉${them}，再粘贴新的。`, off: stuck.every((f) => f.off) }
-})
-const retryLead = computed(() => {
-  const retry = failures.value.filter((f) => !f.held && f.retryable)
+}
+function retryLeadOf(failures: Failure[], stuckLine: boolean) {
+  const retry = failures.filter((f) => !f.held && f.retryable)
   if (!retry.length) return null
   const rows = ['', '那一行', '那两行', '那三行', '那四行', '那五行']
   const off = retry.every((f) => f.off)
-  if (failures.value.length === 1) return { before: '要重新下载，点这一行', names: [] as string[], after: '', off }
+  if (failures.length === 1) return { before: '要重新下载，点这一行', names: [] as string[], after: '', off }
   if (retry.length <= named.value) return { before: '要重新下载，点', names: retry.map((f) => f.label), after: rows[retry.length]!, off }
   // 「「没下载成功」的」连住，后面能断：「的」不落到行首 / 「「没下载成功」的」 is glued with a break after it, so 的 never starts a line
-  return { before: `要重新下载，点${stuckLine.value ? '其余标着' : '标着'}`, tag: '「没下载成功」的', names: [] as string[], after: '那几行', off }
-})
+  return { before: `要重新下载，点${stuckLine ? '其余标着' : '标着'}`, tag: '「没下载成功」的', names: [] as string[], after: '那几行', off }
+}
 
 const rowMenu = (s: Subscription) => {
   const skipped = statusOf(s)?.summary.skipped ?? 0
@@ -197,8 +198,27 @@ function act(s: Subscription, value: string): void {
 // no longer makes sense
 const deleteToasts = new Map<string, number>()
 const toggle = (s: Subscription, on: boolean) => { s.enabled = on }
-// 只看还在的订阅：删掉的那个下完之前，「全部更新」不陪它灰着 / Only subscriptions still present count: one deleted mid-download does not keep 全部更新 grey
-const busy = computed(() => subscriptions.value.some(downloading))
+
+// 两张卡片：订阅的拦截列表在上，白名单在下，各列各的、各说各的下载问题；名额（MAX_SUBSCRIPTIONS）两边合起来算，和服务端一样。
+// busy 只看这张卡片上还在的订阅：删掉的那个下完之前，「全部更新」不陪它灰着
+// Two cards: the subscribed blocklists above and the allowlists below, each listing its own and telling its own download trouble; the room
+// (MAX_SUBSCRIPTIONS) counts both together, as on the server. busy looks only at subscriptions still on the card: one deleted mid-download does not
+// keep 全部更新 grey
+type Kind = 'block' | 'allow'
+const cards = computed(() => ([false, true] as const).map((allow) => {
+  const list = subscriptions.value.filter((s) => Boolean(s.allow) === allow)
+  const failures = failuresOf(list)
+  const stuckLine = stuckLineOf(failures)
+  const key: Kind = allow ? 'allow' : 'block'
+  return { allow, key, list, failures, stuckLine, retryLead: retryLeadOf(failures, Boolean(stuckLine)), busy: list.some(downloading) }
+}))
+// 页面上的 id：拦截列表那张沿用原来的 / Ids on the page: the blocklist card keeps its old ones
+const headingId = (key: Kind) => (key === 'allow' ? 'bl-allow' : 'bl-subs')
+const errorId = (key: Kind) => (key === 'allow' ? 'bl-allow-err' : 'bl-add-err')
+const placeholder = (key: Kind) => {
+  const what = key === 'allow' ? '添加白名单' : '添加列表'
+  return phone.value ? `${what}：粘贴链接` : `${what}：粘贴链接，如 https://example.com/${key === 'allow' ? 'allowlist' : 'filter'}.txt`
+}
 
 // 立即更新、全部更新：草稿里没有别的修改时，新的一份下好就直接保存生效，和自动更新一样；草稿里有没保存的修改时，新的一份放进草稿，跟它一起保存。
 // 有没有别的修改看的是落地那一刻：按下时有、离开配置页时同意放弃了的，这时已经是干净的草稿
@@ -274,13 +294,20 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
   const which = hasPending.value || hasApplyFailure.value ? '已保存的' : '在用的'
   toast.info(urls.length > 1 ? `下载的都和${which}一样，已经是最新的` : `下载的和${which}一样，已经是最新的`)
 }
-const updateAll = () => void updateNow(subscriptions.value.map((s) => s.url), '全部更新')
+const updateAll = (list: Subscription[]) => void updateNow(list.map((s) => s.url), '全部更新')
 
-// 添加：粘贴链接，或者从推荐的里挑；加上以后马上下载，保存以后生效 / Adding: paste a link or pick suggested lists; the download starts at once and it takes effect on save
-const addUrl = ref('')
-const addError = ref('')
+// 添加：粘贴链接，或者从推荐的里挑（白名单没有推荐的）；加上以后马上下载，保存以后生效 / Adding: paste a link or pick suggested lists (allowlists have
+// none); the download starts at once and it takes effect on save
+const addUrl = reactive<Record<Kind, string>>({ block: '', allow: '' })
+const addError = reactive<Record<Kind, string>>({ block: '', allow: '' })
 const room = computed(() => MAX_SUBSCRIPTIONS - subscriptions.value.length)
-function subscribe(urls: string[]): void {
+// 订阅成拦截列表或白名单：拦截列表不带 allow，和白名单以前的模型一样 / Subscribed as a blocklist or an allowlist: a blocklist carries no allow, as
+// models from before allowlists do
+function asKind(s: Subscription, allow: boolean): Subscription {
+  const { allow: _allow, ...rest } = s
+  return allow ? { ...rest, allow: true } : rest
+}
+function subscribe(urls: string[], allow = false): void {
   const saved = appliedModel.value.blocklists.subscriptions
   const retry: string[] = []
   for (const url of urls.slice(0, Math.max(0, room.value))) {
@@ -293,21 +320,26 @@ function subscribe(urls: string[]): void {
     const name = uniqueSubscriptionName(url, new Set(model.blocklists.subscriptions.map((x) => x.name)))
     // 加回来的沿用原来的编号和名字；被草稿里别的订阅占了就换一个（见 placeBack） / One added back keeps its id and name, replaced when another
     // subscription in the draft holds them (see placeBack)
-    model.blocklists.subscriptions.push(before ? placeBack({ ...before, enabled: true }) : { id: newId(), name, url, enabled: true })
+    model.blocklists.subscriptions.push(before ? placeBack(asKind({ ...before, enabled: true }, allow)) : asKind({ id: newId(), name, url, enabled: true }, allow))
     // 以前没下载成功过的，加回来时再下载一次 / One that never downloaded downloads again when added back
     const status = blocklists.sources[url]
     if (status?.last_error && !status.sha256) retry.push(url)
   }
   if (retry.length) void rebuildBlocklists(retry)
 }
-function addFromUrl(): void {
-  const raw = addUrl.value.trim()
+// 同一个链接只能是拦截列表或者白名单中的一个：在另一张卡片上时说在哪、怎么挪过来 / One link is either a blocklist or an allowlist: when it is on the
+// other card, say where it is and how to move it
+function addFromUrl(key: Kind): void {
+  const allow = key === 'allow'
+  const raw = addUrl[key].trim()
   if (!raw) return
   const checked = checkSubscriptionUrl(raw)
-  if ('problem' in checked) addError.value = checked.problem
-  else if (subscriptions.value.some((s) => normalUrl(s.url) === checked.url)) addError.value = '已经订阅了这个列表'
-  else if (room.value <= 0) addError.value = `已经订阅了 ${MAX_SUBSCRIPTIONS} 个列表，先删掉一个再加`
-  else { subscribe([checked.url]); addUrl.value = ''; addError.value = '' }
+  const there = 'url' in checked ? subscriptions.value.find((s) => normalUrl(s.url) === checked.url) : undefined
+  if ('problem' in checked) addError[key] = checked.problem
+  else if (there && Boolean(there.allow) === allow) addError[key] = '已经订阅了这个列表'
+  else if (there) addError[key] = allow ? '这个列表已经订阅成拦截列表了：要当白名单用，先在上面删掉它' : '这个列表已经在白名单里了：要用来拦截，先在白名单里删掉它'
+  else if (room.value <= 0) addError[key] = `已经订阅了 ${MAX_SUBSCRIPTIONS} 个列表，先删掉一个再加`
+  else { subscribe([checked.url], allow); addUrl[key] = ''; addError[key] = '' }
 }
 const presetDialog = ref<HTMLDialogElement | null>(null)
 const picked = ref<string[]>([])
@@ -389,33 +421,37 @@ const blockText = computed(() => blockLabel(model, 'default'))
 
 <template>
   <div class="bl">
-    <section class="ui-card bl__card" aria-labelledby="bl-subs">
+    <!-- 订阅的拦截列表和白名单各一张，样子一样；推荐的列表和帮助只在拦截列表那张上 / One card for the subscribed blocklists and one for the
+         allowlists, alike; the suggested lists and the help sit on the blocklist card only -->
+    <section v-for="card in cards" :key="card.key" class="ui-card bl__card" :aria-labelledby="headingId(card.key)">
       <header class="bl__head">
-        <span class="bl__titles"><h2 id="bl-subs">订阅的列表</h2><p>先于所有规则生效，域名映射除外</p></span>
+        <span class="bl__titles"><h2 :id="headingId(card.key)">{{ card.allow ? '白名单' : '订阅的列表' }}</h2><p>{{ card.allow ? '列表里的域名，订阅的列表都不拦' : '先于所有规则生效，域名映射除外' }}</p></span>
         <span class="bl__tools">
-          <template v-if="subscriptions.length">
-            <button class="ui-btn ui-btn--text" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
-            <button class="ui-btn ui-btn--text" type="button" :disabled="busy" @click="updateAll"><RefreshCw :size="16" aria-hidden="true" />全部更新</button>
+          <template v-if="card.list.length">
+            <button v-if="!card.allow" class="ui-btn ui-btn--text" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
+            <button class="ui-btn ui-btn--text" type="button" :disabled="card.busy" @click="updateAll(card.list)"><RefreshCw :size="16" aria-hidden="true" />全部更新</button>
           </template>
-          <UiHelp topic="blocklists" />
+          <UiHelp v-if="!card.allow" topic="blocklists" />
         </span>
       </header>
-      <form class="rw__add bl__add" :class="{ 'is-typing': addUrl.trim() }" @submit.prevent="addFromUrl">
+      <form class="rw__add bl__add" :class="{ 'is-typing': addUrl[card.key].trim() }" @submit.prevent="addFromUrl(card.key)">
         <Plus class="rw__addicon" :size="16" aria-hidden="true" />
-        <label class="rw__field bl__url"><input v-model="addUrl" aria-label="列表的链接" :aria-invalid="Boolean(addError) || undefined" :aria-describedby="addError ? 'bl-add-err' : undefined" :placeholder="phone ? '添加列表：粘贴链接' : '添加列表：粘贴链接，如 https://example.com/filter.txt'" autocapitalize="off" spellcheck="false" @input="addError = ''"></label>
-        <button class="ui-btn ui-btn--secondary rw__submit" :class="{ 'ui-btn--sm': !phone }" type="submit" :disabled="!addUrl.trim()">添加</button>
-        <p v-if="addError" id="bl-add-err" class="ui-field-error bl__adderr" role="alert">{{ addError }}</p>
+        <label class="rw__field bl__url"><input v-model="addUrl[card.key]" :aria-label="card.allow ? '白名单的链接' : '列表的链接'" :aria-invalid="Boolean(addError[card.key]) || undefined" :aria-describedby="addError[card.key] ? errorId(card.key) : undefined" :placeholder="placeholder(card.key)" autocapitalize="off" spellcheck="false" @input="addError[card.key] = ''"></label>
+        <!-- 两张卡片上的「添加」读屏时分得开 / The two cards' 添加 buttons can be told apart by a screen reader -->
+        <button class="ui-btn ui-btn--secondary rw__submit" :class="{ 'ui-btn--sm': !phone }" type="submit" :aria-label="card.allow ? '添加白名单' : undefined" :disabled="!addUrl[card.key].trim()">添加</button>
+        <p v-if="addError[card.key]" :id="errorId(card.key)" class="ui-field-error bl__adderr" role="alert">{{ addError[card.key] }}</p>
       </form>
       <!-- 配置里用着一份拦截列表、却没记下是哪些列表合成的（从别处读进来的）：照实说，不像是什么都没开 / The config uses a blocklist file but did not record
            which lists built it (read in from elsewhere): say so, rather than look as if nothing were on -->
-      <UiEmpty v-if="!subscriptions.length" :icon="ShieldBan" title="还没有订阅拦截列表" :desc="model.blocklists.file ? '配置里还用着一份拦截列表，但没记下是哪些列表合成的；订阅列表并保存以后，会换成新合成的。' : '从推荐的列表里挑一个，或者在上面粘贴 AdGuard、Adblock 规则和 hosts\u00a0文件的链接。'">
+      <UiEmpty v-if="!card.list.length && !card.allow" :icon="ShieldBan" title="还没有订阅拦截列表" :desc="model.blocklists.file ? '配置里还用着一份拦截列表，但没记下是哪些列表合成的；订阅列表并保存以后，会换成新合成的。' : '从推荐的列表里挑一个，或者在上面粘贴 AdGuard、Adblock 规则和 hosts\u00a0文件的链接。'">
         <button class="ui-btn ui-btn--secondary" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
       </UiEmpty>
+      <UiEmpty v-else-if="!card.list.length" :icon="ShieldCheck" title="还没有白名单" :desc="'在上面粘贴列表的链接：AdGuard、Adblock 规则，hosts\u00a0文件，或者一行一个域名都行。白名单里的每一条都当放行，写成拦截的也一样。'" />
       <template v-else>
         <div class="bl__table">
           <div class="bl__cols" aria-hidden="true"><span>列表</span><span class="bl__col-about">内容</span><span>规则</span><span>更新</span><span>启用</span></div>
           <ul class="bl__list">
-            <li v-for="s in subscriptions" :key="s.id" class="bl__row" :class="{ 'is-off': !s.enabled }">
+            <li v-for="s in card.list" :key="s.id" class="bl__row" :class="{ 'is-off': !s.enabled }">
               <span class="bl__name">
                 <span class="bl__nm"><b :title="s.name">{{ s.name }}</b><span v-if="changedSubscriptionIds.has(s.id)" class="ui-dot ui-dot--ink bl__changed" role="img" :aria-label="added(s) ? '新加的，还没保存' : '改过，还没保存'" :title="added(s) ? '新加的，还没保存' : '改过，还没保存'"></span></span>
                 <small v-if="source(s)" :title="link(s)"><span v-if="dirSplit(source(s))" class="bl__dir"><span>{{ dirSplit(source(s))!.head }}</span><span>{{ dirSplit(source(s))!.tail }}</span></span><template v-else>{{ source(s) }}</template></small>
@@ -440,18 +476,18 @@ const blockText = computed(() => blockLabel(model, 'default'))
             </li>
           </ul>
         </div>
-        <div v-if="failures.length" class="bl__note">
+        <div v-if="card.failures.length" class="bl__note">
           <TriangleAlert :size="14" aria-hidden="true" />
           <div class="bl__causes">
             <!-- 名字按「·」分成文件名和主机两段，只在两段之间折行（「·」贴在前一段末尾，折行时藏起来），冒号和后一段连住，不落到行首
                  The name splits at 「·」 into file and host, wrapping only between them (the 「·」 sits at the end of the first and hides at a wrap), the colon
                  glued to the second so it never starts a line -->
-            <p v-for="f in failures" :key="f.id" v-line-dots :class="{ 'is-off': f.off }"><NameText v-if="f.name" :name="f.name" bold :suffix="f.off ? '（已停用）：' : '：'" /><template v-else-if="f.off">（已停用）</template><GlueText :text="`${f.cause}。`" /></p>
-            <p v-if="stuckLine" v-line-dots class="bl__todo" :class="{ 'is-off': stuckLine.off }"><GlueText :text="stuckLine.before" /><NameText v-for="(n, i) in stuckLine.names" :key="i" :name="n" quoted whole /><GlueText :text="stuckLine.after" /></p>
-            <p v-if="retryLead" v-line-dots class="bl__todo" :class="{ 'is-off': retryLead.off }"><GlueText :text="retryLead.before" /><template v-if="retryLead.tag"><span class="nowrap">{{ retryLead.tag }}</span><wbr></template><NameText v-for="(n, i) in retryLead.names" :key="i" :name="n" quoted whole /><GlueText :text="retryLead.after" /><span class="nowrap">「…」里的「立即更新」。</span></p>
+            <p v-for="f in card.failures" :key="f.id" v-line-dots :class="{ 'is-off': f.off }"><NameText v-if="f.name" :name="f.name" bold :suffix="f.off ? '（已停用）：' : '：'" /><template v-else-if="f.off">（已停用）</template><GlueText :text="`${f.cause}。`" /></p>
+            <p v-if="card.stuckLine" v-line-dots class="bl__todo" :class="{ 'is-off': card.stuckLine.off }"><GlueText :text="card.stuckLine.before" /><NameText v-for="(n, i) in card.stuckLine.names" :key="i" :name="n" quoted whole /><GlueText :text="card.stuckLine.after" /></p>
+            <p v-if="card.retryLead" v-line-dots class="bl__todo" :class="{ 'is-off': card.retryLead.off }"><GlueText :text="card.retryLead.before" /><template v-if="card.retryLead.tag"><span class="nowrap">{{ card.retryLead.tag }}</span><wbr></template><NameText v-for="(n, i) in card.retryLead.names" :key="i" :name="n" quoted whole /><GlueText :text="card.retryLead.after" /><span class="nowrap">「…」里的「立即更新」。</span></p>
           </div>
         </div>
-        <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" /><span>读不到各个列表下载得怎么样；<span class="nowrap">订阅照常保存，</span><span class="nowrap">稍后刷新页面再看。</span></span></p>
+        <p v-if="blocklists.status === 'failed' && card.list.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" /><span>读不到各个列表下载得怎么样；<span class="nowrap">订阅照常保存，</span><span class="nowrap">稍后刷新页面再看。</span></span></p>
       </template>
     </section>
 

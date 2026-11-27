@@ -603,6 +603,12 @@ fn scan(text: &str, badfilters: &HashSet<String>, mut on_rule: impl FnMut(Rule))
 pub struct SourceRef {
     pub url: String,
     pub sha256: String,
+    /// 是白名单（见 [`Merged::add_allowlist`]）。拦截列表不写这一项：以前合成的文件照样读得懂，同样的拦截列表也照旧
+    /// 合出同样的字节，升级以后不白换文件
+    /// An allowlist (see [`Merged::add_allowlist`]). A blocklist leaves it out, so files built before still read and
+    /// the same blocklists still merge into the same bytes, with no file swapped for nothing after an upgrade
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow: bool,
 }
 
 /// 读出合并文件里记的来源；不是合并文件、或者读不懂时为 None / Reads the sources a merged file records; None when the
@@ -638,6 +644,21 @@ impl Merged {
     /// like one in `badfilters` do not count
     pub fn add(&mut self, text: &str, badfilters: &HashSet<String>) -> ListSummary {
         scan(text, badfilters, |rule| self.insert(rule))
+    }
+
+    /// 加进一个白名单：里面的每一条都当放行，写成拦截的（`||域名^`、hosts 的一行、只写域名）也一样，和 `AdGuard Home` 的
+    /// DNS 白名单一样。这些放行算重要放行，列表里带 `$important` 的拦截也拦不下；自己写的拦截不在合并的文件里，照样拦
+    /// Adds an allowlist: every rule in it allows, those written as blocks (`||name^`, a hosts line, a bare name)
+    /// too, as `AdGuard Home`'s DNS allowlists do. They count as important allows, so even a list's `$important` block
+    /// cannot hold the name; one's own blocks are not in the merged file and still block
+    pub fn add_allowlist(&mut self, text: &str, badfilters: &HashSet<String>) -> ListSummary {
+        scan(text, badfilters, |rule| {
+            self.insert(Rule {
+                allow: true,
+                important: true,
+                ..rule
+            });
+        })
     }
 
     fn insert(&mut self, rule: Rule) {
@@ -924,6 +945,7 @@ mod tests {
         let sources = [SourceRef {
             url: "https://lists.example/a.txt".to_owned(),
             sha256: "ab".repeat(32),
+            allow: false,
         }];
         let json = merged.geosite_json(&sources);
         assert_eq!(read_sources(json.as_bytes()), Some(sources.to_vec()));

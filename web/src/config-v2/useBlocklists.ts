@@ -42,7 +42,7 @@ export function loadBlocklists(): Promise<void> {
   return loading
 }
 
-const subscriptionsSent = () => model.blocklists.subscriptions.map((s) => ({ url: s.url, enabled: s.enabled }))
+const subscriptionsSent = () => model.blocklists.subscriptions.map((s) => ({ url: s.url, enabled: s.enabled, allow: Boolean(s.allow) }))
 /** 草稿里的文件不是按现在的订阅合成的：要重新合成，保存要等它 / The draft's file was not built for the current subscriptions: a build is due, and a save waits for it */
 export const needsBuild = (): boolean => blocklistKey(model.blocklists) !== model.blocklists.builtFor
 

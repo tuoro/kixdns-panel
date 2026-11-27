@@ -194,6 +194,35 @@ test('自己粘贴的列表先叫「文件名 · 主机」，下载下来带着�
   await expect(page.getByRole('alert')).toHaveText('已经订阅了这个列表')
 })
 
+// 白名单是下面一样的一张卡片：粘贴链接就订阅、下载；一个链接只能是拦截列表或白名单中的一个；改了哪些里写的是「白名单」
+// The allowlists are a card just like it below: pasting a link subscribes and downloads; one link is either a blocklist or an allowlist; the
+// review says 白名单
+test('白名单：粘贴链接加在白名单那张卡片上，同一个链接不能两边都订阅 @responsive', async ({ page }) => {
+  await open(page)
+  const allowCard = page.locator('.bl__card', { has: page.getByRole('heading', { name: '白名单', exact: true }) })
+  const blockCard = page.locator('.bl__card', { has: page.getByRole('heading', { name: '订阅的列表', exact: true }) })
+  await expect(allowCard).toContainText('还没有白名单')
+  const link = 'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/whitelist-referral.txt'
+  await page.getByLabel('白名单的链接').fill(link)
+  await page.getByRole('button', { name: '添加白名单', exact: true }).click()
+  await expect(allowCard.locator('.bl__row')).toHaveCount(1)
+  await expect(allowCard.locator('.bl__row')).toContainText('whitelist-referral.txt')
+  await expect(blockCard.locator('.bl__row')).toHaveCount(0)
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await expect(allowCard.locator('.bl__row')).toContainText('刚刚')
+
+  await page.getByLabel('列表的链接').fill(link)
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.getByRole('alert')).toHaveText('这个列表已经在白名单里了：要用来拦截，先在白名单里删掉它')
+  await expect(blockCard.locator('.bl__row')).toHaveCount(0)
+
+  await expect(page.locator('.cfg__savebar')).toContainText('已修改 1 处')
+  await page.locator('.cfg__savebar').getByRole('button', { name: /已修改/ }).click()
+  const review = page.getByRole('dialog', { name: '改了哪些' })
+  await expect(review).toContainText('白名单「whitelist-referral.txt」')
+  await expect(review).not.toContainText('拦截列表「')
+})
+
 test('连删两个再先后撤销，顺序照旧', async ({ page }) => {
   await open(page)
   const names = ['AdGuard DNS filter', 'HaGeZi Pro', 'OISD big', 'anti-AD']
