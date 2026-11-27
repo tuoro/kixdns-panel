@@ -657,7 +657,7 @@ function actDevice(d: BlockDevice, value: string): void {
                 </label>
               </li>
             </ul>
-            <small v-else class="pfield__hint">还没有订阅拦截列表，先在上面订阅一个。</small>
+            <small v-else class="pfield__hint">要先在上面订阅拦截列表，这里才有可勾的。</small>
           </div>
         </div>
         <footer class="pdialog__foot"><p v-if="deviceError" class="ui-field-error bl__deverr" role="alert">{{ deviceError }}</p><button class="ui-btn ui-btn--secondary" type="button" @click="deviceDialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="submit">{{ editing ? '保存' : '添加' }}</button></footer>
