@@ -1,4 +1,4 @@
-import { MAX_SUBSCRIPTIONS, PRESETS } from '../config-model/blocklist'
+import { MAX_SUBSCRIPTIONS, presetFor } from '../config-model/blocklist'
 import { ApiError } from './client'
 import type { BlocklistBuildRequest, BlocklistBuildResult, BlocklistSource, BlocklistState, BlocklistSummary, GeoDataSchedule } from './types'
 
@@ -30,7 +30,7 @@ function digest(text: string): string {
 
 // anti-AD 真有这几行没用上的（2026-10-17 下载的那份） / anti-AD really holds these unused lines (the copy downloaded 2026-10-17)
 function summaryOf(url: string): BlocklistSummary {
-  const preset = PRESETS.find((p) => p.url === url)
+  const preset = presetFor(url)
   if (preset?.name === 'anti-AD') {
     return {
       rules: preset.rules,

@@ -10,7 +10,7 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
-import { checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, uniqueSubscriptionName, type Skip } from '../config-model/blocklist'
+import { ALLOW_PRESETS, checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, presetFor, PRESETS, shortName, skipText, uniqueSubscriptionName, type Skip } from '../config-model/blocklist'
 import { blockLabel, blocklistKey, type Subscription } from '../config-model/model'
 import { formatAgo, formatVersionTime } from '../utils'
 import { vLineDots } from '../line-dots'
@@ -37,7 +37,7 @@ onMounted(() => void loadBlocklists())
 
 const subscriptions = computed(() => model.blocklists.subscriptions)
 const host = (url: string) => { try { return new URL(url).host } catch { return url } }
-const presetOf = (s: Subscription) => PRESETS.find((p) => p.url === s.url)
+const presetOf = (s: Subscription) => presetFor(s.url)
 // 「内容」列：推荐的列表写它拦什么；自己粘贴的补上名字里没有的：名字是标题时，写链接的最后两段在前、主机在后（和默认名「文件名 · 主机」一个写法），
 // 截短时截掉的是大家一样的主机，能区分各行的尾巴留着；名字里已经有主机时（默认名），和窄屏名字下面那行一样只写目录，没有目录写「—」。完整的链接在悬停提示里
 // The 内容 column: what a suggested list blocks; for a pasted one, what its name leaves out: under a title, the link's last two segments first and the
@@ -344,24 +344,30 @@ function addFromUrl(key: Kind): void {
   else if (room.value <= 0) addError[key] = `已经订阅了 ${MAX_SUBSCRIPTIONS} 个列表，先删掉一个再加`
   else { subscribe([checked.url], allow); addUrl[key] = ''; addError[key] = '' }
 }
+// 推荐的列表和推荐的白名单共用一个对话框，打开时记下是哪一种 / The suggested blocklists and allowlists share one dialog, which notes the kind
+// when it opens
 const presetDialog = ref<HTMLDialogElement | null>(null)
+const presetKind = ref<Kind>('block')
+const presets = computed(() => (presetKind.value === 'allow' ? ALLOW_PRESETS : PRESETS))
+const presetTitle = computed(() => (presetKind.value === 'allow' ? '推荐的白名单' : '推荐的列表'))
 const picked = ref<string[]>([])
 const subscribed = (url: string) => subscriptions.value.some((s) => normalUrl(s.url) === url)
 // 已订阅的勾着、不能改，用共用复选框「勾着又禁用」的样子 / Subscribed ones are ticked and fixed, in the shared checkbox's ticked-and-disabled look
 const pick = (url: string, on: boolean) => { picked.value = on ? [...picked.value, url] : picked.value.filter((u) => u !== url) }
 // 名额用完：没勾的不能再勾 / Out of room: items not ticked cannot be ticked
 const full = (url: string) => !picked.value.includes(url) && picked.value.length >= room.value
-const roomShort = computed(() => room.value < PRESETS.filter((p) => !subscribed(p.url)).length)
+const roomShort = computed(() => room.value < presets.value.filter((p) => !subscribed(p.url)).length)
 // 名额提示跟着勾选变：还能选几个，满了说怎么办 / The room hint follows the ticks: how many more can be picked, and what to do once full
 const roomHint = computed(() => (room.value <= 0 ? `已经订阅了 ${MAX_SUBSCRIPTIONS} 个列表，要加新的，先删掉一个。`
   : room.value - picked.value.length <= 0 ? `最多订阅 ${MAX_SUBSCRIPTIONS} 个列表，这次的名额已经选满。` : `最多订阅 ${MAX_SUBSCRIPTIONS} 个列表，这次还能选 ${room.value - picked.value.length} 个。`))
 const memoryText = (mib: number) => (mib < 1 ? '内存不到 1\u00a0MiB' : `内存约 ${mib}\u00a0MiB`)
-function openPresets(): void {
+function openPresets(key: Kind = 'block'): void {
+  presetKind.value = key
   picked.value = []
   presetDialog.value?.showModal()
 }
 function addPicked(): void {
-  subscribe(PRESETS.filter((p) => picked.value.includes(p.url) && !subscribed(p.url)).map((p) => p.url))
+  subscribe(presets.value.filter((p) => picked.value.includes(p.url) && !subscribed(p.url)).map((p) => p.url), presetKind.value === 'allow')
   presetDialog.value?.close()
 }
 
@@ -431,7 +437,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <span class="bl__titles"><h2 :id="headingId(card.key)">{{ card.allow ? '白名单' : '订阅的列表' }}</h2><p>{{ card.allow ? '列表里的域名，订阅的列表都不拦' : '先于所有规则生效，域名映射除外' }}</p></span>
         <span class="bl__tools">
           <template v-if="card.list.length">
-            <button v-if="!card.allow" class="ui-btn ui-btn--text" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
+            <button class="ui-btn ui-btn--text" type="button" @click="openPresets(card.key)"><ListPlus :size="16" aria-hidden="true" />{{ card.allow ? '推荐的白名单' : '推荐的列表' }}</button>
             <button class="ui-btn ui-btn--text" type="button" :disabled="card.busy" @click="updateAll(card.list)"><RefreshCw :size="16" aria-hidden="true" />全部更新</button>
           </template>
           <UiHelp v-if="!card.allow" topic="blocklists" />
@@ -447,9 +453,11 @@ const blockText = computed(() => blockLabel(model, 'default'))
       <!-- 配置里用着一份拦截列表、却没记下是哪些列表合成的（从别处读进来的）：照实说，不像是什么都没开 / The config uses a blocklist file but did not record
            which lists built it (read in from elsewhere): say so, rather than look as if nothing were on -->
       <UiEmpty v-if="!card.list.length && !card.allow" :icon="ShieldBan" title="还没有订阅拦截列表" :desc="model.blocklists.file ? '配置里还用着一份拦截列表，但没记下是哪些列表合成的；订阅列表并保存以后，会换成新合成的。' : '从推荐的列表里挑一个，或者在上面粘贴 AdGuard、Adblock 规则和 hosts\u00a0文件的链接。'">
-        <button class="ui-btn ui-btn--secondary" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
+        <button class="ui-btn ui-btn--secondary" type="button" @click="openPresets('block')"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
       </UiEmpty>
-      <UiEmpty v-else-if="!card.list.length" :icon="ShieldCheck" title="还没有白名单" :desc="'在上面粘贴列表的链接：AdGuard、Adblock 规则，hosts\u00a0文件，或者一行一个域名都行。白名单里的每一条都当放行，写成拦截的也一样。'" />
+      <UiEmpty v-else-if="!card.list.length" :icon="ShieldCheck" title="还没有白名单" :desc="'从推荐的白名单里挑，或者在上面粘贴链接：AdGuard、Adblock 规则，hosts\u00a0文件，或者一行一个域名都行。白名单里的每一条都当放行，写成拦截的也一样。'">
+        <button class="ui-btn ui-btn--secondary" type="button" @click="openPresets('allow')"><ListPlus :size="16" aria-hidden="true" />推荐的白名单</button>
+      </UiEmpty>
       <template v-else>
         <div class="bl__table">
           <div class="bl__cols" aria-hidden="true"><span>列表</span><span class="bl__col-about">内容</span><span>规则</span><span>更新</span><span>启用</span></div>
@@ -525,10 +533,10 @@ const blockText = computed(() => blockLabel(model, 'default'))
 
     <dialog ref="presetDialog" class="pdialog" aria-labelledby="blp-title" @click.self="presetDialog?.close()">
       <form class="pdialog__panel bl__dialog" @submit.prevent="addPicked">
-        <header class="pdialog__head"><h2 id="blp-title">推荐的列表</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="presetDialog?.close()"><X :size="16" /></button></header>
+        <header class="pdialog__head"><h2 id="blp-title">{{ presetTitle }}</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="presetDialog?.close()"><X :size="16" /></button></header>
         <div class="pdialog__body">
           <ul class="blp">
-            <li v-for="p in PRESETS" :key="p.url" class="blp__row">
+            <li v-for="p in presets" :key="p.url" class="blp__row">
               <label class="blp__item" :class="{ 'is-done': subscribed(p.url), 'is-full': full(p.url) && !subscribed(p.url) }">
                 <span class="ui-checkbox"><input type="checkbox" :checked="subscribed(p.url) || picked.includes(p.url)" :disabled="subscribed(p.url) || full(p.url)" @change="pick(p.url, ($event.target as HTMLInputElement).checked)"><i></i></span>
                 <span class="blp__main"><b>{{ p.name }}</b><small>{{ p.about }}</small></span>
