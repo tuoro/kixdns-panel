@@ -1,4 +1,4 @@
-import { checkSentence, conditionsText, ecsText, fallbackSentence, LOG_LEVEL_NAME, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, rawMatchersText, type Blocklists, type Model, type Rule, type Subscription, type UpstreamGroup, ruleTitle } from './model'
+import { checkSentence, conditionsText, ecsText, fallbackSentence, LOG_LEVEL_NAME, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, rawMatchersText, type BlockDevice, type Blocklists, type Model, type Rule, type Subscription, type UpstreamGroup, ruleTitle } from './model'
 import { SETTING_SECTIONS, settingName, type SettingField } from '../config-editor/schema'
 import { normalUrl, shortName } from './blocklist'
 
@@ -212,6 +212,23 @@ function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists, t
   // not a difference
   const aside: DiffBlock | null = now.file !== then.file && links(now) !== links(then) && toward === 'restore' && shared
     ? { kind: '改了', title: '拦截列表', lines: [], note: '两边都启用的列表，之后重新下载过的，内容也换回这个版本当时下载的那份', aside: true } : null
+  // 不拦截的设备按编号比；跳过的列表写名字，订阅里已经没有的不写 / Devices left unblocked compare by id; skipped lists go by name, those no longer
+  // subscribed are left out
+  const deviceFacts = (d: BlockDevice, b: Blocklists) => ({
+    IP: d.ips.join('、') || '—',
+    MAC: d.macs.join('、') || '—',
+    跳过: b.subscriptions.filter((x) => !x.allow && d.skip.some((u) => normalUrl(u) === normalUrl(x.url))).map((x) => shortName(x.name, x.url)).join('、') || '—',
+  })
+  const deviceTitle = (d: BlockDevice) => `不拦截的设备「${d.name}」`
+  const beforeDevices = now.devices ?? []
+  const afterDevices = then.devices ?? []
+  for (const d of beforeDevices) if (!afterDevices.some((x) => x.id === d.id)) blocks.push({ kind: '去掉', title: deviceTitle(d), lines: Object.entries(deviceFacts(d, now)).map(([k, v]) => ({ sign: '-', text: `${k}：${v}` })) })
+  for (const d of afterDevices) {
+    const old = beforeDevices.find((x) => x.id === d.id)
+    if (!old) { blocks.push({ kind: '加上', title: deviceTitle(d), lines: Object.entries(deviceFacts(d, then)).map(([k, v]) => ({ sign: '+', text: `${k}：${v}` })) }); continue }
+    const lines = changed({ 名字: old.name, ...deviceFacts(old, now) }, { 名字: d.name, ...deviceFacts(d, then) })
+    if (lines.length) blocks.push({ kind: '改了', title: deviceTitle(d), lines })
+  }
   const rows = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean)
   const before = rows(now.custom)
   const after = rows(then.custom)

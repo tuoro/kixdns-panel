@@ -686,6 +686,7 @@ async fn a_scheduled_blocklist_update_swaps_the_file_in_the_config() {
                 url: url.to_owned(),
                 enabled: true,
                 allow: false,
+                group: String::new(),
             }],
             refresh: Vec::new(),
         })
@@ -1455,6 +1456,7 @@ async fn one_round_checks_and_records_both_schedules_by_its_own_reading() {
                 url: url.to_owned(),
                 enabled: true,
                 allow: false,
+                group: String::new(),
             }],
             refresh: Vec::new(),
         })

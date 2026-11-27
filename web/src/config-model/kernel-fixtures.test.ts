@@ -132,11 +132,23 @@ function qtypeNames(): Model {
 }
 
 function blocklistKinds(): Model[] {
-  return (['NXDOMAIN', 'REFUSED', 'zero'] as const).map((block) => base([], {
+  const lists = (['NXDOMAIN', 'REFUSED', 'zero'] as const).map((block) => base([], {
     defaults: { block },
     blocklists: { ...emptyBlocklists(), subscriptions: [{ id: id(), name: '广告', url: 'https://lists.example/ads.txt', enabled: true }], builtFor: 'https://lists.example/ads.txt',
       file: `/var/lib/kixdns-panel/geo/blocklist-${'d'.repeat(64)}.json`, custom: '||ads.example^\n@@||ok.ads.example^\n/^track[0-9]+\\./\n||中文广告.example^' },
   }))
+  // 不拦截的设备：按 IPv4、IPv6 网段和 MAC 排除，跳过其中一个列表（分组的入口带 client_ip 和 client_mac） / Devices left unblocked, excluded by IPv4, an
+  // IPv6 network and MAC, skipping one of the lists (the grouped entries carry client_ip and client_mac)
+  const ads = 'https://lists.example/ads.txt'
+  const devices = base([], {
+    blocklists: {
+      ...emptyBlocklists(),
+      subscriptions: [{ id: id(), name: '广告', url: ads, enabled: true }, { id: id(), name: '恶意网站', url: 'https://lists.example/malware.txt', enabled: true }],
+      file: `/var/lib/kixdns-panel/geo/blocklist-${'e'.repeat(64)}.json`, custom: '||ads.example^',
+      devices: [{ id: id(), name: '老人的手机', ips: ['192.168.1.30', 'fd00::/64'], macs: ['aa:bb:cc:dd:ee:ff'], skip: [ads] }],
+    },
+  })
+  return [...lists, devices]
 }
 
 // 其余请求拦截时，设置里照写的默认上游，和只写 IP 的引导 DNS（没写端口的写进内核时补上 53） / With 其余请求 blocking, the default upstream as
@@ -237,7 +249,7 @@ describe('交给真内核校验的配置', () => {
     const all = fixtures()
     const out = process.env.KERNEL_FIXTURES
     if (out) writeFileSync(out, JSON.stringify(all))
-    expect(all.length).toBe(12 + SEEDS)
+    expect(all.length).toBe(13 + SEEDS)
     for (const f of all) refuseUnknownTypes(f.config as KConfigLike)
   })
 })

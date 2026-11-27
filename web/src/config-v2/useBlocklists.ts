@@ -2,7 +2,7 @@ import { reactive, watch } from 'vue'
 import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { BlocklistBuildResult, BlocklistSource, BlocklistState, GeoDataSchedule } from '../api/types'
 import { isDefaultName, normalUrl, shortName } from '../config-model/blocklist'
-import { blocklistKey } from '../config-model/model'
+import { blocklistGroups, blocklistKey } from '../config-model/model'
 import { useConnection } from '../composables/useConnection'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
@@ -42,7 +42,12 @@ export function loadBlocklists(): Promise<void> {
   return loading
 }
 
-const subscriptionsSent = () => model.blocklists.subscriptions.map((s) => ({ url: s.url, enabled: s.enabled, allow: Boolean(s.allow) }))
+// 有设备跳过的拦截列表带上分组，服务端照分组另放它们的拦截（见 model.ts 的 blocklistGroups） / A blocklist some devices skip carries its group, and
+// the server keeps its blocks apart by it (see blocklistGroups in model.ts)
+const subscriptionsSent = () => {
+  const groups = blocklistGroups(model.blocklists)
+  return model.blocklists.subscriptions.map((s) => ({ url: s.url, enabled: s.enabled, allow: Boolean(s.allow), ...(groups.get(s.url) ? { group: groups.get(s.url) } : {}) }))
+}
 /** 草稿里的文件不是按现在的订阅合成的：要重新合成，保存要等它 / The draft's file was not built for the current subscriptions: a build is due, and a save waits for it */
 export const needsBuild = (): boolean => blocklistKey(model.blocklists) !== model.blocklists.builtFor
 

@@ -97,6 +97,12 @@ pub struct Subscription {
     /// blocklist
     #[serde(default)]
     pub allow: bool,
+    /// 拦截列表的分组：有设备跳过它时，页面按跳过它的设备分的组（`g1`…，见 [`blocklist::group_tags`]）；没有设备跳过、
+    /// 白名单、旧页面都不带，是 `""`
+    /// The blocklist's group: when some devices skip it, the group the page puts it in by those devices (`g1`…, see
+    /// [`blocklist::group_tags`]); a list no device skips, an allowlist and older pages carry none, which is `""`
+    #[serde(default)]
+    pub group: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,6 +243,7 @@ impl BlocklistManager {
                 url: source.url,
                 enabled: true,
                 allow: source.allow,
+                group: source.group,
             })
             .collect();
         let (path, failed) = self.update(&mut state, &subscriptions, |_| true).await?;
@@ -485,6 +492,7 @@ impl BlocklistManager {
                     url: subscription.url.clone(),
                     sha256,
                     allow: subscription.allow,
+                    group: subscription.group.clone(),
                 })
             })
             .collect();
@@ -494,9 +502,15 @@ impl BlocklistManager {
         if sources.is_empty() {
             return Ok(None);
         }
-        let lists: Vec<(PathBuf, bool)> = sources
+        let lists: Vec<(PathBuf, bool, String)> = sources
             .iter()
-            .map(|source| (self.raw_path(&source.sha256), source.allow))
+            .map(|source| {
+                (
+                    self.raw_path(&source.sha256),
+                    source.allow,
+                    source.group.clone(),
+                )
+            })
             .collect();
         let json = tokio::task::spawn_blocking(move || -> std::io::Result<Option<String>> {
             let read = |path: &PathBuf| {
@@ -508,16 +522,18 @@ impl BlocklistManager {
             // all allowlists, as in AdGuard Home's two separate sets. So a first pass gathers them; one list is read at
             // a time, never holding them all in memory at once
             let mut disabled = [HashSet::new(), HashSet::new()];
-            for (path, allow) in &lists {
+            // 分组只是为了让跳过它的设备不受它拦，`$badfilter` 照旧管所有拦截列表 / Groups only keep the devices skipping a
+            // list out of its blocks, so `$badfilter` still reaches every blocklist
+            for (path, allow, _) in &lists {
                 disabled[usize::from(*allow)].extend(blocklist::badfilters(&read(path)?));
             }
             let mut merged = Merged::default();
-            for (path, allow) in &lists {
+            for (path, allow, group) in &lists {
                 let text = read(path)?;
                 if *allow {
                     merged.add_allowlist(&text, &disabled[1]);
                 } else {
-                    merged.add(&text, &disabled[0]);
+                    merged.add_to_group(group, &text, &disabled[0]);
                 }
             }
             Ok((!merged.is_empty()).then(|| merged.geosite_json(&sources)))
@@ -661,10 +677,19 @@ fn normalize_subscriptions(
             other => other,
         })?;
         if seen.insert(url.clone()) {
+            // 白名单不分组：它只放行，对所有设备都一样 / Allowlists are not grouped: they only allow, the same for every device
+            let group = subscription.group.trim().to_owned();
+            if !group.is_empty() && (subscription.allow || !blocklist::valid_group(&group)) {
+                return Err(GeoDataError::Invalid(format!(
+                    "{WHAT}「{}」：分组写得不对",
+                    shown_url(&url)
+                )));
+            }
             normalized.push(Subscription {
                 url,
                 enabled: subscription.enabled,
                 allow: subscription.allow,
+                group,
             });
         }
     }
@@ -726,6 +751,14 @@ mod tests {
             url: url.to_owned(),
             enabled,
             allow: false,
+            group: String::new(),
+        }
+    }
+
+    fn in_group(url: &str, group: &str) -> Subscription {
+        Subscription {
+            group: group.to_owned(),
+            ..subscription(url, true)
         }
     }
 
@@ -778,6 +811,7 @@ mod tests {
                 url: A.to_owned(),
                 sha256: sha_a.clone(),
                 allow: false,
+                group: String::new(),
             }])
         );
         let text = String::from_utf8(json).unwrap();
@@ -802,11 +836,13 @@ mod tests {
                     url: A.to_owned(),
                     sha256: sha_a,
                     allow: false,
+                    group: String::new(),
                 },
                 SourceRef {
                     url: B.to_owned(),
                     sha256: sha_b,
                     allow: false,
+                    group: String::new(),
                 }
             ]
         );
@@ -818,6 +854,111 @@ mod tests {
         // removing it is discarded
         assert!(manager.state().await.unwrap().sources.contains_key(B));
         assert_eq!(manager.state().await.unwrap().last_built, None);
+    }
+
+    /// 有设备跳过的列表按分组另放拦截，放行不分组；`$badfilter` 照旧管所有拦截列表。文件里记着分组，定时更新照样分组；
+    /// 分组写错、白名单带分组都不收
+    /// Lists some devices skip keep their blocks apart by group while allows stay ungrouped, and `$badfilter` still
+    /// reaches every blocklist. The file records the groups, so the scheduled update groups the same way; a bad group, or
+    /// an allowlist with one, is refused
+    #[tokio::test]
+    async fn skipped_lists_keep_their_blocks_apart_by_group() {
+        let directory = tempdir().unwrap();
+        let manager = manager(directory.path()).await;
+        manager
+            .hold_for_tests(A, "||ads.example^\n||shared.example^\n@@||ok.example^\n")
+            .await;
+        manager
+            .hold_for_tests(
+                B,
+                "||tracker.example^\n||shared.example^\n||vip.example^$important\n||ads.example^$badfilter\n",
+            )
+            .await;
+
+        let built = build(
+            &manager,
+            vec![subscription(A, true), in_group(B, "g1")],
+            &[],
+        )
+        .await;
+        let path = built.path.unwrap();
+        let json = std::fs::read(&path).unwrap();
+        let file: Value = serde_json::from_slice(&json).unwrap();
+        let tags: Vec<&str> = file["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["tag"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                blocklist::TAG_BLOCK,
+                blocklist::TAG_ALLOW,
+                blocklist::TAG_BLOCK_IMPORTANT,
+                blocklist::TAG_ALLOW_IMPORTANT,
+                "kixdns-panel-block-g1",
+                "kixdns-panel-block-important-g1",
+            ]
+        );
+        let tag = |name: &str| {
+            file["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["tag"] == name)
+                .unwrap()["domains"]
+                .clone()
+        };
+        assert_eq!(
+            tag(blocklist::TAG_BLOCK),
+            json!(["domain:shared.example"]),
+            "B's $badfilter still takes out A's rule"
+        );
+        assert_eq!(
+            tag("kixdns-panel-block-g1"),
+            json!(["domain:shared.example", "domain:tracker.example"])
+        );
+        assert_eq!(
+            tag("kixdns-panel-block-important-g1"),
+            json!(["domain:vip.example"])
+        );
+        assert_eq!(tag(blocklist::TAG_ALLOW), json!(["domain:ok.example"]));
+        let sources = blocklist::read_sources(&json).unwrap();
+        assert_eq!(
+            sources.iter().map(|s| s.group.as_str()).collect::<Vec<_>>(),
+            ["", "g1"]
+        );
+
+        let config = json!({ "settings": { "geosite_data_paths": [path] } });
+        assert_eq!(
+            manager.refresh_running(&config).await.unwrap(),
+            Some(Refresh {
+                replaced: None,
+                failed: 2
+            }),
+            "the scheduled update groups the same way and builds the same file"
+        );
+
+        for refused in [
+            vec![in_group(A, "g0")],
+            vec![in_group(A, "x1")],
+            vec![in_group(A, "g100")],
+            vec![Subscription {
+                allow: true,
+                ..in_group(A, "g1")
+            }],
+        ] {
+            assert!(matches!(
+                manager
+                    .build(BuildRequest {
+                        subscriptions: refused,
+                        refresh: Vec::new(),
+                    })
+                    .await,
+                Err(GeoDataError::Invalid(_))
+            ));
+        }
     }
 
     /// 白名单里的每一条都当重要放行，写成拦截的、hosts 的一行也一样；`$badfilter` 只管同一类的列表。文件里记着哪个是
@@ -887,11 +1028,13 @@ mod tests {
                     url: A.to_owned(),
                     sha256: sha_a,
                     allow: false,
+                    group: String::new(),
                 },
                 SourceRef {
                     url: B.to_owned(),
                     sha256: sha_b,
                     allow: true,
+                    group: String::new(),
                 }
             ])
         );
@@ -971,6 +1114,7 @@ mod tests {
                 url: A.to_owned(),
                 sha256: sha_a,
                 allow: false,
+                group: String::new(),
             }])
         );
     }
@@ -1041,6 +1185,7 @@ mod tests {
             url: C.to_owned(),
             sha256: sha_c.clone(),
             allow: false,
+            group: String::new(),
         }]);
         let retained_file = manager
             .geo
@@ -1275,6 +1420,7 @@ mod tests {
             url: url.to_owned(),
             enabled,
             allow: false,
+            group: String::new(),
         };
         let normalized = normalize_subscriptions(vec![
             subscription(" https://lists.example/a.txt ", true),

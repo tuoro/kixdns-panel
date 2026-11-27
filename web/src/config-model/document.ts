@@ -94,7 +94,9 @@ const withBlocklists = (model: Model): Model => {
     seen.add(id)
     return id === one.id ? one : { ...one, id }
   })
-  const blocklists = { ...model.blocklists, subscriptions }
+  // 没有设备时不写 devices：空的一项和没有这一项是同一份配置 / Without devices, devices is left out: an empty one and none are the same config
+  const { devices, ...rest } = model.blocklists
+  const blocklists = { ...rest, subscriptions, ...(devices?.length ? { devices } : {}) }
   return { ...model, blocklists: typeof blocklists.builtFor === 'string' ? blocklists : { ...blocklists, builtFor: blocklistKey(blocklists) } }
 }
 

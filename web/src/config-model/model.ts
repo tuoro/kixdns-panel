@@ -1,4 +1,4 @@
-import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, ownMatcher, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
+import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, groupTags, normalUrl, ownMatcher, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { toTree, treeText } from './condTree'
 import {
   byteLength, cidrOf, isCidr, isCnameTarget, isDomain, isIp, isPrefix, isQclass, isQtype, isRcode, isTtl, kernelDomain, kernelRegexOk, QCLASSES, qtypeRule, RCODES, TTL_PROBLEM,
@@ -77,11 +77,44 @@ export interface Defaults { block: 'NXDOMAIN' | 'REFUSED' | 'zero' }
 // allow 是白名单：列表里的每一条都当放行，写成拦截的也一样；拦截列表不写这一项（白名单以前的模型都是这样）
 // allow marks an allowlist: every rule in it allows, those written as blocks too; a blocklist leaves it out (as every model from before allowlists does)
 export interface Subscription { id: number; name: string; url: string; enabled: boolean; allow?: true }
-export interface Blocklists { subscriptions: Subscription[]; file: string | null; custom: string; builtFor: string }
+// 不拦截的设备：按 IP（或网段）和 MAC 认，skip 是它跳过的拦截列表（订阅的链接）。自己写的规则和白名单对它照常生效。没有设备时不写 devices
+// A device left unblocked: known by IP (or network) and MAC, skip being the blocklists it skips (subscription links). One's own rules and the
+// allowlists hold for it as usual. Without devices, devices is left out
+export interface BlockDevice { id: number; name: string; ips: string[]; macs: string[]; skip: string[] }
+export interface Blocklists { subscriptions: Subscription[]; file: string | null; custom: string; builtFor: string; devices?: BlockDevice[] }
 export const emptyBlocklists = (): Blocklists => ({ subscriptions: [], file: null, custom: '', builtFor: '' })
-/** 合成的文件取决于哪些列表：启用的链接，不论先后；白名单的前面带 @@，拦截列表的照旧只写链接 / What the merged file depends on: the enabled links, in any
- * order; an allowlist's carries a leading @@, a blocklist's is the bare link as before */
-export const blocklistKey = (b: Pick<Blocklists, 'subscriptions'>): string => b.subscriptions.filter((s) => s.enabled).map((s) => (s.allow ? `@@${s.url}` : s.url)).sort().join('\n')
+/** 设备认得出来：至少有一个 IP 或 MAC / A device can be told: it has at least one IP or MAC */
+const identified = (d: BlockDevice): boolean => d.ips.length + d.macs.length > 0
+/**
+ * 拦截列表的分组：启用的拦截列表按跳过它的设备分组，链接对分组（g1、g2…）；没有设备跳过的不分组（""）。分组按跳过它的设备排好、编上号，
+ * 同样的设置总是分出同样的组。白名单和停用的列表不分组
+ * The blocklists' groups: enabled blocklists are grouped by the devices skipping them, link to group (g1, g2…); a list no device skips has
+ * none (""). Groups are ordered by the devices skipping them and numbered, so the same settings always give the same groups. Allowlists and
+ * disabled lists are not grouped
+ */
+export function blocklistGroups(b: Pick<Blocklists, 'subscriptions' | 'devices'>): Map<string, string> {
+  const devices = (b.devices ?? []).filter(identified)
+  const skippers = new Map<string, string>()
+  for (const s of b.subscriptions) {
+    if (!s.enabled || s.allow) continue
+    const by = devices.filter((d) => d.skip.some((u) => normalUrl(u) === normalUrl(s.url))).map((d) => d.id).sort((x, y) => x - y)
+    skippers.set(s.url, by.join(','))
+  }
+  const keys = [...new Set([...skippers.values()].filter(Boolean))].sort()
+  return new Map([...skippers].map(([url, key]) => [url, key ? `g${keys.indexOf(key) + 1}` : '']))
+}
+/** 跳过这个分组的设备 / The devices skipping this group */
+export function groupDevices(b: Pick<Blocklists, 'subscriptions' | 'devices'>, group: string): BlockDevice[] {
+  const groups = blocklistGroups(b)
+  const urls = [...groups].filter(([, g]) => g === group).map(([url]) => normalUrl(url))
+  return (b.devices ?? []).filter(identified).filter((d) => urls.length && urls.every((u) => d.skip.some((x) => normalUrl(x) === u)))
+}
+/** 合成的文件取决于哪些列表：启用的链接，不论先后；白名单的前面带 @@，分组的后面带上分组，拦截列表的照旧只写链接 / What the merged file depends on: the
+ * enabled links, in any order; an allowlist's carries a leading @@, a grouped one its group after it, a blocklist's is the bare link as before */
+export const blocklistKey = (b: Pick<Blocklists, 'subscriptions' | 'devices'>): string => {
+  const groups = blocklistGroups(b)
+  return b.subscriptions.filter((s) => s.enabled).map((s) => (s.allow ? `@@${s.url}` : `${s.url}${groups.get(s.url) ? `\t${groups.get(s.url)}` : ''}`)).sort().join('\n')
+}
 // settings 是内核的全局设置（监听、缓存、Geo 数据……），原样写进配置；只有 default_upstream 由「其余请求」决定
 // settings are the kernel's global settings (listeners, cache, Geo data…), written as they are; only default_upstream follows 其余请求
 export interface Model {
@@ -497,6 +530,7 @@ export function nextId(model: Model): number {
   for (const rg of model.ruleGroups) walk(rg.rules)
   for (const x of model.mappings) ids.push(x.id)
   for (const x of model.blocklists.subscriptions) ids.push(x.id)
+  for (const x of model.blocklists.devices ?? []) ids.push(x.id)
   return Math.max(0, ...ids) + 1
 }
 
@@ -910,12 +944,22 @@ export function kernelRuleCount(rule: Rule): number {
   return (groups.length ? groups : [[]]).reduce((n, g) => n + andChains(g.flatMap(requestTerms), { type: 'any' }).length, 0)
 }
 
+/** 设备在入口里的排除条件：每个 IP 一条 client_ip，每个 MAC 一条 client_mac，都是「减去」 / A device's exclusions in an entry: a client_ip per IP
+ * and a client_mac per MAC, each taken off */
+export const deviceExclusions = (d: BlockDevice): KMatcher[] => [
+  ...d.ips.map((ip): KMatcher => ({ type: 'client_ip', cidr: cidrOf(ip), operator: 'and_not' })),
+  ...d.macs.map((mac): KMatcher => ({ type: 'client_mac', mac, operator: 'and_not' })),
+]
+
 /**
  * 拦截列表的入口，排在域名映射后面、高级入口前面，都进只回拦截的那个 Pipeline。自己写的放行比什么都优先，所以每个入口都减掉它们；
- * 自己写的拦截列表里的放行管不了；列表里带 `$important` 的拦截只有带 `$important` 的放行管得了；其余的拦截减掉列表里所有放行
+ * 自己写的拦截列表里的放行管不了；列表里带 `$important` 的拦截只有带 `$important` 的放行管得了；其余的拦截减掉列表里所有放行。
+ * 有设备跳过的列表按分组（见 blocklistGroups）各有两个入口，跟在后面，再减掉跳过它们的设备；自己写的规则不分设备
  * The blocklists' entries, after the mappings and before the advanced entries, all into the pipeline that only blocks. The rules
  * of one's own that allow come first of all, so every entry takes them off; one's own blocks are beyond the lists' allows; a
- * list's `$important` block yields only to `$important` allows; every other block yields to all the lists' allows
+ * list's `$important` block yields only to `$important` allows; every other block yields to all the lists' allows. Lists some devices
+ * skip have two entries per group (see blocklistGroups), following, which also take off the devices skipping them; one's own rules hold
+ * for every device
  */
 export function blocklistEntries(model: Model, pipeline = BLOCKLIST_PIPELINE): KernelConfig['pipeline_select'] {
   const own = parseOwnRules(model.blocklists.custom).rules
@@ -927,6 +971,12 @@ export function blocklistEntries(model: Model, pipeline = BLOCKLIST_PIPELINE): K
   if (model.blocklists.file) {
     entries.push(entry([tag(TAG_BLOCK_IMPORTANT, 'and'), tag(TAG_ALLOW_IMPORTANT, 'and_not')]))
     entries.push(entry([tag(TAG_BLOCK, 'and'), tag(TAG_ALLOW, 'and_not'), tag(TAG_ALLOW_IMPORTANT, 'and_not')]))
+    for (const group of [...new Set(blocklistGroups(model.blocklists).values())].filter(Boolean).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))) {
+      const [block, important] = groupTags(group)
+      const off = groupDevices(model.blocklists, group).flatMap(deviceExclusions)
+      entries.push(entry([tag(important, 'and'), tag(TAG_ALLOW_IMPORTANT, 'and_not'), ...off]))
+      entries.push(entry([tag(block, 'and'), tag(TAG_ALLOW, 'and_not'), tag(TAG_ALLOW_IMPORTANT, 'and_not'), ...off]))
+    }
   }
   return entries
 }

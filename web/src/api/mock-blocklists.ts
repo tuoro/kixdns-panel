@@ -89,9 +89,10 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
     sources.set(url, { sha256: digest(`${url}@${now}`), downloaded_at: now, summary: summaryOf(url), last_error: null, retryable: false, last_attempt_at: now, rejected_sha256: null })
   }
   // 和服务端一样：白名单只抵消拦截，只有白名单时不合成文件 / As on the server: allowlists only offset blocks, so allowlists alone build no file
-  const held = request.subscriptions.filter((s) => s.enabled).map((s) => ({ allow: Boolean(s.allow), sha: sources.get(s.url.trim())?.sha256 }))
-    .filter((s): s is { allow: boolean; sha: string } => Boolean(s.sha))
-  const used = held.map((s) => `${s.allow ? '@@' : ''}${s.sha}`).sort()
+  // 分组也算进名字：分组变了，合出的文件就不同 / Groups count in the name too: other groups make another file
+  const held = request.subscriptions.filter((s) => s.enabled).map((s) => ({ allow: Boolean(s.allow), group: s.group ?? '', sha: sources.get(s.url.trim())?.sha256 }))
+    .filter((s): s is { allow: boolean; group: string; sha: string } => Boolean(s.sha))
+  const used = held.map((s) => `${s.allow ? '@@' : ''}${s.sha}${s.group ? `#${s.group}` : ''}`).sort()
   return {
     path: held.some((s) => !s.allow) ? `/var/lib/kixdns-panel/geo/blocklist-${digest(used.join(','))}.json` : null,
     sources: Object.fromEntries(urls.flatMap((url) => { const s = sources.get(url); return s ? [[url, s] as const] : [] })),

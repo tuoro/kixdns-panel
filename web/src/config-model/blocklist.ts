@@ -15,6 +15,9 @@ export const TAG_BLOCK = 'kixdns-panel-block'
 export const TAG_ALLOW = 'kixdns-panel-allow'
 export const TAG_BLOCK_IMPORTANT = 'kixdns-panel-block-important'
 export const TAG_ALLOW_IMPORTANT = 'kixdns-panel-allow-important'
+/** 一个分组的两个拦截分类（普通的、带 $important 的），和服务端的 group_tags 一样；没有分组（""）的就是原来的两个 / A group's two block
+ * categories (plain and $important), as the server's group_tags; no group ("") gives the original two */
+export const groupTags = (group: string): [string, string] => (group ? [`${TAG_BLOCK}-${group}`, `${TAG_BLOCK_IMPORTANT}-${group}`] : [TAG_BLOCK, TAG_BLOCK_IMPORTANT])
 /** 拦下的请求进的 Pipeline，只回拦截 / The pipeline blocked requests enter, which only blocks */
 export const BLOCKLIST_PIPELINE = 'blocklist'
 /** 内核里那条规则的名字：命中数和查询日志按它认 / The kernel rule's name, by which hit counts and the query log know it */

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ExternalLink, ListPlus, Plus, RefreshCw, ShieldBan, ShieldCheck, TriangleAlert, X } from '@lucide/vue'
+import { ExternalLink, ListPlus, MonitorSmartphone, Plus, RefreshCw, ShieldBan, ShieldCheck, TriangleAlert, X } from '@lucide/vue'
 import { computed, onMounted, reactive, ref, shallowRef, watch, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import type { BlocklistSkippedLine } from '../api/types'
@@ -11,16 +11,16 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
 import { ALLOW_PRESETS, checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, presetFor, PRESETS, shortName, skipText, uniqueSubscriptionName, type Skip } from '../config-model/blocklist'
-import { blockLabel, blocklistKey, type Subscription } from '../config-model/model'
+import { blockLabel, blocklistKey, isCidr, type BlockDevice, type Subscription } from '../config-model/model'
 import { formatAgo, formatVersionTime } from '../utils'
 import { vLineDots } from '../line-dots'
 import GlueText from './GlueText.vue'
 import NameText from './NameText.vue'
 import { usePhone } from './phone'
-import { appliedModel, changedSubscriptionIds, changesBesidesFile, model, newId, placeBack } from './store'
+import { appliedModel, changedDeviceIds, changedSubscriptionIds, changesBesidesFile, model, newId, placeBack } from './store'
 import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule, settleBlocklists } from './useBlocklists'
 import { carryUpdate, noteLanded, unsavedLanding } from './updateCarry'
-import { hasApplyFailure, hasPending } from './useConfigDocument'
+import { hasApplyFailure, hasPending, runtimeCapabilities } from './useConfigDocument'
 import { fmtCount } from './view'
 import { KERNEL_UPDATE, KERNEL_UPDATE_LABEL, panelBlockWords, saysPanelBlock } from '../kernel-problems'
 
@@ -426,6 +426,75 @@ const scheduleHint = computed(() => {
   return savedLists.value ? '' : '保存了启用的列表以后才会开始更新'
 })
 const blockText = computed(() => blockLabel(model, 'default'))
+
+// ---------- 不拦截的设备 / devices left unblocked ----------
+// 每台设备按 IP（网段）和 MAC 认，跳过勾上的拦截列表；自己写的规则和白名单对它照常生效（model.ts 的 blocklistGroups）。跳过的列表一变就要重新合成，
+// 和改订阅一样由 useBlocklists 接着做
+// Each device is known by IP (network) and MAC and skips the blocklists ticked; one's own rules and the allowlists hold for it as usual (blocklistGroups in
+// model.ts). A change to the lists skipped needs a new build, which useBlocklists picks up as it does for subscription changes
+const devices = computed(() => model.blocklists.devices ?? [])
+const blocklistSubs = computed(() => subscriptions.value.filter((s) => !s.allow))
+// 内核认得 client_mac 才能按 MAC 认；认不得时只能填 IP / MAC only when the kernel knows client_mac; otherwise IPs only
+const macSupported = computed(() => runtimeCapabilities.value.includes('config_client_mac_v1'))
+const skipsOf = (d: BlockDevice) => blocklistSubs.value.filter((s) => d.skip.some((u) => normalUrl(u) === normalUrl(s.url)))
+function skipSummary(d: BlockDevice): string {
+  const on = skipsOf(d)
+  if (!on.length) return '没有跳过的列表'
+  if (on.length > 1 && on.length === blocklistSubs.value.length) return `跳过全部 ${on.length}\u00a0个列表`
+  return on.length <= 2 ? `跳过 ${on.map((s) => shortName(s.name, s.url)).join('、')}` : `跳过 ${on.length}\u00a0个列表`
+}
+const deviceMenu = [{ value: 'edit', label: '编辑' }, { value: 'delete', label: '删除', danger: true }]
+const deviceDialog = ref<HTMLDialogElement | null>(null)
+const editing = ref<BlockDevice | null>(null)
+const draft = reactive({ name: '', ips: '', macs: '', skip: [] as string[] })
+const deviceError = ref('')
+function editDevice(d: BlockDevice | null): void {
+  editing.value = d
+  draft.name = d?.name ?? ''
+  draft.ips = d?.ips.join('\n') ?? ''
+  draft.macs = d?.macs.join('\n') ?? ''
+  // 订阅里已经没有的列表不带过来 / Lists no longer subscribed are not carried over
+  draft.skip = d ? skipsOf(d).map((s) => s.url) : []
+  deviceError.value = ''
+  deviceDialog.value?.showModal()
+}
+const pickSkip = (url: string, on: boolean) => { draft.skip = on ? [...draft.skip, url] : draft.skip.filter((u) => u !== url) }
+// 一行一个，逗号、顿号、空格隔开也行 / One per line, or split by commas or spaces
+const entries = (text: string) => text.split(/[\s,，、]+/).map((x) => x.trim()).filter(Boolean)
+const MAC = /^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$/i
+function saveDevice(): void {
+  const name = draft.name.trim()
+  const ips = [...new Set(entries(draft.ips))]
+  const rawMacs = entries(draft.macs)
+  const badIp = ips.find((x) => !isCidr(x))
+  const badMac = rawMacs.find((x) => !MAC.test(x))
+  const macs = [...new Set(rawMacs.map((m) => m.toLowerCase().replace(/-/g, ':')))]
+  deviceError.value = !name ? '写个名字，比如「老人的手机」'
+    : badIp ? `「${badIp}」不是 IP 地址或网段`
+      : badMac ? `「${badMac}」不是 MAC 地址，要写成 aa:bb:cc:dd:ee:ff 这样`
+        : !ips.length && !macs.length ? '填一个 IP 或 MAC，KixDNS 才认得出这台设备'
+          : !draft.skip.length ? '勾上至少一个要跳过的列表' : ''
+  if (deviceError.value) return
+  const device: BlockDevice = { id: editing.value?.id ?? newId(), name, ips, macs, skip: [...draft.skip] }
+  const list = model.blocklists.devices ?? (model.blocklists.devices = [])
+  const at = editing.value ? list.findIndex((d) => d.id === editing.value!.id) : -1
+  if (at >= 0) list.splice(at, 1, device)
+  else list.push(device)
+  deviceDialog.value?.close()
+}
+function actDevice(d: BlockDevice, value: string): void {
+  if (value === 'edit') { editDevice(d); return }
+  const list = model.blocklists.devices ?? []
+  const at = list.indexOf(d)
+  list.splice(at, 1)
+  // 删光了就不留空的一项：和没有设备是同一份配置 / Deleting the last leaves no empty list behind: the same config as no devices
+  if (!list.length) delete model.blocklists.devices
+  toast.undoable(`已删除「${d.name}」`, () => {
+    const now = model.blocklists.devices ?? (model.blocklists.devices = [])
+    if (now.some((x) => x.id === d.id)) return
+    now.splice(Math.min(at, now.length), 0, d)
+  })
+}
 </script>
 
 <template>
@@ -502,6 +571,26 @@ const blockText = computed(() => blockLabel(model, 'default'))
       </template>
     </section>
 
+    <section class="ui-card bl__card" aria-labelledby="bl-devices">
+      <header class="bl__head">
+        <span class="bl__titles"><h2 id="bl-devices">不拦截的设备</h2><p>这些设备跳过勾上的列表，自己写的规则和白名单照常生效</p></span>
+        <span class="bl__tools"><button v-if="devices.length" class="ui-btn ui-btn--text" type="button" @click="editDevice(null)"><Plus :size="16" aria-hidden="true" />添加设备</button></span>
+      </header>
+      <UiEmpty v-if="!devices.length" :icon="MonitorSmartphone" title="还没有不拦截的设备" :desc="'比如不想拦老人手机上的广告：添加这台设备，勾上要跳过的列表。设备按 IP 或 MAC\u00a0地址认。'">
+        <button class="ui-btn ui-btn--secondary" type="button" @click="editDevice(null)"><Plus :size="16" aria-hidden="true" />添加设备</button>
+      </UiEmpty>
+      <ul v-else class="bl__devices">
+        <li v-for="d in devices" :key="d.id" class="bl__device">
+          <span class="bl__devmain">
+            <span class="bl__nm"><b :title="d.name">{{ d.name }}</b><span v-if="changedDeviceIds.has(d.id)" class="ui-dot ui-dot--ink bl__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span></span>
+            <small class="bl__ids">{{ [...d.ips, ...d.macs].join(' · ') }}</small>
+          </span>
+          <span class="bl__skip" :class="{ 'is-none': !skipsOf(d).length }">{{ skipSummary(d) }}</span>
+          <UiMenu :items="deviceMenu" :label="`${d.name} 的操作`" anchor=".bl__device" @select="actDevice(d, $event)" />
+        </li>
+      </ul>
+    </section>
+
     <section class="ui-card bl__card" aria-labelledby="bl-own">
       <header class="bl__head">
         <span class="bl__titles"><h2 id="bl-own">自己写的规则</h2><p>比订阅的列表优先：这里放行的域名，哪个列表都<span class="nowrap">拦不下</span></p></span>
@@ -548,6 +637,30 @@ const blockText = computed(() => blockLabel(model, 'default'))
           <p class="blp__more">其他 AdGuard、Adblock 写法的列表和 hosts&nbsp;文件也能用：<a class="ui-link" href="https://adguard-dns.io/kb/general/dns-filtering-syntax/" target="_blank" rel="noreferrer">AdGuard 写法说明（英文）<ExternalLink :size="14" aria-hidden="true" /></a></p>
         </div>
         <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="presetDialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!picked.length">{{ picked.length ? `订阅 ${picked.length} 个` : '订阅' }}</button></footer>
+      </form>
+    </dialog>
+
+    <dialog ref="deviceDialog" class="pdialog" aria-labelledby="bld-title" @click.self="deviceDialog?.close()">
+      <form class="pdialog__panel bl__dialog" novalidate @submit.prevent="saveDevice">
+        <header class="pdialog__head"><h2 id="bld-title">{{ editing ? '编辑设备' : '添加设备' }}</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="deviceDialog?.close()"><X :size="16" /></button></header>
+        <div class="pdialog__body">
+          <label class="pfield"><span>名字</span><span class="ui-input"><input v-model="draft.name" maxlength="40" placeholder="比如：老人的手机" @input="deviceError = ''"></span></label>
+          <label class="pfield"><span>IP 地址或网段</span><span class="ui-input ui-input--area"><textarea v-model="draft.ips" rows="2" placeholder="192.168.1.30" autocapitalize="off" spellcheck="false" @input="deviceError = ''"></textarea></span><small class="pfield__hint">一行一个。按 IP 认时，要在路由器里给这台设备固定 IP。</small></label>
+          <label class="pfield"><span>MAC 地址</span><span class="ui-input ui-input--area"><textarea v-model="draft.macs" rows="2" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off" spellcheck="false" :disabled="!macSupported" @input="deviceError = ''"></textarea></span><small class="pfield__hint">{{ macSupported ? '一行一个。换了 IP 也认得；KixDNS 要和设备在同一个局域网里，比如装在路由器上。' : '按 MAC 认要更新到较新的内核。' }}</small></label>
+          <div class="pfield">
+            <span>跳过这些列表</span>
+            <ul v-if="blocklistSubs.length" class="blp">
+              <li v-for="s in blocklistSubs" :key="s.id" class="blp__row">
+                <label class="blp__item">
+                  <span class="ui-checkbox"><input type="checkbox" :checked="draft.skip.includes(s.url)" @change="pickSkip(s.url, ($event.target as HTMLInputElement).checked); deviceError = ''"><i></i></span>
+                  <span class="blp__main"><b>{{ s.name }}</b><small>{{ presetFor(s.url)?.about ?? link(s) }}{{ s.enabled ? '' : '（已停用）' }}</small></span>
+                </label>
+              </li>
+            </ul>
+            <small v-else class="pfield__hint">还没有订阅拦截列表，先在上面订阅一个。</small>
+          </div>
+        </div>
+        <footer class="pdialog__foot"><p v-if="deviceError" class="ui-field-error bl__deverr" role="alert">{{ deviceError }}</p><button class="ui-btn ui-btn--secondary" type="button" @click="deviceDialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="submit">{{ editing ? '保存' : '添加' }}</button></footer>
       </form>
     </dialog>
 
@@ -649,6 +762,17 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__own { display: grid; gap: var(--s-2); padding: 0 var(--s-5) var(--s-4); }
 .bl__text textarea { font-family: var(--f-mono); font-size: var(--t-2); white-space: pre; overflow-x: auto; overflow-wrap: normal; }
 .bl__busy { display: inline-flex; align-items: center; gap: var(--s-1); }
+/* 不拦截的设备：一行一台，名字和地址在左，跳过的列表在右，「…」挨着右边 / Devices left unblocked: one per row, name and addresses on the left, the lists
+   skipped on the right, 「…」 at the right edge */
+.bl__devices { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--l-hair); }
+.bl__device { display: flex; align-items: center; gap: var(--s-4); min-height: var(--h-touch); padding: var(--s-2) var(--s-5); border-bottom: 1px solid var(--l-hair); }
+.bl__device:last-child { border-bottom: 0; }
+.bl__devmain { flex: 1 1 auto; display: grid; gap: 1px; min-width: 0; }
+.bl__device :deep(.ui-icon-btn) { margin-right: calc((var(--h-sm) - var(--size-icon)) / -2 - 3px); }
+.bl__ids { overflow: hidden; color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); text-overflow: ellipsis; white-space: nowrap; }
+.bl__skip { flex: 0 1 auto; min-width: 0; color: var(--l-ink-2); font-size: var(--t-2); text-align: right; }
+.bl__skip.is-none { color: var(--warn-l); }
+.bl__deverr { flex: 1 1 auto; margin: 0; }
 .bl__syntax { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-4); margin: 0; color: var(--l-ink-3); font-size: var(--t-1); }
 .bl__syntax > span { display: inline-flex; align-items: baseline; gap: var(--s-1); white-space: nowrap; }
 .bl__syntax code { padding: 0 var(--s-1); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink-2); font-family: var(--f-mono); }
@@ -692,6 +816,12 @@ const blockText = computed(() => blockLabel(model, 'default'))
 /* 图标跟在链接的字后面，折行时不单独挂到最右边 / The icon follows the link text and never hangs alone at the far right when it wraps */
 .blp__more svg { display: inline; margin-left: var(--s-1); vertical-align: -2px; }
 @media (max-width: 640px) {
+  /* 手机上跳过的列表另起一行，排在地址下面，「…」靠右对着两行中间 / On phones the lists skipped take a line of their own under the addresses, 「…」
+     at the right facing both lines */
+  .bl__device { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "main menu" "skip menu"; column-gap: var(--s-3); row-gap: 2px; padding-inline: var(--s-4); }
+  .bl__devmain { grid-area: main; }
+  .bl__skip { grid-area: skip; font-size: var(--t-1); text-align: left; }
+  .bl__device > :deep(.ui-menu-host) { grid-area: menu; }
   .bl__head { padding: var(--s-4) var(--s-4) var(--s-2); }
   .bl__tools { margin-left: calc(var(--s-2) * -1); }
   .bl__add { padding: 0 var(--s-4); min-height: var(--h-touch); }
